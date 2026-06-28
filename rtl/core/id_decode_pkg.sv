@@ -1,109 +1,7 @@
 `include "defines.svh"
 
 package id_decode_pkg;
-
-    typedef enum logic [2:0] {
-        FU_NONE = 3'd0,
-        FU_ALU  = 3'd1,
-        FU_LSU  = 3'd2,
-        FU_BRU  = 3'd3,
-        FU_CSR  = 3'd4,
-        FU_SYS  = 3'd5
-    } fu_type_e;
-
-    typedef enum logic [3:0] {
-        ALU_ADD  = 4'd0,
-        ALU_SUB  = 4'd1,
-        ALU_SLL  = 4'd2,
-        ALU_SLT  = 4'd3,
-        ALU_SLTU = 4'd4,
-        ALU_XOR  = 4'd5,
-        ALU_SRL  = 4'd6,
-        ALU_SRA  = 4'd7,
-        ALU_OR   = 4'd8,
-        ALU_AND  = 4'd9
-    } alu_op_e;
-
-    typedef enum logic [2:0] {
-        BR_NONE = 3'd0,
-        BR_BEQ  = 3'd1,
-        BR_BNE  = 3'd2,
-        BR_BLT  = 3'd3,
-        BR_BGE  = 3'd4,
-        BR_BLTU = 3'd5,
-        BR_BGEU = 3'd6,
-        BR_JUMP = 3'd7
-    } branch_op_e;
-
-    typedef enum logic [2:0] {
-        MEM_NONE = 3'd0,
-        MEM_BYTE = 3'd1,
-        MEM_HALF = 3'd2,
-        MEM_WORD = 3'd3,
-        MEM_BYTE_U = 3'd4,
-        MEM_HALF_U = 3'd5
-    } mem_op_e;
-
-    typedef enum logic [1:0] {
-        CSR_NONE  = 2'd0,
-        CSR_WRITE = 2'd1,
-        CSR_SET   = 2'd2,
-        CSR_CLEAR = 2'd3
-    } csr_op_e;
-
-    // 与 IF 总线中单个槽的 {inst, pc, pred_taken, pred_target} 完全一致。
-    typedef struct packed {
-        logic [`INST_WIDTH-1:0] inst;
-        logic [`ADDR_WIDTH-1:0] pc;
-        logic                   pred_taken;
-        logic [`ADDR_WIDTH-1:0] pred_target;
-    } fetch_slot_t;
-
-    typedef struct packed {
-        fetch_slot_t lane1;
-        fetch_slot_t lane0;
-    } fetch_bundle_t;
-
-    // 送往 Rename 的信息只描述指令，不读取物理/架构寄存器数据。
-    typedef struct packed {
-        logic                   valid;
-        // flush 不是在 ID 删除指令，而是随指令流向后端并在那里屏蔽副作用。
-        logic                   flush;
-        logic [`ADDR_WIDTH-1:0] pc;
-        logic [`INST_WIDTH-1:0] inst;
-        logic                   pred_taken;
-        logic [`ADDR_WIDTH-1:0] pred_target;
-
-        logic [4:0]             rs1;
-        logic [4:0]             rs2;
-        logic [4:0]             rd;
-        logic                   use_rs1;
-        logic                   use_rs2;
-        logic                   rd_wen;
-
-        logic [`ADDR_WIDTH-1:0] imm;
-        logic                   src1_is_pc;
-        logic                   src2_is_imm;
-
-        fu_type_e               fu_type;
-        alu_op_e                alu_op;
-        // 预留给后续 Zb/自定义 ALU 扩展：0=基础 RV32I，1=扩展运算。
-        logic                   alu_ext;
-        branch_op_e             branch_op;
-        mem_op_e                mem_op;
-        logic                   mem_write;
-
-        csr_op_e                csr_op;
-        logic                   csr_use_imm;
-        logic [11:0]            csr_addr;
-
-        logic                   illegal;
-        logic [`EXC_CODE_WIDTH-1:0] exc_code;
-        logic [`ADDR_WIDTH-1:0] exc_tval;
-    } decode_pkt_t;
-
-    localparam int DECODE_PKT_WIDTH = $bits(decode_pkt_t);
-    localparam int DS_RN_WIDTH      = 2 * DECODE_PKT_WIDTH;
+    import core_port_pkg::*;
 
     function automatic logic [31:0] imm_i(input logic [31:0] inst);
         imm_i = {{20{inst[31]}}, inst[31:20]};
@@ -127,12 +25,12 @@ package id_decode_pkg;
                  inst[30:21], 1'b0};
     endfunction
 
-    function automatic decode_pkt_t decode_instruction(
-        input fetch_slot_t                 slot,
+    function automatic ds_rn_slot_t decode_instruction(
+        input fs_ds_slot_t                 slot,
         input logic [`EXC_CODE_WIDTH-1:0] fetch_exc_code,
         input logic [`ADDR_WIDTH-1:0]     fetch_exc_tval
     );
-        decode_pkt_t d;
+        ds_rn_slot_t d;
         logic [6:0] opcode;
         logic [2:0] funct3;
         logic [6:0] funct7;

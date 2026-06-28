@@ -47,11 +47,7 @@
 `define EXC_ECALL_M             7'b010_1011
 `define EXC_MRET                7'b100_0000
 
-// -----------------------------------------------------------------------------
-// ID -> Rename 双路译码包宽度
-// 与 id_decode_pkg::decode_pkt_t 保持一致。
-// -----------------------------------------------------------------------------
-`define DS_RN_SLOT_WIDTH        221
-`define DS_RN_WIDTH             (2 * `DS_RN_SLOT_WIDTH)
+// ID -> Rename 已改用 core_port_pkg::ds_rn_bundle_t typed port。
+// 对应宽度由 package 中的 $bits(ds_rn_slot_t/ds_rn_bundle_t) 自动派生。
 
 `endif

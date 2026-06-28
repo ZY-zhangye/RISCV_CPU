@@ -11,14 +11,15 @@ module id_stage (
     input  logic [`EXC_WIDTH-1:0]    fs_exc_bus,
 
     // ID -> Rename：双路译码包
-    output logic                     ds_to_rn_valid,
-    input  logic                     rn_allowin,
-    output logic [`DS_RN_WIDTH-1:0]  ds_to_rn_bus,
+    output logic                         ds_to_rn_valid,
+    input  logic                         rn_allowin,
+    output core_port_pkg::ds_rn_bundle_t ds_to_rn_bus,
 
     // 全局恢复。这里只记录 flush，不在 ID 删除年轻指令。
     input  logic                     br_taken,
     input  logic                     exception_flag
 );
+    import core_port_pkg::*;
     import id_decode_pkg::*;
 
     logic                    ds_valid;
@@ -140,12 +141,12 @@ module id_stage (
         end
     end
 
-    fetch_bundle_t fetch_bundle;
-    decode_pkt_t   lane0_decode;
-    decode_pkt_t   lane1_decode;
+    fs_ds_bundle_t fetch_bundle;
+    ds_rn_slot_t   lane0_decode;
+    ds_rn_slot_t   lane1_decode;
 
     always_comb begin
-        fetch_bundle = fetch_bundle_t'(main_bus);
+        fetch_bundle = fs_ds_bundle_t'(main_bus);
 
         lane0_decode = decode_instruction(
             fetch_bundle.lane0,
@@ -171,7 +172,8 @@ module id_stage (
             lane1_decode.flush = main_flush | pipe_flush;
         end
 
-        ds_to_rn_bus = {lane1_decode, lane0_decode};
+        ds_to_rn_bus.lane0 = lane0_decode;
+        ds_to_rn_bus.lane1 = lane1_decode;
     end
 
 endmodule
