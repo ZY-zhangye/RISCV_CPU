@@ -1,0 +1,31 @@
+# QuestaSim / ModelSim
+work/
+transcript
+vsim.wlf
+*.wlf
+*.log
+*.jou
+
+# Vivado generated files
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.xpr
+.Xil/
+
+# Generated FPGA artifacts
+*.bit
+*.bin
+*.ltx
+*.dcp
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
