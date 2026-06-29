@@ -1,6 +1,6 @@
 # Codex 工作区交接
 
-更新时间：2026-06-28
+更新时间：2026-06-29
 工程目录：`F:\RISCV_CPU`
 
 ## 新对话首先读取
@@ -61,6 +61,22 @@
 - `rename_stage.sv` 已连接三个状态模块，实现主槽+skid、参数化 renamed FIFO、部分推进和双路前缀 valid/ready；
 - `test/tb_rename_stage.sv` 已覆盖输出稳定、slot0 单发、slot1 留存、flush 丢弃和统一恢复。
 
+### 5. ROB 与物理寄存器堆
+
+- `physical_regfile.sv`：64×32-bit 同步 4R2W，p0 恒零，PRF 内部不做写回前递；
+- `rob.sv`：32 项、双分配、双完成和双提交，使用带环回位的 tag；
+- ROB 只有至少两个空项时才组合拉高 `rob_allowin`，不使用本拍提交空间；
+- lane0 固定早于 lane1，年龄由 ROB 指针而非 PC 数值判断；
+- `test/tb_rob.sv` 已覆盖越序完成、顺序提交、最后一个空项保留、异常阻断和 tag 环回检查。
+
+### 6. 组合 Dispatch
+
+- `dispatch.sv` 是无时钟、无内部状态的组合分流模块；
+- ROB 与目标 IQ/LSQ 必须同时可接收，才允许对应 Rename 槽出队；
+- lane1 不越过 lane0，但支持 lane0-only 部分推进；
+- MLU→IQ0，BRU/CSR→IQ1，LSU→LSQ，ALU 根据剩余容量动态分流；
+- `test/tb_dispatch.sv` 已与真实 ROB 联合验证原子准入、同 bank 双写和满 ROB 反压。
+
 ## 当前关键接口
 
 ### IF -> ID
@@ -86,8 +102,8 @@ core_port_pkg::ds_rn_bundle_t ds_to_rn_bus
 
 - `FS_DS_SLOT_WIDTH = 97`
 - `FS_DS_WIDTH = 194`
-- `$bits(core_port_pkg::ds_rn_slot_t) = 221`
-- `$bits(core_port_pkg::ds_rn_bundle_t) = 442`
+- `$bits(core_port_pkg::ds_rn_slot_t) = 225`
+- `$bits(core_port_pkg::ds_rn_bundle_t) = 450`
 - `EXC_WIDTH = 39`
 
 ID→Rename 已使用 typed port，修改 `ds_rn_slot_t` 后 package 会自动派生宽度，不再同步维护 `defines.svh` 宏。
@@ -117,6 +133,8 @@ F:\questasim64_2024.1\win64
 - Rename 输出停顿保持、双路前缀接收、主/skid 反压和参数化 FIFO；
 - 只剩一个物理标签时 lane0 单发、lane1 留存并在回收后继续；
 - flushed bundle 丢弃及统一 recovery 清空。
+- ROB 双分配、乱序双完成、前缀双提交、满边界和统一恢复。
+- 组合 Dispatch 的 ALU 均衡、固定功能单元路由、部分推进和 ROB 原子写入。
 
 最终结果：`0 Errors, 0 Warnings`，行为测试输出 `PASS`。
 
@@ -125,16 +143,17 @@ F:\questasim64_2024.1\win64
 1. `PC_START` 当前为 `32'h0000_0000`，接入 SoC 时需要按实际地址空间调整。
 2. JALR 当前不更新直接映射 BTB；将来可增加独立间接跳转预测结构。
 3. 软件中的真实 NOP 与 IF 填充 NOP 当前都会被 ID 标记为无效槽。若将来要求 `instret` 精确统计软件 NOP，需要增加显式 lane-valid，而不能只依赖 NOP 编码。
-4. `ds_rn_slot_t` 已支持 RV32I、Zicsr 和基本 SYSTEM 分类；M、F、Zb 尚未实现。
-5. 当前目录未形成完整 SoC；Rename 子系统已完成，但 ROB、Dispatch、IQ、LSQ、执行和写回尚未实现。
-6. 当前变更尚未提交或推送。
+4. `ds_rn_slot_t` 已支持 RV32I/M、Zicsr 和基本 SYSTEM 分类；F、Zb 尚未实现。
+5. `physical_regfile.sv` 已实现同步 4R2W 和 p0 恒零；PRF 内部不做前递，后续由 IQ 广播当拍唤醒，并在操作数选择级选择广播值或 PRF 读值。
+6. 当前目录未形成完整 SoC；Rename、物理寄存器堆、ROB 和组合 Dispatch 已完成，但 IQ、LSQ、执行和写回尚未实现。
+7. 当前变更尚未提交或推送。
 
 ## 推荐后续实现顺序
 
-1. 定义 Rename→Dispatch/ROB 的资源接收契约。
-2. 实现双路 ROB 分配和顺序提交骨架。
-3. 按 `non-memory -> IQ`、`load/store -> LSQ` 分流。
-4. 实现唤醒/选择、执行和 CDB/写回。
+1. 实现两个静态分区 IQ 和写回广播唤醒。
+2. 将 IQ 实际接收额度接入组合 Dispatch。
+3. 实现 LSQ 及其与 issue1 的仲裁。
+4. 实现操作数选择、执行和 CDB/写回。
 5. 补齐统一 recovery/flush 信道在全核的连接和恢复测试。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。

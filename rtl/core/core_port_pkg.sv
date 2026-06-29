@@ -12,12 +12,17 @@ package core_port_pkg;
     localparam int PHYS_REG_COUNT     = 64;
     localparam int ARCH_REG_IDX_WIDTH = $clog2(ARCH_REG_COUNT);
     localparam int PHYS_REG_IDX_WIDTH = $clog2(PHYS_REG_COUNT);
+    localparam int XLEN               = 32;
     localparam int RENAME_WIDTH       = 2;
     localparam int COMMIT_WIDTH       = 2;
     localparam int WRITEBACK_WIDTH    = 2;
+    localparam int ROB_DEPTH          = 32;
+    localparam int ROB_INDEX_WIDTH    = $clog2(ROB_DEPTH);
+    localparam int ROB_PTR_WIDTH      = ROB_INDEX_WIDTH + 1;
 
     typedef logic [ARCH_REG_IDX_WIDTH-1:0] arch_reg_idx_t;
     typedef logic [PHYS_REG_IDX_WIDTH-1:0] phys_reg_idx_t;
+    typedef logic [ROB_PTR_WIDTH-1:0]       rob_tag_t;
 
     typedef enum logic [2:0] {
         FU_NONE = 3'd0,
@@ -25,8 +30,21 @@ package core_port_pkg;
         FU_LSU  = 3'd2,
         FU_BRU  = 3'd3,
         FU_CSR  = 3'd4,
-        FU_SYS  = 3'd5
+        FU_SYS  = 3'd5,
+        FU_MLU  = 3'd6
     } fu_type_e;
+
+    typedef enum logic [3:0] {
+        MLU_NONE  = 4'd0,
+        MLU_MUL   = 4'd1,
+        MLU_MULH  = 4'd2,
+        MLU_MULHSU = 4'd3,
+        MLU_MULHU = 4'd4,
+        MLU_DIV   = 4'd5,
+        MLU_DIVU  = 4'd6,
+        MLU_REM   = 4'd7,
+        MLU_REMU  = 4'd8
+    } mlu_op_e;
 
     typedef enum logic [3:0] {
         ALU_ADD  = 4'd0,
@@ -126,6 +144,7 @@ package core_port_pkg;
         fu_type_e               fu_type;
         alu_op_e                alu_op;
         logic                   alu_ext;
+        mlu_op_e                mlu_op;
         branch_op_e             branch_op;
         mem_op_e                mem_op;
         logic                   mem_write;
@@ -162,6 +181,111 @@ package core_port_pkg;
         rn_dp_slot_t lane1;
         rn_dp_slot_t lane0;
     } rn_dp_bundle_t;
+
+    // -------------------------------------------------------------------------
+    // Rename/组合分流 -> ROB
+    // ROB 不保存完整译码结果，只保存提交、异常和恢复所必需的信息。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        logic [`ADDR_WIDTH-1:0]     pc;
+        arch_reg_idx_t              rd;
+        phys_reg_idx_t              pdst;
+        phys_reg_idx_t              stale_pdst;
+        logic                       pdst_valid;
+        logic                       complete_on_alloc;
+        logic                       is_branch;
+        logic                       is_store;
+        logic                       is_csr;
+        logic                       is_fence;
+        logic                       is_mret;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+    } rn_rob_slot_t;
+
+    typedef struct packed {
+        rn_rob_slot_t lane1;
+        rn_rob_slot_t lane0;
+    } rn_rob_bundle_t;
+
+    typedef struct packed {
+        rob_tag_t lane1;
+        rob_tag_t lane0;
+    } rob_tag_pair_t;
+
+    // -------------------------------------------------------------------------
+    // 执行/写回 -> ROB 完成更新
+    // 分支实际目标和执行期异常在完成时写回 ROB；寄存器数据单独写 PRF。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        logic                       valid;
+        rob_tag_t                   tag;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+        logic                       redirect_valid;
+        logic [`ADDR_WIDTH-1:0]     redirect_target;
+    } rob_complete_slot_t;
+
+    typedef struct packed {
+        rob_complete_slot_t lane1;
+        rob_complete_slot_t lane0;
+    } rob_complete_bundle_t;
+
+    // -------------------------------------------------------------------------
+    // ROB -> Commit
+    // valid 表示该端口当前可提交；真正弹出由 valid & commit_ready 决定。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        logic                       valid;
+        rob_tag_t                   tag;
+        logic [`ADDR_WIDTH-1:0]     pc;
+        arch_reg_idx_t              rd;
+        phys_reg_idx_t              pdst;
+        phys_reg_idx_t              stale_pdst;
+        logic                       pdst_valid;
+        logic                       is_branch;
+        logic                       is_store;
+        logic                       is_csr;
+        logic                       is_fence;
+        logic                       is_mret;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+        logic                       redirect_valid;
+        logic [`ADDR_WIDTH-1:0]     redirect_target;
+    } rob_commit_slot_t;
+
+    typedef struct packed {
+        rob_commit_slot_t lane1;
+        rob_commit_slot_t lane0;
+    } rob_commit_bundle_t;
+
+    // -------------------------------------------------------------------------
+    // 组合 Dispatch -> IQ / LSQ
+    // capacity 使用 0/1/2 表示目标队列本拍最多可接收的条目数。
+    // -------------------------------------------------------------------------
+    typedef logic [1:0] dispatch_capacity_t;
+
+    typedef struct packed {
+        rob_tag_t    rob_tag;
+        rn_dp_slot_t uop;
+    } dp_iq_slot_t;
+
+    typedef struct packed {
+        dp_iq_slot_t lane1;
+        dp_iq_slot_t lane0;
+    } dp_iq_bundle_t;
+
+    typedef struct packed {
+        rob_tag_t    rob_tag;
+        rn_dp_slot_t uop;
+    } dp_lsq_slot_t;
+
+    typedef struct packed {
+        dp_lsq_slot_t lane1;
+        dp_lsq_slot_t lane0;
+    } dp_lsq_bundle_t;
 
     // -------------------------------------------------------------------------
     // Rename 状态模块控制包
@@ -240,6 +364,41 @@ package core_port_pkg;
         phys_reg_idx_t lane1;
         phys_reg_idx_t lane0;
     } phys_reg_pair_t;
+
+    // -------------------------------------------------------------------------
+    // 物理寄存器堆端口
+    // 四个同步读端口分别供两条发射通道的两个源操作数使用；两个写端口
+    // 对应后端的两组写回通道。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        logic          valid;
+        phys_reg_idx_t preg;
+    } phys_reg_read_req_t;
+
+    typedef struct packed {
+        phys_reg_read_req_t port3;
+        phys_reg_read_req_t port2;
+        phys_reg_read_req_t port1;
+        phys_reg_read_req_t port0;
+    } phys_reg_read_req_bundle_t;
+
+    typedef struct packed {
+        logic [XLEN-1:0] port3;
+        logic [XLEN-1:0] port2;
+        logic [XLEN-1:0] port1;
+        logic [XLEN-1:0] port0;
+    } phys_reg_read_data_bundle_t;
+
+    typedef struct packed {
+        logic            valid;
+        phys_reg_idx_t   preg;
+        logic [XLEN-1:0] data;
+    } phys_reg_write_t;
+
+    typedef struct packed {
+        phys_reg_write_t lane1;
+        phys_reg_write_t lane0;
+    } phys_reg_write_bundle_t;
 
     localparam int FS_DS_SLOT_WIDTH = $bits(fs_ds_slot_t);
     localparam int FS_DS_WIDTH      = $bits(fs_ds_bundle_t);

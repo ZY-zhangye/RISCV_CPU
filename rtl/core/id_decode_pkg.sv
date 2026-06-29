@@ -52,6 +52,7 @@ package id_decode_pkg;
         d.rd          = slot.inst[11:7];
         d.fu_type     = FU_NONE;
         d.alu_op      = ALU_ADD;
+        d.mlu_op      = MLU_NONE;
         d.branch_op   = BR_NONE;
         d.mem_op      = MEM_NONE;
         d.csr_op      = CSR_NONE;
@@ -178,23 +179,38 @@ package id_decode_pkg;
                 end
 
                 7'b0110011: begin // OP
-                    d.fu_type = FU_ALU;
                     d.use_rs1 = 1'b1;
                     d.use_rs2 = 1'b1;
                     d.rd_wen  = (d.rd != 5'd0);
-                    unique case ({funct7, funct3})
-                        10'b0000000_000: d.alu_op = ALU_ADD;
-                        10'b0100000_000: d.alu_op = ALU_SUB;
-                        10'b0000000_001: d.alu_op = ALU_SLL;
-                        10'b0000000_010: d.alu_op = ALU_SLT;
-                        10'b0000000_011: d.alu_op = ALU_SLTU;
-                        10'b0000000_100: d.alu_op = ALU_XOR;
-                        10'b0000000_101: d.alu_op = ALU_SRL;
-                        10'b0100000_101: d.alu_op = ALU_SRA;
-                        10'b0000000_110: d.alu_op = ALU_OR;
-                        10'b0000000_111: d.alu_op = ALU_AND;
-                        default: legal = 1'b0;
-                    endcase
+                    if (funct7 == 7'b0000001) begin
+                        d.fu_type = FU_MLU;
+                        unique case (funct3)
+                            3'b000: d.mlu_op = MLU_MUL;
+                            3'b001: d.mlu_op = MLU_MULH;
+                            3'b010: d.mlu_op = MLU_MULHSU;
+                            3'b011: d.mlu_op = MLU_MULHU;
+                            3'b100: d.mlu_op = MLU_DIV;
+                            3'b101: d.mlu_op = MLU_DIVU;
+                            3'b110: d.mlu_op = MLU_REM;
+                            3'b111: d.mlu_op = MLU_REMU;
+                            default: legal = 1'b0;
+                        endcase
+                    end else begin
+                        d.fu_type = FU_ALU;
+                        unique case ({funct7, funct3})
+                            10'b0000000_000: d.alu_op = ALU_ADD;
+                            10'b0100000_000: d.alu_op = ALU_SUB;
+                            10'b0000000_001: d.alu_op = ALU_SLL;
+                            10'b0000000_010: d.alu_op = ALU_SLT;
+                            10'b0000000_011: d.alu_op = ALU_SLTU;
+                            10'b0000000_100: d.alu_op = ALU_XOR;
+                            10'b0000000_101: d.alu_op = ALU_SRL;
+                            10'b0100000_101: d.alu_op = ALU_SRA;
+                            10'b0000000_110: d.alu_op = ALU_OR;
+                            10'b0000000_111: d.alu_op = ALU_AND;
+                            default: legal = 1'b0;
+                        endcase
+                    end
                 end
 
                 7'b1110011: begin // SYSTEM / Zicsr
