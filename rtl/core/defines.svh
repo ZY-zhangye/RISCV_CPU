@@ -44,6 +44,10 @@
 `define EXC_IAM                 7'b010_0000
 `define EXC_ILLEGAL_INST        7'b010_0010
 `define EXC_BREAKPOINT          7'b010_0011
+`define EXC_LOAD_MISALIGNED     7'b010_0100
+`define EXC_LOAD_ACCESS         7'b010_0101
+`define EXC_STORE_MISALIGNED    7'b010_0110
+`define EXC_STORE_ACCESS        7'b010_0111
 `define EXC_ECALL_M             7'b010_1011
 `define EXC_MRET                7'b100_0000
 

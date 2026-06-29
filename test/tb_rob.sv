@@ -17,6 +17,7 @@ module tb_rob;
     commit_map_bundle_t   commit_map;
     recover_event_t       recover;
     logic [$clog2(ROB_DEPTH+1)-1:0] occupancy;
+    rob_tag_t head_tag;
 
     rob u_rob (
         .clk           (clk),
@@ -31,7 +32,8 @@ module tb_rob;
         .commit_fire   (commit_fire),
         .commit_map    (commit_map),
         .recover       (recover),
-        .occupancy_o   (occupancy)
+        .occupancy_o   (occupancy),
+        .head_tag_o    (head_tag)
     );
 
     always #5 clk = ~clk;

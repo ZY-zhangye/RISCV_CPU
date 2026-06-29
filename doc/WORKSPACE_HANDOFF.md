@@ -77,6 +77,25 @@
 - MLU→IQ0，BRU/CSR→IQ1，LSU→LSQ，ALU 根据剩余容量动态分流；
 - `test/tb_dispatch.sv` 已与真实 ROB 联合验证原子准入、同 bank 双写和满 ROB 反压。
 
+### 7. 双分区 Issue Queue
+
+- `issue_queue.sv`：参数化 8 项全相联 bank，双入队、单发射和任意空槽复用；
+- `issue_queue_pair.sv`：IQ0 支持 ALU/MLU，IQ1 支持 ALU/BRU/CSR；
+- 使用 ROB head 计算环回年龄，执行 oldest-ready 选择，允许年轻 ready 指令越过阻塞老项；
+- 两路写回广播当拍参与 wakeup/select，命中数据随 issue 包锁存；
+- 下游阻塞时保持选中项和旁路数据稳定；
+- `test/tb_issue_queue.sv` 已覆盖真实乱序、环回年龄、双广播、功能单元忙和满队列边界。
+
+### 8. 乱序 LSQ 与 issue1 仲裁
+
+- `lsq.sv`：8 项统一 LSQ，双入队，Load/Store 地址 oldest-ready 乱序生成；
+- Store 地址和数据解耦；数据可从 PRF 或写回广播独立取得；
+- Load 不越过地址未知的老 Store，完整覆盖时支持最年轻老 Store forwarding；
+- Store 仅在 ROB 顺序提交后进入寄存的内存请求级；
+- recovery 清除推测项但保留已提交 Store，独立 Store 提交序号确保恢复后排空顺序；
+- `issue1_arbiter.sv` 按 ROB 环形年龄在 IQ1 与 LSQ 候选中选择最老项；
+- `test/tb_lsq.sv` 已覆盖数据解耦、未知地址阻塞、非冲突 Load、转发、部分覆盖、未对齐异常和恢复。
+
 ## 当前关键接口
 
 ### IF -> ID
@@ -135,6 +154,8 @@ F:\questasim64_2024.1\win64
 - flushed bundle 丢弃及统一 recovery 清空。
 - ROB 双分配、乱序双完成、前缀双提交、满边界和统一恢复。
 - 组合 Dispatch 的 ALU 均衡、固定功能单元路由、部分推进和 ROB 原子写入。
+- 两个 IQ bank 的 oldest-ready 乱序选择、双广播当拍唤醒、阻塞保持和恢复。
+- LSQ 乱序地址生成、Store-to-Load forwarding、提交 Store 恢复保留和 issue1 仲裁。
 
 最终结果：`0 Errors, 0 Warnings`，行为测试输出 `PASS`。
 
@@ -145,15 +166,15 @@ F:\questasim64_2024.1\win64
 3. 软件中的真实 NOP 与 IF 填充 NOP 当前都会被 ID 标记为无效槽。若将来要求 `instret` 精确统计软件 NOP，需要增加显式 lane-valid，而不能只依赖 NOP 编码。
 4. `ds_rn_slot_t` 已支持 RV32I/M、Zicsr 和基本 SYSTEM 分类；F、Zb 尚未实现。
 5. `physical_regfile.sv` 已实现同步 4R2W 和 p0 恒零；PRF 内部不做前递，后续由 IQ 广播当拍唤醒，并在操作数选择级选择广播值或 PRF 读值。
-6. 当前目录未形成完整 SoC；Rename、物理寄存器堆、ROB 和组合 Dispatch 已完成，但 IQ、LSQ、执行和写回尚未实现。
-7. 当前变更尚未提交或推送。
+6. 当前目录未形成完整 SoC；Rename、物理寄存器堆、ROB、组合 Dispatch、双分区 IQ 和 LSQ 已完成，但操作数选择、执行和写回尚未实现。
+7. LSQ 当前对地址未知老 Store 采取保守阻塞；部分覆盖不合并，MMIO/强序访问分类和违例 replay 尚未实现。
+8. 本阶段 IQ/LSQ 实现及定向测试已纳入 `main` 分支。
 
 ## 推荐后续实现顺序
 
-1. 实现两个静态分区 IQ 和写回广播唤醒。
-2. 将 IQ 实际接收额度接入组合 Dispatch。
-3. 实现 LSQ 及其与 issue1 的仲裁。
-4. 实现操作数选择、执行和 CDB/写回。
-5. 补齐统一 recovery/flush 信道在全核的连接和恢复测试。
+1. 实现 PRF/广播操作数选择级。
+2. 实现 LSU 地址生成和 ALU/MLU/BRU 执行接口。
+3. 实现两组 CDB/写回仲裁。
+4. 补齐统一 recovery/flush 信道在全核的连接和恢复测试。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。

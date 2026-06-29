@@ -11,13 +11,14 @@
 - [x] 32 项双分配、双完成、双提交 ROB；
 - [x] Rename→ROB/IQ/LSQ 组合 Dispatch；
 - [x] ROB 与 Dispatch 联合原子准入测试；
+- [x] 两个 8 项静态分区 IQ 及广播当拍唤醒/选择；
+- [x] 8 项乱序 LSQ、Store forwarding 和 issue1 年龄仲裁；
 - [x] 现有 Rename 状态和流水级回归。
 
-尚未实现：
+当前边界与剩余工作：
 
-- [ ] 两个 8 项静态分区 IQ；
-- [ ] 独立 LSQ 及其与 issue1 的仲裁；
-- [ ] 写回广播当拍唤醒/选择和操作数选择级；
+- [x] 写回广播当拍唤醒/选择及旁路数据锁存；
+- [ ] PRF 读数据与广播数据的操作数选择级；
 - [ ] ALU、MLU、BRU、LSU、CSR 执行与两组写回仲裁；
 - [ ] Rename→Dispatch→ROB/IQ/LSQ 完整后端集成。
 
@@ -65,17 +66,17 @@
 
 ## IQ、发射与 PRF
 
-- [ ] IQ0 支持 ALU/MLU，IQ1 支持 ALU/BRU/CSR。
-- [ ] IQ 保存执行控制、ROB tag、物理源/目标、源就绪位、PC、立即数及预测信息。
-- [ ] 每个 bank 使用 oldest-ready 选择，并监听两路写回广播更新源就绪状态。
-- [ ] IQ 条目只有在 issue 握手成功后删除。
-- [ ] issue1 在 IQ1 与 LSQ 候选之间按 ROB 年龄选择。
+- [x] IQ0 支持 ALU/MLU，IQ1 支持 ALU/BRU/CSR。
+- [x] IQ 保存执行控制、ROB tag、物理源/目标、源就绪位、PC、立即数及预测信息。
+- [x] 每个 bank 使用环回安全的 oldest-ready 选择，并监听两路写回广播更新源就绪状态。
+- [x] IQ 条目只有在 issue 握手成功后删除；阻塞时锁存选中项和旁路数据。
+- [x] issue1 在 IQ1 与 LSQ 候选之间按 ROB 环形年龄选择。
 - [x] PRF 使用同步 4 读 2 写：
   - issue0 使用读口0/1；
   - issue1 使用读口2/3；
   - PRF 内部不实现写回到读口的直接旁路；
   - p0 恒为零且禁止写入。
-- [ ] IQ 在写回广播当拍完成唤醒和选择，同时把广播命中位及数据随 issue 元数据锁存。
+- [x] IQ 在写回广播当拍完成唤醒和选择，同时把广播命中位及数据随 issue 元数据锁存。
 - [ ] 下一拍操作数选择级在锁存的广播值与 PRF 同步读值之间选择，再送执行单元。
 - [ ] 执行单元阻塞只影响对应 operand-read/issue 缓冲，不直接影响 IQ 满信号或 Rename。
 - [ ] WB0 服务 ALU0/MLU，WB1 服务 ALU1/BRU/LSU；组内执行结果通过 `valid/ready` 仲裁。
@@ -88,13 +89,13 @@
   - [x] Dispatch 双路原子准入、同 bank 双写、ALU 分流和满 ROB 反压；
   - [x] Dispatch 不连接执行 `ready`、issue 或写回信号；
   - [x] ROB 双分配、乱序完成、双提交、环回和恢复；
-  - [ ] IQ 最老就绪选择、双广播唤醒、阻塞保持和 recovery；
+  - [x] IQ 最老就绪选择、双广播唤醒、阻塞保持、功能单元可用性和 recovery；
+  - [x] LSQ 地址/数据解耦、未知 Store 阻塞、完整覆盖转发、提交后 Store 排空和 recovery；
   - [x] PRF 同步四读双写、p0 恒零及无内部前递语义；
   - [ ] Rename→Dispatch→ROB/IQ→PRF 集成测试。
 
 ## 下一阶段边界
 
-- 实现两个 8 项 IQ bank、双入队、单选择、两路广播唤醒和 recovery。
-- IQ0 接收 ALU/MLU，IQ1 接收 ALU/BRU/CSR；普通 ALU 继续由组合 Dispatch 均衡分流。
-- IQ 输出物理源寄存器地址、ROB tag 和广播旁路元数据，为后续操作数选择级做准备。
-- LSQ、执行单元、DMEM 控制和最终写回仲裁继续保持在下一阶段之外。
+- 连接 IQ 输出的物理源地址、ROB tag 和广播旁路元数据到操作数选择级。
+- 实现 LSU 地址生成接口、两组执行单元和最终写回仲裁。
+- MMIO/强序访问识别、多 Store 字节合并和未知 Store 推测 replay 暂不实现。

@@ -19,10 +19,15 @@ package core_port_pkg;
     localparam int ROB_DEPTH          = 32;
     localparam int ROB_INDEX_WIDTH    = $clog2(ROB_DEPTH);
     localparam int ROB_PTR_WIDTH      = ROB_INDEX_WIDTH + 1;
+    localparam int LSQ_DEPTH          = 8;
+    localparam int LSQ_INDEX_WIDTH    = $clog2(LSQ_DEPTH);
+    localparam int LSQ_GEN_WIDTH      = 4;
+    localparam int LSQ_TAG_WIDTH      = LSQ_INDEX_WIDTH + LSQ_GEN_WIDTH;
 
     typedef logic [ARCH_REG_IDX_WIDTH-1:0] arch_reg_idx_t;
     typedef logic [PHYS_REG_IDX_WIDTH-1:0] phys_reg_idx_t;
     typedef logic [ROB_PTR_WIDTH-1:0]       rob_tag_t;
+    typedef logic [LSQ_TAG_WIDTH-1:0]       lsq_tag_t;
 
     typedef enum logic [2:0] {
         FU_NONE = 3'd0,
@@ -288,6 +293,19 @@ package core_port_pkg;
     } dp_lsq_bundle_t;
 
     // -------------------------------------------------------------------------
+    // IQ -> 物理寄存器堆 / 操作数选择级
+    // 广播命中数据随 issue 一起传递，避免在 PRF 内建立写回前递网络。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        rob_tag_t       rob_tag;
+        rn_dp_slot_t    uop;
+        logic           src1_bypass_valid;
+        logic [XLEN-1:0] src1_bypass_data;
+        logic           src2_bypass_valid;
+        logic [XLEN-1:0] src2_bypass_data;
+    } iq_issue_slot_t;
+
+    // -------------------------------------------------------------------------
     // Rename 状态模块控制包
     // -------------------------------------------------------------------------
     typedef struct packed {
@@ -381,6 +399,77 @@ package core_port_pkg;
         phys_reg_read_req_t port1;
         phys_reg_read_req_t port0;
     } phys_reg_read_req_bundle_t;
+
+    typedef struct packed {
+        phys_reg_read_req_t src2;
+        phys_reg_read_req_t src1;
+    } iq_prf_read_req_t;
+
+    // -------------------------------------------------------------------------
+    // LSQ -> AGU / issue1 仲裁
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        lsq_tag_t        lsq_tag;
+        rob_tag_t        rob_tag;
+        rn_dp_slot_t     uop;
+        logic            read_store_data;
+        logic            src1_bypass_valid;
+        logic [XLEN-1:0] src1_bypass_data;
+        logic            src2_bypass_valid;
+        logic [XLEN-1:0] src2_bypass_data;
+    } lsq_agu_issue_t;
+
+    typedef struct packed {
+        logic            from_lsq;
+        lsq_tag_t        lsq_tag;
+        rob_tag_t        rob_tag;
+        rn_dp_slot_t     uop;
+        logic            read_store_data;
+        logic            src1_bypass_valid;
+        logic [XLEN-1:0] src1_bypass_data;
+        logic            src2_bypass_valid;
+        logic [XLEN-1:0] src2_bypass_data;
+    } issue1_slot_t;
+
+    typedef struct packed {
+        logic                       valid;
+        lsq_tag_t                   lsq_tag;
+        logic [`ADDR_WIDTH-1:0]     address;
+        logic                       store_data_valid;
+        logic [XLEN-1:0]            store_data;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+    } lsq_agu_result_t;
+
+    typedef struct packed {
+        logic                       is_store;
+        lsq_tag_t                   lsq_tag;
+        rob_tag_t                   rob_tag;
+        logic [`ADDR_WIDTH-1:0]     address;
+        mem_op_e                    mem_op;
+        logic [XLEN-1:0]            write_data;
+        logic [3:0]                 write_strobe;
+    } lsq_mem_request_t;
+
+    typedef struct packed {
+        logic                       valid;
+        lsq_tag_t                   lsq_tag;
+        logic [XLEN-1:0]            read_data;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+    } lsq_mem_response_t;
+
+    typedef struct packed {
+        rob_tag_t                   rob_tag;
+        logic                       pdst_valid;
+        phys_reg_idx_t              pdst;
+        logic [XLEN-1:0]            data;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+    } lsq_writeback_t;
 
     typedef struct packed {
         logic [XLEN-1:0] port3;

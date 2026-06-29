@@ -30,6 +30,7 @@ module tb_dispatch;
     commit_map_bundle_t      commit_map;
     recover_event_t          recover;
     logic [$clog2(ROB_DEPTH+1)-1:0] occupancy;
+    rob_tag_t                 rob_head_tag;
 
     dispatch u_dispatch (
         .rn_to_dp_valid (rn_to_dp_valid),
@@ -63,7 +64,8 @@ module tb_dispatch;
         .commit_fire   (commit_fire),
         .commit_map    (commit_map),
         .recover       (recover),
-        .occupancy_o   (occupancy)
+        .occupancy_o   (occupancy),
+        .head_tag_o    (rob_head_tag)
     );
 
     always #5 clk = ~clk;

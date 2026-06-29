@@ -34,7 +34,8 @@ module rob (
     // 全核统一恢复。当前约定恢复事件在 ROB 头处理，因此恢复后 ROB 为空。
     input  wire core_port_pkg::recover_event_t    recover,
 
-    output logic [$clog2(core_port_pkg::ROB_DEPTH+1)-1:0] occupancy_o
+    output logic [$clog2(core_port_pkg::ROB_DEPTH+1)-1:0] occupancy_o,
+    output      core_port_pkg::rob_tag_t           head_tag_o
 );
     import core_port_pkg::*;
 
@@ -155,6 +156,7 @@ module rob (
         commit_map.lane1.stale_pdst = commit_bus.lane1.stale_pdst;
 
         occupancy_o = occupancy;
+        head_tag_o  = head_ptr;
     end
 
     always_ff @(posedge clk) begin
