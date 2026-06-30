@@ -33,6 +33,7 @@ module tb_dispatch;
     rob_tag_t                 rob_head_tag;
 
     dispatch u_dispatch (
+        .dispatch_enable(1'b1),
         .rn_to_dp_valid (rn_to_dp_valid),
         .rn_to_dp_bus   (rn_to_dp_bus),
         .dp_ready       (dp_ready),
@@ -223,15 +224,24 @@ module tb_dispatch;
         rn_to_dp_bus.lane1.dec.inst = 32'h0000_000f;
         rn_to_dp_valid = 2'b11;
         #1;
-        assert ((dp_ready == 2'b11) && (rob_alloc_valid == 2'b11)
+        assert ((dp_ready == 2'b01) && (rob_alloc_valid == 2'b01)
                 && (iq0_enq_valid == 0) && (iq1_enq_valid == 0)
                 && (lsq_enq_valid == 0))
             else $fatal(1, "ROB-only instructions incorrectly required a queue");
         assert (rob_alloc_bus.lane0.exception_valid
-                && rob_alloc_bus.lane0.complete_on_alloc
-                && rob_alloc_bus.lane1.is_fence
-                && !rob_alloc_bus.lane1.complete_on_alloc)
-            else $fatal(1, "ROB-only completion attributes are wrong");
+                && rob_alloc_bus.lane0.complete_on_alloc)
+            else $fatal(1, "exception completion attributes are wrong");
+        // lane0 串行异常必须阻止 lane1 同拍进入；下一拍 FENCE 单独分配，
+        // 在 ROB 内标完成，真正的 LSQ 清空条件由提交控制器检查。
+        fill_uop(rn_to_dp_bus.lane0, FU_SYS, 32'h4004, 5'd0);
+        rn_to_dp_bus.lane0.dec.inst = 32'h0000_100f;
+        rn_to_dp_valid = 2'b01;
+        #1;
+        assert (rob_alloc_valid == 2'b01
+                && rob_alloc_bus.lane0.is_fence
+                && rob_alloc_bus.lane0.is_fence_i
+                && rob_alloc_bus.lane0.complete_on_alloc)
+            else $fatal(1, "FENCE allocation attributes are wrong");
         clear_rob();
 
         // 用组合 Dispatch 填满 ROB；ROB 拉低 allowin 后所有目标均停止接收。

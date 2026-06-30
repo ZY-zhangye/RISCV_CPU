@@ -54,6 +54,7 @@ module rob (
         logic                       is_store;
         logic                       is_csr;
         logic                       is_fence;
+        logic                       is_fence_i;
         logic                       is_mret;
         logic                       exception_valid;
         logic [`EXC_CODE_WIDTH-1:0] exc_code;
@@ -99,6 +100,7 @@ module rob (
             slot.is_store        = entry.is_store;
             slot.is_csr          = entry.is_csr;
             slot.is_fence        = entry.is_fence;
+            slot.is_fence_i      = entry.is_fence_i;
             slot.is_mret         = entry.is_mret;
             slot.exception_valid = entry.exception_valid;
             slot.exc_code        = entry.exc_code;
@@ -231,6 +233,7 @@ module rob (
                     is_store:          alloc_bus.lane0.is_store,
                     is_csr:            alloc_bus.lane0.is_csr,
                     is_fence:          alloc_bus.lane0.is_fence,
+                    is_fence_i:        alloc_bus.lane0.is_fence_i,
                     is_mret:           alloc_bus.lane0.is_mret,
                     exception_valid:   alloc_bus.lane0.exception_valid,
                     exc_code:          alloc_bus.lane0.exc_code,
@@ -254,6 +257,7 @@ module rob (
                     is_store:          alloc_bus.lane1.is_store,
                     is_csr:            alloc_bus.lane1.is_csr,
                     is_fence:          alloc_bus.lane1.is_fence,
+                    is_fence_i:        alloc_bus.lane1.is_fence_i,
                     is_mret:           alloc_bus.lane1.is_mret,
                     exception_valid:   alloc_bus.lane1.exception_valid,
                     exc_code:          alloc_bus.lane1.exc_code,

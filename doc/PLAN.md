@@ -19,6 +19,9 @@
 - [x] 最小机器态 CSR、时序读、精确 trap/mret 状态转移；
 - [x] WB0/WB1 round-robin 仲裁与 CSR 单项提交缓存；
 - [x] exception/interrupt/redirect/mret 提交边界统一 recovery；
+- [x] `backend_top.sv` 完整后端串联、串行指令门控与 FENCE.I 通知；
+- [x] BRU 全分支 predictor update 与 WB1 单次接收训练；
+- [x] 数据通路和控制通路两项端到端集成测试；
 - [x] 现有 Rename 状态和流水级回归。
 
 当前边界与剩余工作：
@@ -28,7 +31,7 @@
 - [x] ALU、MLU、BRU、LSU、CSR 独立执行单元；
 - [x] WB0（ALU0/MLU）与 WB1（ALU1/BRU/LSU/CSR）写回仲裁；
 - [x] CSR 精确提交缓存及提交时状态更新；
-- [ ] Rename→Dispatch→ROB/IQ/LSQ 完整后端集成。
+- [x] Rename→Dispatch→ROB/IQ/LSQ 完整后端集成。
 
 ## 总体结构
 
@@ -68,8 +71,8 @@
   - 分支误预测及重定向目标。
 - 不保存 ALU/MEM 操作、立即数、源寄存器或其他执行译码信息。
 - [x] lane1 不得越过 lane0 提交；lane0 单独完成时允许单提交。
-- [ ] 分支误预测到达 ROB 头时，由未来提交控制器根据 `commit_bus` 产生统一 recovery。
-- [ ] 外部中断由未来提交控制器在提交边界全局采样，不复制进每个 ROB 条目。
+- [x] 分支误预测到达 ROB 头时，由提交控制器根据 `commit_bus` 产生统一 recovery。
+- [x] 外部中断由提交控制器在提交边界全局采样，不复制进每个 ROB 条目。
 - [x] ROB 提交生成 `commit_map_bundle_t`，可直接接入现有 RRAT 和 Free List。
 
 ## IQ、发射与 PRF
@@ -104,11 +107,13 @@
   - [x] LSU 从 issue 到同步 DMEM 结果进入第 4 个流水周期；
   - [x] CSR 时序读、只读/未实现访问异常、trap/mret 和三类机器中断；
   - [x] WB0/WB1 冲突、异常禁止 PRF 写入、CSR tag 匹配提交和中断恢复目标；
-  - [ ] Rename→Dispatch→ROB/IQ→PRF 集成测试。
+  - [x] Rename→Dispatch→ROB/IQ→PRF 集成测试；
+  - [x] 长延迟 DIV、年轻 ALU 越序完成及 LSQ forwarding/排空；
+  - [x] 正确/错误预测训练、连续 CSR、FENCE.I、非法 CSR 和 MRET。
 
 ## 下一阶段边界
 
-- 串联 Rename→Dispatch→ROB/IQ/LSQ→Execute→Writeback，补完整后端压力与 recovery 测试。
-- 将 `writeback_commit_stage` 的 `commit_ready/recover` 与 ROB、LSQ、RAT/RRAT、Free List 完整接线。
+- 将 `backend_top.sv` 接入 IF/ID 与 cache/SoC 顶层，并以 `recover_o/branch_update_o/fence_i_commit_o` 对接前端。
+- 增加随机 RV32I/M/Zicsr 指令流、提交差分模型及长时间 recovery 压力测试。
 - 根据 SoC 地址图确定 `MTVEC_RESET`、中断源和 `interrupt_pc` 空 ROB 边界输入。
 - MMIO/强序访问识别、多 Store 字节合并和未知 Store 推测 replay 暂不实现。

@@ -11,6 +11,7 @@ module commit_controller (
     input  wire core_port_pkg::rob_commit_bundle_t commit_bus,
     input  logic [1:0]                             store_commit_ready,
     input  logic [1:0]                             csr_commit_ready,
+    input  logic                                   fence_commit_ready,
 
     input  logic                                   rob_empty,
     input  logic [`ADDR_WIDTH-1:0]                 interrupt_pc,
@@ -40,6 +41,9 @@ module commit_controller (
             if (commit_bus.lane0.is_csr)
                 lane0_resource_ready = lane0_resource_ready
                                      && csr_commit_ready[0];
+            if (commit_bus.lane0.is_fence)
+                lane0_resource_ready = lane0_resource_ready
+                                     && fence_commit_ready;
         end
 
         lane1_resource_ready = 1'b1;
@@ -49,6 +53,9 @@ module commit_controller (
             if (commit_bus.lane1.is_csr)
                 lane1_resource_ready = lane1_resource_ready
                                      && csr_commit_ready[1];
+            if (commit_bus.lane1.is_fence)
+                lane1_resource_ready = lane1_resource_ready
+                                     && fence_commit_ready;
         end
 
         lane0_recovery = commit_bus.lane0.valid

@@ -77,6 +77,12 @@ module bru_unit (
                 result_reg.data            <= in_bus.issue.uop.dec.pc + 32'd4;
                 result_reg.redirect_valid  <= redirect_needed;
                 result_reg.redirect_target <= actual_next_pc;
+                result_reg.branch_valid    <= 1'b1;
+                result_reg.branch_pc       <= in_bus.issue.uop.dec.pc;
+                result_reg.branch_taken    <= actual_taken;
+                result_reg.branch_target   <= branch_target;
+                result_reg.branch_is_jalr  <= (in_bus.issue.uop.dec.branch_op == BR_JUMP)
+                                           && in_bus.issue.uop.dec.use_rs1;
             end
         end
     end

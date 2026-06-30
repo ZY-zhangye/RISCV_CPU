@@ -42,6 +42,7 @@ module writeback_commit_stage #(
     input  wire core_port_pkg::rob_commit_bundle_t    rob_commit_bus,
     input  logic [1:0]                                rob_commit_fire,
     input  logic [1:0]                                store_commit_ready,
+    input  logic                                      fence_commit_ready,
     input  logic                                      rob_empty,
     input  logic [`ADDR_WIDTH-1:0]                    interrupt_pc,
     output logic [1:0]                                rob_commit_ready,
@@ -55,7 +56,8 @@ module writeback_commit_stage #(
     output      core_port_pkg::recover_event_t        recover,
     output      core_port_pkg::phys_reg_write_bundle_t prf_write,
     output      core_port_pkg::phys_reg_write_bundle_t wakeup_bus,
-    output      core_port_pkg::rob_complete_bundle_t   rob_complete
+    output      core_port_pkg::rob_complete_bundle_t   rob_complete,
+    output      core_port_pkg::branch_update_t          branch_update
 );
     import core_port_pkg::*;
 
@@ -84,7 +86,7 @@ module writeback_commit_stage #(
         .csr_cache_valid(csr_cache_valid),
         .csr_cache_update(csr_cache_update),
         .prf_write(prf_write), .wakeup_bus(wakeup_bus),
-        .rob_complete(rob_complete)
+        .rob_complete(rob_complete), .branch_update(branch_update)
     );
 
     csr_commit_buffer u_csr_commit_buffer (
@@ -116,6 +118,7 @@ module writeback_commit_stage #(
         .commit_bus(rob_commit_bus),
         .store_commit_ready(store_commit_ready),
         .csr_commit_ready(csr_commit_ready),
+        .fence_commit_ready(fence_commit_ready),
         .rob_empty(rob_empty), .interrupt_pc(interrupt_pc),
         .interrupt_pending(interrupt_pending),
         .interrupt_cause(interrupt_cause),

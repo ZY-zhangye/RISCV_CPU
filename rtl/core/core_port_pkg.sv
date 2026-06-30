@@ -202,6 +202,7 @@ package core_port_pkg;
         logic                       is_store;
         logic                       is_csr;
         logic                       is_fence;
+        logic                       is_fence_i;
         logic                       is_mret;
         logic                       exception_valid;
         logic [`EXC_CODE_WIDTH-1:0] exc_code;
@@ -253,6 +254,7 @@ package core_port_pkg;
         logic                       is_store;
         logic                       is_csr;
         logic                       is_fence;
+        logic                       is_fence_i;
         logic                       is_mret;
         logic                       exception_valid;
         logic [`EXC_CODE_WIDTH-1:0] exc_code;
@@ -460,7 +462,20 @@ package core_port_pkg;
         logic [`ADDR_WIDTH-1:0]     exc_tval;
         logic                       redirect_valid;
         logic [`ADDR_WIDTH-1:0]     redirect_target;
+        logic                       branch_valid;
+        logic [`ADDR_WIDTH-1:0]     branch_pc;
+        logic                       branch_taken;
+        logic [`ADDR_WIDTH-1:0]     branch_target;
+        logic                       branch_is_jalr;
     } execute_writeback_t;
+
+    typedef struct packed {
+        logic                       valid;
+        logic [`ADDR_WIDTH-1:0]     pc;
+        logic                       taken;
+        logic [`ADDR_WIDTH-1:0]     target;
+        logic                       is_jalr;
+    } branch_update_t;
 
     // CSR 修改必须在精确提交边界生效。执行级只计算新值并携带 ROB tag，
     // 后续提交侧按 tag 接收/提交；CSR 旧值通过 execute_writeback_t 写回 rd。

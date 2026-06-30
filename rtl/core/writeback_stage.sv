@@ -40,7 +40,8 @@ module writeback_stage (
 
     output      core_port_pkg::phys_reg_write_bundle_t prf_write,
     output      core_port_pkg::phys_reg_write_bundle_t wakeup_bus,
-    output      core_port_pkg::rob_complete_bundle_t   rob_complete
+    output      core_port_pkg::rob_complete_bundle_t   rob_complete,
+    output      core_port_pkg::branch_update_t         branch_update
 );
     import core_port_pkg::*;
 
@@ -150,6 +151,15 @@ module writeback_stage (
         rob_complete.lane0 = make_complete(wb0_valid, wb0_selected);
         rob_complete.lane1 = make_complete(wb1_valid, wb1_selected);
 
+        branch_update = '0;
+        if (wb1_valid && (wb1_select == 2'd1) && bru_bus.branch_valid) begin
+            branch_update.valid   = 1'b1;
+            branch_update.pc      = bru_bus.branch_pc;
+            branch_update.taken   = bru_bus.branch_taken;
+            branch_update.target  = bru_bus.branch_target;
+            branch_update.is_jalr = bru_bus.branch_is_jalr;
+        end
+
         // recovery 拍禁止任何 PRF/CSR/ROB 副作用。执行单元会在同一上升沿
         // 清除 valid，显式屏蔽可避免错误路径数据仍写入物理寄存器阵列。
         if (recover.valid) begin
@@ -163,6 +173,7 @@ module writeback_stage (
             prf_write   = '0;
             wakeup_bus  = '0;
             rob_complete = '0;
+            branch_update = '0;
         end
     end
 

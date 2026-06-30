@@ -14,6 +14,7 @@
 // 释放的旁路额度，否则可能把执行或提交路径组合传播回 Rename。
 // =============================================================================
 module dispatch (
+    input  logic                               dispatch_enable,
     // Rename 输出。
     input  logic [1:0]                         rn_to_dp_valid,
     input  wire core_port_pkg::rn_dp_bundle_t  rn_to_dp_bus,
@@ -113,11 +114,13 @@ module dispatch (
         rn_rob_slot_t rob_slot;
         logic exception_valid;
         logic is_fence;
+        logic is_fence_i;
         logic is_mret;
         begin
             exception_valid = (slot.dec.exc_code != `EXC_NONE)
                             && (slot.dec.exc_code != `EXC_MRET);
             is_fence = (slot.dec.inst[6:0] == 7'b0001111);
+            is_fence_i = is_fence && (slot.dec.inst[14:12] == 3'b001);
             is_mret  = (slot.dec.exc_code == `EXC_MRET);
 
             rob_slot = '0;
@@ -131,6 +134,7 @@ module dispatch (
                                        && slot.dec.mem_write;
             rob_slot.is_csr            = (slot.dec.fu_type == FU_CSR);
             rob_slot.is_fence          = is_fence;
+            rob_slot.is_fence_i        = is_fence_i;
             rob_slot.is_mret           = is_mret;
             rob_slot.exception_valid   = exception_valid;
             rob_slot.exc_code          = slot.dec.exc_code;
@@ -139,10 +143,19 @@ module dispatch (
             // FENCE 需要等待未来 LSQ/提交控制器确认内存序，因此不在分配时完成。
             rob_slot.complete_on_alloc = exception_valid
                                        || is_mret
+                                       || is_fence
                                        || (slot.dec.fu_type == FU_NONE)
                                        || ((slot.dec.fu_type == FU_SYS)
                                            && !is_fence);
             make_rob_slot = rob_slot;
+        end
+    endfunction
+
+    function automatic logic is_serializing(input rn_dp_slot_t slot);
+        begin
+            is_serializing = (slot.dec.fu_type == FU_CSR)
+                           || (slot.dec.inst[6:0] == 7'b0001111)
+                           || (slot.dec.exc_code != `EXC_NONE);
         end
     endfunction
 
@@ -188,7 +201,7 @@ module dispatch (
         // lane0 先决定路由和资源。ROB 至少保留两个空项才允许任何接收。
         target0 = choose_target(rn_to_dp_bus.lane0, iq0_used, iq1_used);
         lane0_resource_ready = target_ready(target0, iq0_used, iq1_used, lsq_used);
-        dp_ready[0] = rob_allowin && lane0_resource_ready;
+        dp_ready[0] = dispatch_enable && rob_allowin && lane0_resource_ready;
         accept0     = rn_to_dp_valid[0] && dp_ready[0];
 
         if (accept0) begin
@@ -204,7 +217,8 @@ module dispatch (
         // 才能 ready，严格保持程序序前缀。
         target1 = choose_target(rn_to_dp_bus.lane1, iq0_used, iq1_used);
         lane1_resource_ready = target_ready(target1, iq0_used, iq1_used, lsq_used);
-        dp_ready[1] = accept0 && rob_allowin && lane1_resource_ready;
+        dp_ready[1] = accept0 && rob_allowin && lane1_resource_ready
+                    && !is_serializing(rn_to_dp_bus.lane0);
         accept1     = rn_to_dp_valid[1] && dp_ready[1];
 
         rob_alloc_valid[0] = accept0;

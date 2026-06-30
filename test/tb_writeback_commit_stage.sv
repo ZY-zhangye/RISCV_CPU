@@ -21,6 +21,7 @@ module tb_writeback_commit_stage;
     recover_event_t recover;
     phys_reg_write_bundle_t prf_write, wakeup_bus;
     rob_complete_bundle_t rob_complete;
+    branch_update_t branch_update;
     integer next_tag;
 
     writeback_commit_stage dut (
@@ -36,12 +37,14 @@ module tb_writeback_commit_stage;
         .csr_read_response(csr_read_response),
         .csr_commit_available(csr_commit_available),
         .rob_commit_bus(rob_commit_bus), .rob_commit_fire(rob_commit_fire),
-        .store_commit_ready(store_commit_ready), .rob_empty(rob_empty),
+        .store_commit_ready(store_commit_ready), .fence_commit_ready(1'b1),
+        .rob_empty(rob_empty),
         .interrupt_pc(interrupt_pc), .rob_commit_ready(rob_commit_ready),
         .irq_software_i(irq_software_i), .irq_timer_i(irq_timer_i),
         .irq_external_i(irq_external_i),
         .recover(recover), .prf_write(prf_write),
-        .wakeup_bus(wakeup_bus), .rob_complete(rob_complete)
+        .wakeup_bus(wakeup_bus), .rob_complete(rob_complete),
+        .branch_update(branch_update)
     );
 
     always #5 clk = ~clk;

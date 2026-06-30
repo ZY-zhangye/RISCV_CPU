@@ -118,6 +118,15 @@
 - `writeback_commit_stage.sv`：将 WB、CSR cache、CSR file 和 commit control 封装为完整闭环；
 - `tb_csr_file.sv`、`tb_writeback_commit_stage.sv` 已覆盖异常/中断状态、时序读、双写回冲突和精确 CSR 提交。
 
+### 11. 完整后端串联
+
+- `backend_top.sv` 已串联 Rename→Dispatch→ROB/IQ/LSQ→PRF/Operand→Execute→WB/Commit；
+- WB 广播扇出至 PRF、Busy Table、IQ、LSQ，ROB commit map 回接 RRAT/Free List；
+- CSR、FENCE/FENCE.I、MRET、异常采用单项串行门控，解决年轻 CSR 抢占提交缓存问题；
+- FENCE 分配即完成、提交等待 LSQ 清空，FENCE.I 额外输出单拍 `fence_i_commit_o`；
+- BRU 对所有分支产生真实结果，WB1 接收时输出一次 `branch_update_o`；
+- `tb_backend_datapath.sv` 和 `tb_backend_control.sv` 已覆盖长 DIV 越序完成、Store forwarding、分支训练、FENCE.I、连续 CSR、trap 与 MRET。
+
 ## 当前关键接口
 
 ### IF -> ID
@@ -148,6 +157,10 @@ core_port_pkg::ds_rn_bundle_t ds_to_rn_bus
 - `EXC_WIDTH = 39`
 
 ID→Rename 已使用 typed port，修改 `ds_rn_slot_t` 后 package 会自动派生宽度，不再同步维护 `defines.svh` 宏。
+
+### Backend 顶层
+
+`backend_top.sv` 输入 typed `ds_rn_bundle_t`、DMEM response、三类中断、空 ROB 下一架构 PC 与 vendor-neutral 乘除法 IP 返回；输出 `rn_allowin`、DMEM/IP 请求、`recover_event_t`、`branch_update_t`、FENCE.I pulse，以及提交追踪接口。`interrupt_pc_i` 仅在 ROB 为空时使用。
 
 ## 验证状态
 
@@ -183,6 +196,8 @@ F:\questasim64_2024.1\win64
 - LSU issue→PRF→AGU→外部请求寄存→同步 DMEM 第四周期返回。
 - CSR 时序读、非法访问、trap/mret、机器中断同步与标准优先级。
 - WB0/WB1 round-robin、异常禁止 PRF 写入、CSR tag 匹配提交和统一 recovery。
+- 完整后端 RAW/WAW、长 DIV 阻塞顺序提交但允许年轻 ALU 越序完成、Store forwarding 与提交排空。
+- 正确/错误预测分支训练、FENCE.I 等待 LSQ 清空、连续 CSR 串行、非法 CSR trap 与 MRET。
 
 最终结果：`0 Errors, 0 Warnings`，行为测试输出 `PASS`。
 
@@ -193,16 +208,15 @@ F:\questasim64_2024.1\win64
 3. 软件中的真实 NOP 与 IF 填充 NOP 当前都会被 ID 标记为无效槽。若将来要求 `instret` 精确统计软件 NOP，需要增加显式 lane-valid，而不能只依赖 NOP 编码。
 4. `ds_rn_slot_t` 已支持 RV32I/M、Zicsr 和基本 SYSTEM 分类；F、Zb 尚未实现。
 5. `physical_regfile.sv` 已实现同步 4R2W 和 p0 恒零；PRF 内部不做前递，无效读请求保持上次值，`operand_read_stage.sv` 选择广播值或 PRF 读值。
-6. 当前目录未形成完整 SoC；Rename、PRF、ROB、Dispatch、IQ、LSQ、执行、WB0/WB1 和机器态 CSR/提交控制已完成，但全后端顶层接线尚未实现。
+6. 完整后端顶层已实现，但尚未与 IF/ID、cache 和 SoC 地址/中断系统连接。
 7. LSQ 当前对地址未知老 Store 采取保守阻塞；部分覆盖不合并，MMIO/强序访问分类和违例 replay 尚未实现。
 8. MLU 当前采用单在途策略；乘法 `MUL_LATENCY` 必须与 Vivado IP 配置一致，Divider 建议配置为 33-bit signed 并分别接出 quotient/remainder。
 9. CSR 仅实现 M-mode 最小集合，不实现特权等级切换、delegation、PMP 和 S/U CSR；`MTVEC_RESET`、`MHARTID` 与空 ROB 时的 `interrupt_pc` 由 SoC 顶层确定。
 
 ## 推荐后续实现顺序
 
-1. 串联 Rename→Dispatch→ROB/IQ/LSQ→Execute→Writeback/Commit 完整后端。
-2. 将写回连接 PRF、Busy Table 与 ROB complete，将 commit_ready/recover 连接 LSQ 和 Rename 状态恢复。
-3. 确认 SoC 的 trap vector、CLINT/外部中断引脚及空 ROB 下一 PC。
-4. 补齐双发射、写回拥塞、异常/中断和连续 recovery 压力测试。
+1. 将 `backend_top.sv` 接入 IF/ID 和 cache/SoC 顶层。
+2. 确认 SoC 的 trap vector、CLINT/外部中断引脚及空 ROB 下一 PC。
+3. 增加随机差分、写回拥塞、异常/中断和连续 recovery 压力测试。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。
