@@ -300,6 +300,9 @@ module lsq #(
 
     // 构造 AGU 发出包：包含 src1 bypass 数据和 store 数据读取请求
     // Store 指令若 src2（数据）还没就绪，设置 read_store_data 标志通知 AGU 读 PRF
+    function automatic lsq_agu_issue_t make_agu_packet(
+        input lsq_entry_t entry
+    );
         lsq_agu_issue_t packet;
         logic src2_now_ready;
         begin
@@ -678,6 +681,7 @@ module lsq #(
     //   这是 store 条目生命周期中最长的一段。
     // ══════════════════════════════════════════════════════════════════════════
     always_comb begin
+        remove_count = '0;
         if (memory_request_reg_valid && mem_request_ready
             && memory_request_reg.is_store)
             remove_count = remove_count + 1'b1;

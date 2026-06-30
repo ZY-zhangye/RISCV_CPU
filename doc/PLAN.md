@@ -1,6 +1,6 @@
-# ROB、组合 Dispatch、双分区 IQ 与 PRF 实施计划
+# 乱序双发射后端实施计划
 
-更新时间：2026-06-29
+更新时间：2026-06-30
 
 ## 当前状态
 
@@ -13,13 +13,21 @@
 - [x] ROB 与 Dispatch 联合原子准入测试；
 - [x] 两个 8 项静态分区 IQ 及广播当拍唤醒/选择；
 - [x] 8 项乱序 LSQ、Store forwarding 和 issue1 年龄仲裁；
+- [x] 双通道同步 PRF 操作数选择与广播旁路；
+- [x] ALU0/ALU1、MLU、BRU、LSU-AGU 和 CSR 执行簇；
+- [x] LSU 外部请求寄存级与第四周期 DMEM 返回验证；
+- [x] 最小机器态 CSR、时序读、精确 trap/mret 状态转移；
+- [x] WB0/WB1 round-robin 仲裁与 CSR 单项提交缓存；
+- [x] exception/interrupt/redirect/mret 提交边界统一 recovery；
 - [x] 现有 Rename 状态和流水级回归。
 
 当前边界与剩余工作：
 
 - [x] 写回广播当拍唤醒/选择及旁路数据锁存；
-- [ ] PRF 读数据与广播数据的操作数选择级；
-- [ ] ALU、MLU、BRU、LSU、CSR 执行与两组写回仲裁；
+- [x] PRF 读数据与广播数据的操作数选择级；
+- [x] ALU、MLU、BRU、LSU、CSR 独立执行单元；
+- [x] WB0（ALU0/MLU）与 WB1（ALU1/BRU/LSU/CSR）写回仲裁；
+- [x] CSR 精确提交缓存及提交时状态更新；
 - [ ] Rename→Dispatch→ROB/IQ/LSQ 完整后端集成。
 
 ## 总体结构
@@ -77,14 +85,14 @@
   - PRF 内部不实现写回到读口的直接旁路；
   - p0 恒为零且禁止写入。
 - [x] IQ 在写回广播当拍完成唤醒和选择，同时把广播命中位及数据随 issue 元数据锁存。
-- [ ] 下一拍操作数选择级在锁存的广播值与 PRF 同步读值之间选择，再送执行单元。
-- [ ] 执行单元阻塞只影响对应 operand-read/issue 缓冲，不直接影响 IQ 满信号或 Rename。
-- [ ] WB0 服务 ALU0/MLU，WB1 服务 ALU1/BRU/LSU；组内执行结果通过 `valid/ready` 仲裁。
+- [x] 下一拍操作数选择级在锁存的广播值与 PRF 同步读值之间选择，再送执行单元。
+- [x] 执行单元阻塞只影响对应 operand-read/issue 缓冲，不直接影响 IQ 满信号或 Rename。
+- [x] WB0 服务 ALU0/MLU，WB1 服务 ALU1/BRU/LSU/CSR；组内执行结果通过 round-robin `valid/ready` 仲裁。
 
 ## 数据包与验证
 
 - [x] 公共包已增加 `FU_MLU`、RV32M 操作枚举、ROB tag 和 ROB/IQ/LSQ 入队包。
-- [x] 已补齐 RV32M 的 MUL/DIV/REM 译码；MLU 执行器尚未实现。
+- [x] RV32M MUL/DIV/REM 译码和 MLU IP 适配器已实现；乘法固定延迟由 `MUL_LATENCY` 与 Vivado IP 配置对齐，除法使用双输入类 AXI 握手。
 - 验证：
   - [x] Dispatch 双路原子准入、同 bank 双写、ALU 分流和满 ROB 反压；
   - [x] Dispatch 不连接执行 `ready`、issue 或写回信号；
@@ -92,10 +100,15 @@
   - [x] IQ 最老就绪选择、双广播唤醒、阻塞保持、功能单元可用性和 recovery；
   - [x] LSQ 地址/数据解耦、未知 Store 阻塞、完整覆盖转发、提交后 Store 排空和 recovery；
   - [x] PRF 同步四读双写、p0 恒零及无内部前递语义；
+  - [x] ALU/BRU/CSR 结果、MLU 固定延迟与独立除法握手、除零/溢出及 recovery 安全排空；
+  - [x] LSU 从 issue 到同步 DMEM 结果进入第 4 个流水周期；
+  - [x] CSR 时序读、只读/未实现访问异常、trap/mret 和三类机器中断；
+  - [x] WB0/WB1 冲突、异常禁止 PRF 写入、CSR tag 匹配提交和中断恢复目标；
   - [ ] Rename→Dispatch→ROB/IQ→PRF 集成测试。
 
 ## 下一阶段边界
 
-- 连接 IQ 输出的物理源地址、ROB tag 和广播旁路元数据到操作数选择级。
-- 实现 LSU 地址生成接口、两组执行单元和最终写回仲裁。
+- 串联 Rename→Dispatch→ROB/IQ/LSQ→Execute→Writeback，补完整后端压力与 recovery 测试。
+- 将 `writeback_commit_stage` 的 `commit_ready/recover` 与 ROB、LSQ、RAT/RRAT、Free List 完整接线。
+- 根据 SoC 地址图确定 `MTVEC_RESET`、中断源和 `interrupt_pc` 空 ROB 边界输入。
 - MMIO/强序访问识别、多 Store 字节合并和未知 Store 推测 replay 暂不实现。

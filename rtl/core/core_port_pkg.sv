@@ -431,6 +431,71 @@ package core_port_pkg;
         logic [XLEN-1:0] src2_bypass_data;
     } issue1_slot_t;
 
+    // -------------------------------------------------------------------------
+    // Operand Read -> Execute
+    //
+    // 两条发射通道在进入操作数级后统一使用 issue1_slot_t 的超集格式：
+    // issue0 将 from_lsq/read_store_data/lsq_tag 清零，issue1 保留仲裁结果。
+    // rs*_value 是最终物理源值（广播旁路优先于 PRF 同步读值）；operand*
+    // 已应用 PC/立即数选择，供 ALU/MLU 直接使用。BRU、LSU 和 CSR 仍可读取
+    // 原始 rs1/rs2 值，以实现 JALR、Store data 和 CSR source 语义。
+    // -------------------------------------------------------------------------
+    typedef struct packed {
+        issue1_slot_t     issue;
+        logic [XLEN-1:0] rs1_value;
+        logic [XLEN-1:0] rs2_value;
+        logic [XLEN-1:0] operand1;
+        logic [XLEN-1:0] operand2;
+    } execute_operand_t;
+
+    // 通用执行完成包。ALU/MLU/BRU/CSR 均输出该格式，后续 WB0/WB1
+    // 仲裁器据此同时生成 PRF 写入、Busy Table 广播和 ROB complete。
+    typedef struct packed {
+        rob_tag_t                   rob_tag;
+        logic                       pdst_valid;
+        phys_reg_idx_t              pdst;
+        logic [XLEN-1:0]            data;
+        logic                       exception_valid;
+        logic [`EXC_CODE_WIDTH-1:0] exc_code;
+        logic [`ADDR_WIDTH-1:0]     exc_tval;
+        logic                       redirect_valid;
+        logic [`ADDR_WIDTH-1:0]     redirect_target;
+    } execute_writeback_t;
+
+    // CSR 修改必须在精确提交边界生效。执行级只计算新值并携带 ROB tag，
+    // 后续提交侧按 tag 接收/提交；CSR 旧值通过 execute_writeback_t 写回 rd。
+    typedef struct packed {
+        logic                       valid;
+        rob_tag_t                   rob_tag;
+        logic [11:0]                addr;
+        logic                       write_enable;
+        logic [XLEN-1:0]            write_data;
+    } csr_execute_update_t;
+
+    // CSR 文件采用时序读。implemented/writable 随数据一拍返回，用于将
+    // 未实现 CSR 或写只读 CSR 精确转换为 illegal-instruction 异常。
+    typedef struct packed {
+        logic            valid;
+        logic [11:0]     addr;
+    } csr_read_request_t;
+
+    typedef struct packed {
+        logic            valid;
+        logic [XLEN-1:0] data;
+        logic            implemented;
+        logic            writable;
+    } csr_read_response_t;
+
+    // 提交控制器在精确边界产生 trap_event。cause 使用规范中的低位 cause
+    // 编号；is_interrupt 单独成为 mcause[31]，避免沿用前端异常包的内部标志位。
+    typedef struct packed {
+        logic                       valid;
+        logic                       is_interrupt;
+        logic [4:0]                 cause;
+        logic [`ADDR_WIDTH-1:0]     pc;
+        logic [`ADDR_WIDTH-1:0]     tval;
+    } trap_event_t;
+
     typedef struct packed {
         logic                       valid;
         lsq_tag_t                   lsq_tag;

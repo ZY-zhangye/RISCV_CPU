@@ -1,6 +1,6 @@
 # Codex 工作区交接
 
-更新时间：2026-06-29
+更新时间：2026-06-30
 工程目录：`F:\RISCV_CPU`
 
 ## 新对话首先读取
@@ -96,6 +96,28 @@
 - `issue1_arbiter.sv` 按 ROB 环形年龄在 IQ1 与 LSQ 候选中选择最老项；
 - `test/tb_lsq.sv` 已覆盖数据解耦、未知地址阻塞、非冲突 Load、转发、部分覆盖、未对齐异常和恢复。
 
+### 9. 操作数选择与执行簇
+
+- `operand_read_stage.sv`：将 issue 元数据与同步 PRF 返回对齐，广播旁路优先，支持下游反压保持；
+- `execute_stage.sv`：issue0 路由 ALU0/MLU，issue1 路由 ALU1/BRU/CSR/LSU-AGU，保留独立结果端口等待写回仲裁；
+- `alu_unit.sv`、`bru_unit.sv`：单周期组合计算加一项弹性结果寄存器；BRU 只上报真实重定向，统一 recovery 仍由 ROB 头产生；
+- `csr_unit.sv`：返回 CSR 旧值并生成带 ROB tag 的延迟更新包，不在乱序执行时直接修改 CSR；
+- `mlu_unit.sv`：33×33 signed Vivado Multiplier 固定延迟适配，Divider Generator 双输入/结果 ready-valid 适配，并覆盖 RISC-V 除零和 overflow；
+- MLU recovery 会安全排空已经部分握手的 Divider 事务，旧结果不会误配给恢复后的新指令；
+- `lsu_unit.sv` 只做组合 AGU，LSQ 的 `memory_request_reg` 在 DMEM 外打一拍；`tb_lsu_four_cycle.sv` 已验证结果进入第 4 个流水周期；
+- `tb_execute_stage.sv` 覆盖旁路优先、ALU、BRU、CSR、LSU、乘法固定延迟、除法独立握手和 recovery 排空。
+
+### 10. CSR、双写回与精确提交
+
+- `csr_file.sv`：最小机器态 CSR，CSR 指令一拍时序读，标准 trap/mret 的 MIE/MPIE、mepc、mcause、mtval 更新；
+- 机器软件/定时器/外部中断经过两级同步，优先级 external > software > timer，`mtvec` 支持 Direct/Vectored；
+- `csr_unit.sv` 将未实现 CSR 或真实写只读 CSR转换为精确 illegal-instruction；
+- `writeback_stage.sv`：WB0(ALU0/MLU) 与 WB1(ALU1/BRU/LSQ/CSR) 独立 round-robin，同时生成 PRF write、wakeup 和 ROB complete；
+- `csr_commit_buffer.sv`：单项、按 ROB tag 匹配，只在 commit_fire 时写 CSR，并阻止后一条 CSR 提前读取；
+- `commit_controller.sv`：异常、重定向、MRET 和中断只在 ROB 边界产生统一 recovery；
+- `writeback_commit_stage.sv`：将 WB、CSR cache、CSR file 和 commit control 封装为完整闭环；
+- `tb_csr_file.sv`、`tb_writeback_commit_stage.sv` 已覆盖异常/中断状态、时序读、双写回冲突和精确 CSR 提交。
+
 ## 当前关键接口
 
 ### IF -> ID
@@ -156,6 +178,11 @@ F:\questasim64_2024.1\win64
 - 组合 Dispatch 的 ALU 均衡、固定功能单元路由、部分推进和 ROB 原子写入。
 - 两个 IQ bank 的 oldest-ready 乱序选择、双广播当拍唤醒、阻塞保持和恢复。
 - LSQ 乱序地址生成、Store-to-Load forwarding、提交 Store 恢复保留和 issue1 仲裁。
+- 操作数级广播/PRF 选择、ALU/BRU/CSR 结果和执行端反压。
+- MLU 固定延迟乘法、Divider 双输入握手、除零/溢出及 recovery 安全排空。
+- LSU issue→PRF→AGU→外部请求寄存→同步 DMEM 第四周期返回。
+- CSR 时序读、非法访问、trap/mret、机器中断同步与标准优先级。
+- WB0/WB1 round-robin、异常禁止 PRF 写入、CSR tag 匹配提交和统一 recovery。
 
 最终结果：`0 Errors, 0 Warnings`，行为测试输出 `PASS`。
 
@@ -165,16 +192,17 @@ F:\questasim64_2024.1\win64
 2. JALR 当前不更新直接映射 BTB；将来可增加独立间接跳转预测结构。
 3. 软件中的真实 NOP 与 IF 填充 NOP 当前都会被 ID 标记为无效槽。若将来要求 `instret` 精确统计软件 NOP，需要增加显式 lane-valid，而不能只依赖 NOP 编码。
 4. `ds_rn_slot_t` 已支持 RV32I/M、Zicsr 和基本 SYSTEM 分类；F、Zb 尚未实现。
-5. `physical_regfile.sv` 已实现同步 4R2W 和 p0 恒零；PRF 内部不做前递，后续由 IQ 广播当拍唤醒，并在操作数选择级选择广播值或 PRF 读值。
-6. 当前目录未形成完整 SoC；Rename、物理寄存器堆、ROB、组合 Dispatch、双分区 IQ 和 LSQ 已完成，但操作数选择、执行和写回尚未实现。
+5. `physical_regfile.sv` 已实现同步 4R2W 和 p0 恒零；PRF 内部不做前递，无效读请求保持上次值，`operand_read_stage.sv` 选择广播值或 PRF 读值。
+6. 当前目录未形成完整 SoC；Rename、PRF、ROB、Dispatch、IQ、LSQ、执行、WB0/WB1 和机器态 CSR/提交控制已完成，但全后端顶层接线尚未实现。
 7. LSQ 当前对地址未知老 Store 采取保守阻塞；部分覆盖不合并，MMIO/强序访问分类和违例 replay 尚未实现。
-8. 本阶段 IQ/LSQ 实现及定向测试已纳入 `main` 分支。
+8. MLU 当前采用单在途策略；乘法 `MUL_LATENCY` 必须与 Vivado IP 配置一致，Divider 建议配置为 33-bit signed 并分别接出 quotient/remainder。
+9. CSR 仅实现 M-mode 最小集合，不实现特权等级切换、delegation、PMP 和 S/U CSR；`MTVEC_RESET`、`MHARTID` 与空 ROB 时的 `interrupt_pc` 由 SoC 顶层确定。
 
 ## 推荐后续实现顺序
 
-1. 实现 PRF/广播操作数选择级。
-2. 实现 LSU 地址生成和 ALU/MLU/BRU 执行接口。
-3. 实现两组 CDB/写回仲裁。
-4. 补齐统一 recovery/flush 信道在全核的连接和恢复测试。
+1. 串联 Rename→Dispatch→ROB/IQ/LSQ→Execute→Writeback/Commit 完整后端。
+2. 将写回连接 PRF、Busy Table 与 ROB complete，将 commit_ready/recover 连接 LSQ 和 Rename 状态恢复。
+3. 确认 SoC 的 trap vector、CLINT/外部中断引脚及空 ROB 下一 PC。
+4. 补齐双发射、写回拥塞、异常/中断和连续 recovery 压力测试。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。

@@ -61,7 +61,8 @@ module tb_physical_regfile;
                 && read_data.port3 == 32'h4444_4444)
             else $fatal(1, "four-port synchronous read failed");
 
-        // p0 写入必须被忽略，读取恒为 0；无效读端口也返回 0。
+        // p0 写入必须被忽略，读取恒为 0；无效读端口保持上次值，供下游
+        // operand elastic stage 在反压期间稳定保存同步读结果。
         writeback = '0;
         writeback.lane0.valid = 1'b1;
         writeback.lane0.preg  = '0;
@@ -70,8 +71,9 @@ module tb_physical_regfile;
         read_req.port0.valid = 1'b1;
         read_req.port0.preg  = '0;
         cycle();
-        assert ((read_data.port0 == '0) && (read_data.port1 == '0))
-            else $fatal(1, "p0 or disabled read port returned non-zero data");
+        assert ((read_data.port0 == '0)
+                && (read_data.port1 == 32'h2222_2222))
+            else $fatal(1, "p0 zero or disabled-read hold semantics failed");
 
         // 先建立 p5 的旧值。
         writeback = '0;

@@ -3,7 +3,8 @@
 // =============================================================================
 // 64 x 32-bit 物理寄存器堆
 //
-// - 四个同步读端口：读请求在本拍给出，数据在下一个上升沿更新。
+// - 四个同步读端口：读请求在本拍给出，数据在下一个上升沿更新；无效请求
+//   保持该端口上一次读值，使下游弹性操作数级反压时数据不会被清零。
 // - 两个同步写端口：对应两组写回通道。
 // - p0 永远返回 0，所有对 p0 的写入都会被忽略。
 // - 数据阵列不做复位：除 p0 外，RISC-V 不规定复位后的 GPR 内容；省去阵列
@@ -27,26 +28,22 @@ module physical_regfile #(
 
     logic [XLEN-1:0] registers [0:PHYS_REG_COUNT-1];
 
-    function automatic logic [XLEN-1:0] read_register(
-        input phys_reg_read_req_t req
-    );
-        logic [XLEN-1:0] value;
-        begin
-            value = '0;
-            if (req.valid && (req.preg != '0))
-                value = registers[req.preg];
-            read_register = value;
-        end
-    endfunction
-
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             read_data <= '0;
         end else begin
-            read_data.port0 <= read_register(read_req.port0);
-            read_data.port1 <= read_register(read_req.port1);
-            read_data.port2 <= read_register(read_req.port2);
-            read_data.port3 <= read_register(read_req.port3);
+            if (read_req.port0.valid)
+                read_data.port0 <= (read_req.port0.preg == '0)
+                                 ? '0 : registers[read_req.port0.preg];
+            if (read_req.port1.valid)
+                read_data.port1 <= (read_req.port1.preg == '0)
+                                 ? '0 : registers[read_req.port1.preg];
+            if (read_req.port2.valid)
+                read_data.port2 <= (read_req.port2.preg == '0)
+                                 ? '0 : registers[read_req.port2.preg];
+            if (read_req.port3.valid)
+                read_data.port3 <= (read_req.port3.preg == '0)
+                                 ? '0 : registers[read_req.port3.preg];
 
             if (writeback.lane0.valid && (writeback.lane0.preg != '0))
                 registers[writeback.lane0.preg] <= writeback.lane0.data;
