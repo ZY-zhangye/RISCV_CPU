@@ -16,8 +16,7 @@ module id_stage (
     output core_port_pkg::ds_rn_bundle_t ds_to_rn_bus,
 
     // 全局恢复。这里只记录 flush，不在 ID 删除年轻指令。
-    input  logic                     br_taken,
-    input  logic                     exception_flag
+    input  wire core_port_pkg::recover_event_t recover
 );
     import core_port_pkg::*;
     import id_decode_pkg::*;
@@ -49,7 +48,7 @@ module id_stage (
     assign ds_to_rn_valid = ds_valid;
     assign ds_pop         = ds_valid & rn_allowin;
     assign fs_push        = fs_to_ds_valid & ds_allowin_r;
-    assign pipe_flush     = br_taken | exception_flag;
+    assign pipe_flush     = recover.valid;
 
     // 主槽 + skid 槽构成两项弹性 buffer。ds_allowin 只由寄存器驱动，
     // Rename 的组合反压不会直接穿过 ID 传回 IF。
@@ -102,6 +101,11 @@ module id_stage (
                 main_exc_next = fs_exc_bus;
                 ds_valid_next = 1'b1;
                 main_flush_next = pipe_flush;
+            end
+
+            default: begin
+                // time 0 的未初始化组合输入保持当前状态；复位上升沿后
+                // ds_pop/fs_push 均为确定值。
             end
         endcase
 

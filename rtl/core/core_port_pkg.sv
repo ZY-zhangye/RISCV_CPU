@@ -95,11 +95,12 @@ package core_port_pkg;
     // 全核统一恢复事件
     // 分支误预测、同步异常和外部中断共享该信道。
     // -------------------------------------------------------------------------
-    typedef enum logic [1:0] {
-        RECOVER_NONE      = 2'd0,
-        RECOVER_BRANCH    = 2'd1,
-        RECOVER_EXCEPTION = 2'd2,
-        RECOVER_INTERRUPT = 2'd3
+    typedef enum logic [2:0] {
+        RECOVER_NONE      = 3'd0,
+        RECOVER_BRANCH    = 3'd1,
+        RECOVER_EXCEPTION = 3'd2,
+        RECOVER_INTERRUPT = 3'd3,
+        RECOVER_FENCE_I   = 3'd4
     } recover_reason_e;
 
     typedef struct packed {
@@ -231,6 +232,8 @@ package core_port_pkg;
         logic [`ADDR_WIDTH-1:0]     exc_tval;
         logic                       redirect_valid;
         logic [`ADDR_WIDTH-1:0]     redirect_target;
+        logic                       next_pc_valid;
+        logic [`ADDR_WIDTH-1:0]     next_pc;
     } rob_complete_slot_t;
 
     typedef struct packed {
@@ -261,6 +264,8 @@ package core_port_pkg;
         logic [`ADDR_WIDTH-1:0]     exc_tval;
         logic                       redirect_valid;
         logic [`ADDR_WIDTH-1:0]     redirect_target;
+        logic                       next_pc_valid;
+        logic [`ADDR_WIDTH-1:0]     next_pc;
     } rob_commit_slot_t;
 
     typedef struct packed {

@@ -6,6 +6,7 @@
 module backend_top #(
     parameter int          RENAME_FIFO_DEPTH = 4,
     parameter int          MUL_LATENCY       = 3,
+    parameter logic [31:0] RESET_PC          = `PC_START,
     parameter logic [31:0] MTVEC_RESET        = 32'h0000_0000,
     parameter logic [31:0] MHARTID            = 32'h0000_0000
 ) (
@@ -24,7 +25,6 @@ module backend_top #(
     input  logic                                      irq_software_i,
     input  logic                                      irq_timer_i,
     input  logic                                      irq_external_i,
-    input  logic [`ADDR_WIDTH-1:0]                    interrupt_pc_i,
 
     output logic                                      mul_request_valid,
     output logic signed [32:0]                        mul_operand_a,
@@ -108,6 +108,7 @@ module backend_top #(
     lsq_writeback_t lsq_wb;
     logic [$clog2(LSQ_DEPTH+1)-1:0] lsq_occupancy;
     logic fence_commit_ready;
+    logic [`ADDR_WIDTH-1:0] retire_next_pc;
 
     function automatic logic serial_slot(input rn_rob_slot_t slot);
         serial_slot = slot.is_csr || slot.is_fence || slot.is_mret
@@ -156,6 +157,23 @@ module backend_top #(
                         || rob_commit_bus.lane1.exception_valid)))
                 serializing_pending <= 1'b0;
         end
+    end
+
+    // 已提交边界的下一架构 PC。空 ROB 中断使用该值写 mepc，避免把
+    // 推测取指 PC 或前端缓冲中的年轻 PC 当成精确中断返回地址。
+    always_ff @(posedge clk) begin
+        if (!rst_n)
+            retire_next_pc <= RESET_PC;
+        else if (recover_o.valid)
+            retire_next_pc <= recover_o.target;
+        else if (rob_commit_fire[1])
+            retire_next_pc <= rob_commit_bus.lane1.next_pc_valid
+                            ? rob_commit_bus.lane1.next_pc
+                            : (rob_commit_bus.lane1.pc + 32'd4);
+        else if (rob_commit_fire[0])
+            retire_next_pc <= rob_commit_bus.lane0.next_pc_valid
+                            ? rob_commit_bus.lane0.next_pc
+                            : (rob_commit_bus.lane0.pc + 32'd4);
     end
 
     rename_stage #(.RENAME_FIFO_DEPTH(RENAME_FIFO_DEPTH)) u_rename (
@@ -278,7 +296,7 @@ module backend_top #(
         .csr_commit_available(csr_commit_available), .rob_commit_bus(rob_commit_bus),
         .rob_commit_fire(rob_commit_fire), .store_commit_ready(store_commit_ready),
         .fence_commit_ready(fence_commit_ready), .rob_empty(rob_empty),
-        .interrupt_pc(interrupt_pc_i), .rob_commit_ready(rob_commit_ready),
+        .interrupt_pc(retire_next_pc), .rob_commit_ready(rob_commit_ready),
         .irq_software_i(irq_software_i), .irq_timer_i(irq_timer_i),
         .irq_external_i(irq_external_i), .recover(recover_o),
         .prf_write(prf_write), .wakeup_bus(wakeup_bus),

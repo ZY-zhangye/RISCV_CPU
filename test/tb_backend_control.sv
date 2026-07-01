@@ -31,7 +31,7 @@ module tb_backend_control;
         .mem_request_valid(mem_valid), .mem_request(mem_req),
         .mem_request_ready(mem_ready), .mem_response(mem_rsp),
         .irq_software_i(1'b0), .irq_timer_i(1'b0), .irq_external_i(1'b0),
-        .interrupt_pc_i(32'h8000_0000), .mul_request_valid(mul_valid),
+        .mul_request_valid(mul_valid),
         .mul_operand_a(mul_a), .mul_operand_b(mul_b), .mul_product(mul_product),
         .div_dividend_valid(), .div_dividend_ready(1'b1), .div_dividend_data(),
         .div_divisor_valid(), .div_divisor_ready(1'b1), .div_divisor_data(),

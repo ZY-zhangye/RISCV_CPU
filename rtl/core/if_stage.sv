@@ -1,6 +1,8 @@
 `include "defines.svh"
 
-module if_stage (
+module if_stage #(
+    parameter logic [31:0] RESET_PC = `PC_START
+) (
     input  logic                         clk,
     input  logic                         rst_n,
     // 取指端口：一次读取连续的两条 32-bit 指令
@@ -11,21 +13,13 @@ module if_stage (
     input  logic                         ds_allowin,
     output logic                         fs_to_ds_valid,
     output logic [`FS_DS_WIDTH-1:0]      fs_to_ds_bus,
-    // 分支重定向接口
-    input  logic                         br_taken,
-    input  logic [`ADDR_WIDTH-1:0]       br_target,
-    // 分支预测器更新接口
-    input  logic                         bp_update_valid,
-    input  logic [`ADDR_WIDTH-1:0]       bp_update_pc,
-    input  logic                         bp_update_taken,
-    input  logic [`ADDR_WIDTH-1:0]       bp_update_target,
-    input  logic                         bp_update_is_jalr,
+    // 后端统一恢复与分支预测训练接口。
+    input  wire core_port_pkg::recover_event_t recover,
+    input  wire core_port_pkg::branch_update_t branch_update,
     // 取指异常包
-    output logic [`EXC_WIDTH-1:0]        fs_exc_bus,
-    // 异常重定向接口
-    input  logic                         exception_flag,
-    input  logic [`ADDR_WIDTH-1:0]       exception_addr
+    output logic [`EXC_WIDTH-1:0]        fs_exc_bus
 );
+    import core_port_pkg::*;
 
     localparam int BP_ENTRIES   = `BP_ENTRIES;
     localparam int BP_TAG_WIDTH = `BP_TAG_WIDTH;
@@ -43,8 +37,8 @@ module if_stage (
     logic                   fs_ready_go;
     logic                   fs_allowin;
 
-    logic                   br_taken_r;
-    logic [`ADDR_WIDTH-1:0] br_target_r;
+    logic                   recover_hold_valid;
+    logic [`ADDR_WIDTH-1:0] recover_hold_target;
 
     assign fs_ready_go    = 1'b1;
     assign fs_allowin     = ~fs_valid | (fs_ready_go & ds_allowin);
@@ -75,8 +69,9 @@ module if_stage (
                             (fs_pc[2] ? inst_in[63:32] : inst_in[31:0]);
     assign slot1_inst_raw  = slot1_available ? inst_in[63:32] : `NOP_INST;
 
-    // 分支纠正或异常跳转期间，当前返回的旧路径指令全部变为 NOP。
-    assign kill_fetch_packet = br_taken | br_taken_r | exception_flag;
+    // recovery 拍屏蔽沿前仍对应旧请求的数据；同一上升沿 IMEM 已采样
+    // recovery 目标，沿后返回的数据属于正确路径，不能再额外延迟一拍 kill。
+    assign kill_fetch_packet = recover.valid | recover_hold_valid;
 
     // -------------------------------------------------------------------------
     // 双端口查询的直接映射 BTB + 2-bit 饱和计数器
@@ -127,8 +122,8 @@ module if_stage (
     assign predicted_next_pc = slot0_pred_taken ? slot0_pred_target :
                                slot1_pred_taken ? slot1_pred_target :
                                seq_pc;
-    assign next_pc = exception_flag ? exception_addr :
-                     br_taken_r      ? br_target_r :
+    assign next_pc = recover.valid      ? recover.target :
+                     recover_hold_valid ? recover_hold_target :
                      predicted_next_pc;
 
     // 每个槽沿用参考实现的 {inst, pc, pred_taken, pred_target} 排列。
@@ -149,24 +144,24 @@ module if_stage (
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             fs_valid <= 1'b0;
-            fs_pc    <= `PC_START - 32'd8;
+            fs_pc    <= RESET_PC - 32'd8;
         end else if (fs_allowin) begin
             fs_valid <= 1'b1;
             fs_pc    <= next_pc;
         end
     end
 
-    // 延迟一拍保存分支纠正，使同步指令存储器返回的旧请求也被清成 NOP。
+    // 反压时保留一次性 recovery 目标，直到 IF 能在上升沿发出该请求。
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            br_taken_r  <= 1'b0;
-            br_target_r <= '0;
+            recover_hold_valid  <= 1'b0;
+            recover_hold_target <= '0;
         end else begin
-            if (br_taken) begin
-                br_taken_r  <= 1'b1;
-                br_target_r <= br_target;
+            if (recover.valid && !fs_allowin) begin
+                recover_hold_valid  <= 1'b1;
+                recover_hold_target <= recover.target;
             end else if (fs_allowin) begin
-                br_taken_r <= 1'b0;
+                recover_hold_valid <= 1'b0;
             end
         end
     end
@@ -176,8 +171,8 @@ module if_stage (
     logic [`BP_INDEX_WIDTH-1:0] update_index;
     logic [BP_TAG_WIDTH-1:0]    update_tag;
 
-    assign update_index = bp_update_pc[`BP_INDEX_WIDTH+1:2];
-    assign update_tag   = bp_update_pc[`ADDR_WIDTH-1:`BP_INDEX_WIDTH+2];
+    assign update_index = branch_update.pc[`BP_INDEX_WIDTH+1:2];
+    assign update_tag   = branch_update.pc[`ADDR_WIDTH-1:`BP_INDEX_WIDTH+2];
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
@@ -187,14 +182,14 @@ module if_stage (
                 bp_tag[i]     <= '0;
                 bp_target[i]  <= '0;
             end
-        end else if (bp_update_valid && !bp_update_is_jalr) begin
+        end else if (branch_update.valid && !branch_update.is_jalr) begin
             bp_valid[update_index]  <= 1'b1;
             bp_tag[update_index]    <= update_tag;
-            bp_target[update_index] <= bp_update_target;
+            bp_target[update_index] <= branch_update.target;
 
             if (!bp_valid[update_index] || (bp_tag[update_index] != update_tag)) begin
-                bp_counter[update_index] <= bp_update_taken ? 2'b10 : 2'b01;
-            end else if (bp_update_taken) begin
+                bp_counter[update_index] <= branch_update.taken ? 2'b10 : 2'b01;
+            end else if (branch_update.taken) begin
                 if (bp_counter[update_index] != 2'b11)
                     bp_counter[update_index] <= bp_counter[update_index] + 2'b01;
             end else begin

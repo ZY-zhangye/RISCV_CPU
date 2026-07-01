@@ -72,6 +72,9 @@ module writeback_stage (
             slot.exc_tval        = wb.exc_tval;
             slot.redirect_valid  = wb.redirect_valid;
             slot.redirect_target = wb.redirect_target;
+            slot.next_pc_valid   = wb.branch_valid;
+            slot.next_pc         = wb.branch_taken
+                                 ? wb.branch_target : (wb.branch_pc + 32'd4);
             make_complete = slot;
         end
     endfunction

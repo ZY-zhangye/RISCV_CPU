@@ -8,6 +8,8 @@
 
 本文件只记录已经确定的后续方案。写入计划后不立即实施 RTL 或测试代码，实际开发需要单独开始。
 
+当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I 整数 ALU、移位、比较、分支跳转及 byte/half/word 访存单项测试均已通过。下一门禁为 RV32M 和 CSR/SYSTEM 单项测试。
+
 ## 关键设计
 
 - 将 IF、ID 改用 typed `recover_event_t` 和 `branch_update_t`，统一分支、异常、中断与 FENCE.I 恢复。

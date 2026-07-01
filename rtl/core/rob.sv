@@ -61,6 +61,8 @@ module rob (
         logic [`ADDR_WIDTH-1:0]     exc_tval;
         logic                       redirect_valid;
         logic [`ADDR_WIDTH-1:0]     redirect_target;
+        logic                       next_pc_valid;
+        logic [`ADDR_WIDTH-1:0]     next_pc;
     } rob_entry_t;
 
     rob_entry_t entries [0:ROB_DEPTH-1];
@@ -107,6 +109,8 @@ module rob (
             slot.exc_tval        = entry.exc_tval;
             slot.redirect_valid  = entry.redirect_valid;
             slot.redirect_target = entry.redirect_target;
+            slot.next_pc_valid   = entry.next_pc_valid;
+            slot.next_pc         = entry.next_pc;
             make_commit_slot = slot;
         end
     endfunction
@@ -189,6 +193,10 @@ module rob (
                     <= complete_bus.lane0.redirect_valid;
                 entries[complete_bus.lane0.tag[ROB_INDEX_WIDTH-1:0]].redirect_target
                     <= complete_bus.lane0.redirect_target;
+                entries[complete_bus.lane0.tag[ROB_INDEX_WIDTH-1:0]].next_pc_valid
+                    <= complete_bus.lane0.next_pc_valid;
+                entries[complete_bus.lane0.tag[ROB_INDEX_WIDTH-1:0]].next_pc
+                    <= complete_bus.lane0.next_pc;
                 if (complete_bus.lane0.exception_valid) begin
                     entries[complete_bus.lane0.tag[ROB_INDEX_WIDTH-1:0]].exception_valid
                         <= 1'b1;
@@ -209,6 +217,10 @@ module rob (
                     <= complete_bus.lane1.redirect_valid;
                 entries[complete_bus.lane1.tag[ROB_INDEX_WIDTH-1:0]].redirect_target
                     <= complete_bus.lane1.redirect_target;
+                entries[complete_bus.lane1.tag[ROB_INDEX_WIDTH-1:0]].next_pc_valid
+                    <= complete_bus.lane1.next_pc_valid;
+                entries[complete_bus.lane1.tag[ROB_INDEX_WIDTH-1:0]].next_pc
+                    <= complete_bus.lane1.next_pc;
                 if (complete_bus.lane1.exception_valid) begin
                     entries[complete_bus.lane1.tag[ROB_INDEX_WIDTH-1:0]].exception_valid
                         <= 1'b1;
@@ -239,7 +251,9 @@ module rob (
                     exc_code:          alloc_bus.lane0.exc_code,
                     exc_tval:          alloc_bus.lane0.exc_tval,
                     redirect_valid:    1'b0,
-                    redirect_target:   '0
+                    redirect_target:   '0,
+                    next_pc_valid:     1'b0,
+                    next_pc:           '0
                 };
             end
 
@@ -263,7 +277,9 @@ module rob (
                     exc_code:          alloc_bus.lane1.exc_code,
                     exc_tval:          alloc_bus.lane1.exc_tval,
                     redirect_valid:    1'b0,
-                    redirect_target:   '0
+                    redirect_target:   '0,
+                    next_pc_valid:     1'b0,
+                    next_pc:           '0
                 };
             end
         end

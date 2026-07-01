@@ -72,6 +72,24 @@ module writeback_commit_stage #(
     logic [31:0] mret_target;
     logic interrupt_pending;
     logic [4:0] interrupt_cause;
+    recover_event_t controller_recover;
+    recover_event_t fence_i_recover;
+
+    always_comb begin
+        fence_i_recover = '0;
+        if (rob_commit_fire[0] && rob_commit_bus.lane0.is_fence_i) begin
+            fence_i_recover.valid  = 1'b1;
+            fence_i_recover.reason = RECOVER_FENCE_I;
+            fence_i_recover.target = rob_commit_bus.lane0.pc + 32'd4;
+        end else if (rob_commit_fire[1] && rob_commit_bus.lane1.is_fence_i) begin
+            fence_i_recover.valid  = 1'b1;
+            fence_i_recover.reason = RECOVER_FENCE_I;
+            fence_i_recover.target = rob_commit_bus.lane1.pc + 32'd4;
+        end
+    end
+
+    assign recover = controller_recover.valid
+                   ? controller_recover : fence_i_recover;
 
     writeback_stage u_writeback (
         .clk(clk), .rst_n(rst_n), .recover(recover),
@@ -124,7 +142,7 @@ module writeback_commit_stage #(
         .interrupt_cause(interrupt_cause),
         .trap_target(trap_target), .mret_target(mret_target),
         .commit_ready(rob_commit_ready),
-        .recover(recover), .trap_event(trap_event),
+        .recover(controller_recover), .trap_event(trap_event),
         .mret_valid(mret_valid)
     );
 
