@@ -1,6 +1,6 @@
 # 前后端集成与分层回归验证计划
 
-更新时间：2026-06-30
+更新时间：2026-07-01
 
 ## 总结
 
@@ -8,7 +8,7 @@
 
 本文件只记录已经确定的后续方案。写入计划后不立即实施 RTL 或测试代码，实际开发需要单独开始。
 
-当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I 整数 ALU、移位、比较、分支跳转及 byte/half/word 访存单项测试均已通过。下一门禁为 RV32M 和 CSR/SYSTEM 单项测试。
+当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I、RV32M、CSR/SYSTEM、同步异常和 FENCE/FENCE.I 的 Core 级单项门禁均已通过。同步异常覆盖非法指令、取指/Load/Store 地址不对齐及 Load access fault；当前行为内存不建模 Store access fault。下一门禁为双发射、乱序、访存、recovery 和 FENCE.I 组合场景。
 
 ## 关键设计
 
@@ -54,12 +54,14 @@
 
 ### 3. 自设组合场景
 
-- 双发射、RAW/WAW、跨 IQ 唤醒、写回冲突；
-- 长 DIV 与年轻 ALU 越序完成、顺序提交；
-- Store forwarding、Load/Store 混排、已提交 Store 排空；
-- 正确/错误预测、连续 recovery；
-- 连续 CSR、异常、中断、MRET；
-- 自修改代码验证 FENCE.I 清流水并重新取指。
+组合场景按以下顺序逐项实施；每一项必须单独通过并完成全量回归，汇报后才进入下一项：
+
+1. `[已通过，2026-07-01]` 前端双发射 + 同束 RAW + 在途 WAW + 跨 IQ 唤醒，已确认双写回、双提交和最终 RRAT→PRF 架构状态；
+2. `[已通过，2026-07-01]` 长延迟 DIV 与年轻 ALU/分支并行，已确认年轻指令越序完成、ROB 严格顺序提交及 WB0 冲突时落选结果跨拍保持；
+3. `[已通过，2026-07-01]` Load/Store 混排、Store forwarding、部分重叠禁止转发、已提交 Store 经 Core 外寄存级按序排空均已确认；
+4. `[已通过，2026-07-01]` 正确预测、错误预测和连续分支 recovery 已确认；错误路径可写回但不会提交，预测器训练/recovery 次数及恢复后 RAT/RRAT 状态正确；
+5. `[已通过，2026-07-01]` 连续 CSR、同步异常、机器外部中断和 MRET 已确认；精确 `mepc/mcause/mtval`、MIE/MPIE、恢复后 Rename 状态及跨串行边界的 Rename FIFO 写回唤醒均正确；
+6. `[待验证]` 自修改代码 + FENCE.I，检查 LSQ 排空、单拍失效通知、年轻流水清除及新指令重新取回。
 
 ### 4. 官方 HEX 回归
 

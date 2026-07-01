@@ -120,6 +120,17 @@ module rename_stage #(
     integer fifo_comb_idx;
     integer fifo_state_idx;
 
+    // 已完成重命名但因 Dispatch/串行边界滞留在 FIFO 中的 uop 也必须监听
+    // 写回。否则源寄存器可能在等待期间完成，等 uop 后续进入 IQ 时已经错过
+    // CDB 脉冲，却仍携带旧的 src_ready=0，造成永久等待。
+    function automatic logic fifo_wakeup_match(input phys_reg_idx_t preg);
+        fifo_wakeup_match = (preg != '0)
+                         && ((writeback_event.lane0.valid
+                              && (writeback_event.lane0.preg == preg))
+                             || (writeback_event.lane1.valid
+                                 && (writeback_event.lane1.preg == preg)));
+    endfunction
+
     rn_dp_slot_t renamed0;
     rn_dp_slot_t renamed1;
 
@@ -496,9 +507,16 @@ module rename_stage #(
         retained_count = fifo_count - dequeue_count;
         for (fifo_comb_idx = 0; fifo_comb_idx < RENAME_FIFO_DEPTH;
              fifo_comb_idx = fifo_comb_idx + 1) begin
-            if (fifo_comb_idx < retained_count)
+            if (fifo_comb_idx < retained_count) begin
                 renamed_fifo_next[fifo_comb_idx]
                     = renamed_fifo[fifo_comb_idx + dequeue_count];
+                if (fifo_wakeup_match(
+                    renamed_fifo[fifo_comb_idx + dequeue_count].prs1))
+                    renamed_fifo_next[fifo_comb_idx].src1_ready = 1'b1;
+                if (fifo_wakeup_match(
+                    renamed_fifo[fifo_comb_idx + dequeue_count].prs2))
+                    renamed_fifo_next[fifo_comb_idx].src2_ready = 1'b1;
+            end
         end
 
         if (rename_fire[0])

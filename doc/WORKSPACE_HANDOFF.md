@@ -139,6 +139,14 @@
 - 分支测试修正了 IF 恢复首包时序：同步 IMEM 在恢复沿后返回目标数据，不应额外延迟一拍 kill。
 - `tb_core_alu_instructions.sv` 已覆盖 SUB、逻辑、移位、比较、对应立即数形式及 LUI/AUIPC；
 - `tb_core_subword_memory.sv` 已覆盖 LB/LBU/LH/LHU 的扩展语义及 SB/SH 写掩码。
+- `tb_core_rv32m_instructions.sv` 已覆盖 MUL/MULH/MULHSU/MULHU、DIV/DIVU/REM/REMU、除零和有符号溢出，并核对乘除法 IP 请求次数。
+- `tb_core_csr_system_instructions.sv` 已覆盖六种 CSR 读改写、只读 CSR 合法读取、非法 CSR 精确异常、ECALL/EBREAK 和 MRET 恢复。
+- `tb_core_exception_fence.sv` 已覆盖非法指令、取指/Load/Store 地址不对齐、Load access fault，以及 FENCE 等待 LSQ 排空和 FENCE.I 单拍恢复；行为内存暂不建模 Store access fault。
+- `tb_core_combo_dual_issue.sv` 已覆盖前端双发射、同束 RAW、在途 WAW、跨 IQ 唤醒、双写回、双提交和最终 RRAT→PRF 状态。
+- `tb_core_combo_long_div.sv` 已覆盖长 DIV 期间年轻 ALU/分支越序完成、ROB 顺序提交，以及 WB0 冲突时落选结果跨拍保持。
+- `tb_core_combo_memory.sv` 已覆盖全覆盖 Store forwarding、部分重叠禁止转发、Load/Store 混排及已提交 Store 经 Core 外寄存级按序排空。
+- `tb_core_combo_branch_recovery.sv` 已覆盖正确/错误预测、连续分支 recovery、错误路径写回不提交、训练次数和恢复后 RAT/RRAT 一致性。
+- `tb_core_combo_trap_interrupt.sv` 已覆盖连续 CSR、同步异常、机器外部中断、MRET、精确 trap 状态及恢复后 Rename 一致性；该场景发现并修复了 Rename FIFO 滞留期间错过写回唤醒导致的死锁。
 
 ## 当前关键接口
 
@@ -215,7 +223,7 @@ F:\questasim64_2024.1\win64
 - Core 级 BEQ/BNE/BLT/BGE/BLTU/BGEU/JAL/JALR、预测更新、统一恢复和错误路径隔离。
 - Core 级其余 RV32I ALU/移位/比较/LUI/AUIPC 与 byte/halfword Load/Store。
 
-最终结果：`0 Errors, 0 Warnings`，十四项既有测试和四项 Core 单项测试共十八项输出 `PASS`。
+最终结果：`0 Errors, 0 Warnings`，十四项既有测试、七项 Core 单项测试和五项 Core 组合测试共二十六项输出 `PASS`。
 
 ## 已知约束和待确认项
 
@@ -231,8 +239,8 @@ F:\questasim64_2024.1\win64
 
 ## 推荐后续实现顺序
 
-1. 扩展 Core 单项测试，补齐 RV32M、CSR/SYSTEM、异常和 FENCE.I。
-2. 单项测试通过后执行双发射、乱序、访存、recovery 和 FENCE.I 组合场景。
+1. 执行最后一项自修改代码与 FENCE.I 组合场景；其余五项组合场景已经通过。
+2. 组合场景通过后进入官方 HEX 回归。
 3. 最后接入官方 HEX 回归，再进入 Cache/SoC 与随机差分阶段。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。
