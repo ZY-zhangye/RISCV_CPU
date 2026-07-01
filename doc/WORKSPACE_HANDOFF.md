@@ -147,6 +147,7 @@
 - `tb_core_combo_memory.sv` 已覆盖全覆盖 Store forwarding、部分重叠禁止转发、Load/Store 混排及已提交 Store 经 Core 外寄存级按序排空。
 - `tb_core_combo_branch_recovery.sv` 已覆盖正确/错误预测、连续分支 recovery、错误路径写回不提交、训练次数和恢复后 RAT/RRAT 一致性。
 - `tb_core_combo_trap_interrupt.sv` 已覆盖连续 CSR、同步异常、机器外部中断、MRET、精确 trap 状态及恢复后 Rename 一致性；该场景发现并修复了 Rename FIFO 滞留期间错过写回唤醒导致的死锁。
+- `tb_core_combo_fence_i_smc.sv` 已覆盖自修改代码：旧指令预取、Store 经 Core 外寄存级写入、FENCE.I 单拍恢复、旧流水清除和新指令重取；该场景修复了 FENCE.I 与外部 Store 写入同沿导致的旧指令采样。
 
 ## 当前关键接口
 
@@ -223,7 +224,7 @@ F:\questasim64_2024.1\win64
 - Core 级 BEQ/BNE/BLT/BGE/BLTU/BGEU/JAL/JALR、预测更新、统一恢复和错误路径隔离。
 - Core 级其余 RV32I ALU/移位/比较/LUI/AUIPC 与 byte/halfword Load/Store。
 
-最终结果：`0 Errors, 0 Warnings`，十四项既有测试、七项 Core 单项测试和五项 Core 组合测试共二十六项输出 `PASS`。
+最终结果：`0 Errors, 0 Warnings`，十四项既有测试、七项 Core 单项测试和六项 Core 组合测试共二十七项输出 `PASS`。
 
 ## 已知约束和待确认项
 
@@ -239,8 +240,10 @@ F:\questasim64_2024.1\win64
 
 ## 推荐后续实现顺序
 
-1. 执行最后一项自修改代码与 FENCE.I 组合场景；其余五项组合场景已经通过。
-2. 组合场景通过后进入官方 HEX 回归。
-3. 最后接入官方 HEX 回归，再进入 Cache/SoC 与随机差分阶段。
+1. 建立计划中的统一 PowerShell 回归入口，直接读取筛选后的 `hex/riscv-tests/index.csv`。
+2. 运行 RV32UI、RV32UM 和 `rv32mi-p-csr` 必过清单。
+3. 必过清单稳定后，再进入 Cache/SoC 与随机差分阶段；RV32F、`mcsr` 和 Zba 留待对应功能实现后启用。
+
+官方回归必须遵守 `doc/OFFICIAL_HEX_REGRESSION_PLAN.md`：首次无法形成明确根因时立即交用户查波形；排除测试问题后，同一失败的 Codex RTL 修复尝试最多三次。
 
 每完成一级，都应优先运行局部 QuestaSim 编译和定向 testbench，再扩展到完整处理器联调。

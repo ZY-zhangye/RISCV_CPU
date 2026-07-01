@@ -108,6 +108,7 @@ module backend_top #(
     lsq_writeback_t lsq_wb;
     logic [$clog2(LSQ_DEPTH+1)-1:0] lsq_occupancy;
     logic fence_commit_ready;
+    logic lsq_empty_q;
     logic [`ADDR_WIDTH-1:0] retire_next_pc;
 
     function automatic logic serial_slot(input rn_rob_slot_t slot);
@@ -117,7 +118,11 @@ module backend_top #(
 
     assign dispatch_enable = !serializing_pending;
     assign rob_empty = (rob_occupancy == '0);
-    assign fence_commit_ready = (lsq_occupancy == '0);
+    // DMEM 请求在 Core 外还要经过固定的一拍寄存级。Store 从 LSQ 握手
+    // 移除后，必须再观察一整拍 LSQ 稳定为空，才能保证该外部寄存级已经
+    // 完成内存可见更新；否则 FENCE.I 的重取可能与 Store 写入同沿发生，
+    // IMEM 仍会采到旧指令。
+    assign fence_commit_ready = (lsq_occupancy == '0) && lsq_empty_q;
     assign commit_bus_o = rob_commit_bus;
     assign commit_fire_o = rob_commit_fire;
     assign fence_i_commit_o = (rob_commit_fire[0] && rob_commit_bus.lane0.is_fence_i)
@@ -138,6 +143,13 @@ module backend_top #(
         prf_read_req.port1 = issue0_prf_req.src2;
         prf_read_req.port2 = issue1_prf_req.src1;
         prf_read_req.port3 = issue1_prf_req.src2;
+    end
+
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid)
+            lsq_empty_q <= 1'b0;
+        else
+            lsq_empty_q <= (lsq_occupancy == '0);
     end
 
     always_ff @(posedge clk) begin

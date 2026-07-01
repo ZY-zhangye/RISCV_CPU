@@ -8,7 +8,7 @@
 
 本文件只记录已经确定的后续方案。写入计划后不立即实施 RTL 或测试代码，实际开发需要单独开始。
 
-当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I、RV32M、CSR/SYSTEM、同步异常和 FENCE/FENCE.I 的 Core 级单项门禁均已通过。同步异常覆盖非法指令、取指/Load/Store 地址不对齐及 Load access fault；当前行为内存不建模 Store access fault。下一门禁为双发射、乱序、访存、recovery 和 FENCE.I 组合场景。
+当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I、RV32M、CSR/SYSTEM、同步异常、FENCE/FENCE.I 单项门禁及六项组合场景均已通过。同步异常覆盖非法指令、取指/Load/Store 地址不对齐及 Load access fault；当前行为内存不建模 Store access fault。下一门禁为官方 HEX 回归。
 
 ## 关键设计
 
@@ -61,9 +61,11 @@
 3. `[已通过，2026-07-01]` Load/Store 混排、Store forwarding、部分重叠禁止转发、已提交 Store 经 Core 外寄存级按序排空均已确认；
 4. `[已通过，2026-07-01]` 正确预测、错误预测和连续分支 recovery 已确认；错误路径可写回但不会提交，预测器训练/recovery 次数及恢复后 RAT/RRAT 状态正确；
 5. `[已通过，2026-07-01]` 连续 CSR、同步异常、机器外部中断和 MRET 已确认；精确 `mepc/mcause/mtval`、MIE/MPIE、恢复后 Rename 状态及跨串行边界的 Rename FIFO 写回唤醒均正确；
-6. `[待验证]` 自修改代码 + FENCE.I，检查 LSQ 排空、单拍失效通知、年轻流水清除及新指令重新取回。
+6. `[已通过，2026-07-01]` 自修改代码 + FENCE.I 已确认：旧指令先被预取，Store 经 Core 外寄存级可见后 FENCE.I 单拍恢复，年轻流水清除且新指令仅提交一次。
 
 ### 4. 官方 HEX 回归
+
+具体执行步骤、失败交接格式和 Codex 最多三次 RTL 修复限制见 `OFFICIAL_HEX_REGRESSION_PLAN.md`，该约束优先于一般调试流程。
 
 - 统一行为内存同时服务 IMEM/DMEM，确保 Store 修改可被后续取指观察。
 - 通过 `+HEX=<path>` 直接加载用例，不复制或改写原始 HEX。
@@ -73,8 +75,9 @@
 - 首版运行：
   - `rv32ui-p-*`，跳过 `ma_data`；
   - 全部八项 `rv32um-p-*`；
-  - RV32MI 的 `breakpoint/csr/illegal/lh-misaligned/lw-misaligned/sh-misaligned/sw-misaligned/scall/sbreak/shamt`。
-- 暂时跳过 `ma_fetch/ma_addr/mcsr/pmpaddr/zicntr/instret_overflow`，以及 S/A/C/F/D/Z 扩展，并在清单中记录原因。
+  - Zicsr 的 `rv32mi-p-csr`。
+- `rv32mi-p-mcsr`、RV32F 与 Zba 镜像为后续功能完善/ALU 扩展实验保留，当前不进入必过清单。
+- A/C/D/S-mode、虚拟地址版及其他复杂 Z 扩展镜像已从当前版本删除；删除项可从 Git 历史恢复。
 
 ## 回归基础设施
 
@@ -99,4 +102,4 @@
 
 - 不实现 Cache、MMIO、UART、Timer、PLIC 或完整 SoC。
 - 不实现取指访问错误、Store access fault 精确报告、内存违例 replay、PMP 或多特权等级。
-- 不修改或原地转换 `hex/` 下的回归镜像；两份旧设计回归说明作为验证思路和用例来源保留。
+- 不修改或原地转换当前保留的回归镜像；两份旧设计回归说明作为验证思路保留。

@@ -2,6 +2,8 @@
 
 > 基于 `riscv-cpu-refactored` 工程，整理时间 2026-06-30
 
+> 本文是旧顺序核的历史验证思路，其中 `rv32-p-riscv.hex`、旧 SoC testbench 和批处理路径已不再保留。当前乱序核必须以筛选后的 `hex/riscv-tests/index.csv` 和 `doc/PLAN.md` 为准。
+
 ---
 
 ## 1. 概述
