@@ -5,6 +5,7 @@ vsim.wlf
 *.wlf
 *.log
 *.jou
+results/
 
 # Vivado generated files
 *.cache/

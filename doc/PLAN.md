@@ -8,7 +8,7 @@
 
 本文件只记录已经确定的后续方案。写入计划后不立即实施 RTL 或测试代码，实际开发需要单独开始。
 
-当前进度（2026-07-01）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I、RV32M、CSR/SYSTEM、同步异常、FENCE/FENCE.I 单项门禁及六项组合场景均已通过。同步异常覆盖非法指令、取指/Load/Store 地址不对齐及 Load access fault；当前行为内存不建模 Store access fault。下一门禁为官方 HEX 回归。
+当前进度（2026-07-02）：IF/ID→Backend 的 `core_top.sv`、统一 recovery、FENCE.I 重取和 `retire_next_pc` 已完成；Core 外统一行为内存及 DMEM 外部寄存级已建立；RV32I、RV32M、CSR/SYSTEM、同步异常、FENCE/FENCE.I 单项门禁及六项组合场景均已通过。统一 PowerShell 回归入口和官方 HEX testbench 已建立，27 项既有回归与当前允许的 50 项官方 HEX（RV32I 41、RV32M 8、CSR 1）全部通过。同步异常覆盖非法指令、取指/Load/Store 地址不对齐及 Load access fault；当前行为内存不建模 Store access fault。
 
 ## 关键设计
 
@@ -97,6 +97,8 @@
 - FENCE.I 后不存在旧指令提交。
 - recovery 后 RAT/RRAT/Free List 一致，已提交 Store 保留并排空。
 - 空 ROB 中断的 `mepc` 等于 `retire_next_pc`。
+
+截至 2026-07-02，上述当前范围内的回归验收已经完成：全量编译 `0 Errors, 0 Warnings`，27 项既有测试和 50 项官方允许清单全部通过；`ma_data`、`mcsr`、RV32F 与 Zba 共 16 项均在汇总中保留明确的 `SKIP` 原因。
 
 ## 本阶段范围约束
 

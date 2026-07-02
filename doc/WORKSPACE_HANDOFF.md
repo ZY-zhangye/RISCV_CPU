@@ -224,7 +224,7 @@ F:\questasim64_2024.1\win64
 - Core 级 BEQ/BNE/BLT/BGE/BLTU/BGEU/JAL/JALR、预测更新、统一恢复和错误路径隔离。
 - Core 级其余 RV32I ALU/移位/比较/LUI/AUIPC 与 byte/halfword Load/Store。
 
-最终结果：`0 Errors, 0 Warnings`，十四项既有测试、七项 Core 单项测试和六项 Core 组合测试共二十七项输出 `PASS`。
+最终结果（2026-07-02）：`0 Errors, 0 Warnings`；十四项既有测试、七项 Core 单项测试和六项 Core 组合测试共二十七项输出 `PASS`。统一回归入口 `scripts/run-regression.ps1` 已建立，官方允许清单 50/50 `PASS`：RV32I 41 项、RV32M 8 项、`rv32mi-p-csr` 1 项。`ma_data`、`mcsr`、RV32F 和 Zba 共 16 项以明确原因标记为 `SKIP`。
 
 ## 已知约束和待确认项
 
@@ -240,9 +240,9 @@ F:\questasim64_2024.1\win64
 
 ## 推荐后续实现顺序
 
-1. 建立计划中的统一 PowerShell 回归入口，直接读取筛选后的 `hex/riscv-tests/index.csv`。
-2. 运行 RV32UI、RV32UM 和 `rv32mi-p-csr` 必过清单。
-3. 必过清单稳定后，再进入 Cache/SoC 与随机差分阶段；RV32F、`mcsr` 和 Zba 留待对应功能实现后启用。
+1. 当前统一 PowerShell 回归入口和官方 HEX 必过清单已经完成；后续改动可使用 `scripts/run-regression.ps1 -Mode all` 作为完整门禁。
+2. 下一阶段进入 Cache/SoC 集成或随机差分验证。
+3. RV32F、`mcsr` 和 Zba 留待对应功能实现后启用；`ma_data` 留待非对齐数据访问策略确定后启用。
 
 官方回归必须遵守 `doc/OFFICIAL_HEX_REGRESSION_PLAN.md`：首次无法形成明确根因时立即交用户查波形；排除测试问题后，同一失败的 Codex RTL 修复尝试最多三次。
 

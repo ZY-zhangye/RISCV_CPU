@@ -387,11 +387,13 @@ F:\questasim64_2024.1\win64\vsim.exe -c `
 
 操作数选择、五类执行单元、MLU IP 握手和 recovery 排空测试由 `tb_execute_stage.sv` 覆盖；`tb_lsu_four_cycle.sv` 检查四周期访存路径；`tb_csr_file.sv` 与 `tb_writeback_commit_stage.sv` 覆盖 CSR trap/mret、中断优先级、双写回仲裁和精确提交缓存。`tb_backend_datapath.sv` 与 `tb_backend_control.sv` 进一步覆盖完整后端的 RAW/WAW、长 DIV 越序完成、Store forwarding、分支训练/recovery、连续 CSR、FENCE.I、非法 CSR 和 MRET。
 
-截至 2026-07-01，包含 `core_top.sv` 和统一行为内存的全量编译为 `0 Errors, 0 Warnings`。十四项既有测试、七项 Core 单项测试和六项 Core 组合测试共二十七项全部输出 `PASS`。
+截至 2026-07-02，包含 `core_top.sv`、统一行为内存和官方 HEX testbench 的全量编译为 `0 Errors, 0 Warnings`。十四项既有测试、七项 Core 单项测试和六项 Core 组合测试共二十七项全部输出 `PASS`；当前允许的官方 HEX 清单也已达到 50/50 `PASS`，包括 41 项 RV32I、8 项 RV32M 和 `rv32mi-p-csr`。
+
+统一回归入口为 `scripts/run-regression.ps1`，兼容包装为 `run-regression.bat`。支持 `unit`、`official-smoke`、`official-i`、`official-m`、`official-csr`、`official` 和 `all`；每项日志、WLF 波形及 CSV 汇总写入 Git 忽略的 `results/`。
 
 ## 下一步
 
-自设单项指令门禁和六项组合测试已经全部完成。下一阶段按 `doc/PLAN.md` 建立统一回归入口并运行官方 RV32UI、RV32UM 与选定 RV32MI HEX 用例。
+既有 27 项门禁和当前官方允许清单均已完成。`rv32ui-p-ma_data`、`rv32mi-p-mcsr`、11 项 RV32F 和 3 项 Zba 继续按计划明确标记为 `SKIP`；下一阶段可进入 Cache/SoC 集成或随机差分验证。
 
 更详细的当前状态和新 Codex 对话接续方式见 `doc/WORKSPACE_HANDOFF.md`。
 

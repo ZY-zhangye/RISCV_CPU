@@ -35,6 +35,7 @@ module unified_memory_model #(
     integer imem_word_index;
     integer dmem_word_index;
     integer byte_idx;
+    integer init_idx;
     string hex_file;
 
     task automatic clear_words(input logic [31:0] value);
@@ -63,6 +64,10 @@ module unified_memory_model #(
     assign dmem_stage_valid_o = dmem_stage_valid;
 
     initial begin
+        // 未被 HEX 覆盖的地址保持为确定的 NOP，避免短镜像之后的预取把
+        // 未初始化 X 带入前端。镜像本身仍由 $readmemh 原样覆盖，不改写。
+        for (init_idx = 0; init_idx < WORD_COUNT; init_idx = init_idx + 1)
+            mem[init_idx] = `NOP_INST;
         if ($value$plusargs("HEX=%s", hex_file))
             $readmemh(hex_file, mem);
     end
