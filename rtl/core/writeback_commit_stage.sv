@@ -74,6 +74,8 @@ module writeback_commit_stage #(
     logic [4:0] interrupt_cause;
     recover_event_t controller_recover;
     recover_event_t fence_i_recover;
+    recover_event_t recover_next;
+    recover_event_t recover_reg;
 
     always_comb begin
         fence_i_recover = '0;
@@ -88,8 +90,19 @@ module writeback_commit_stage #(
         end
     end
 
-    assign recover = controller_recover.valid
-                   ? controller_recover : fence_i_recover;
+    always_comb begin
+        recover_next = controller_recover.valid
+                     ? controller_recover : fence_i_recover;
+    end
+
+    always_ff @(posedge clk) begin
+        if (!rst_n)
+            recover_reg <= '0;
+        else
+            recover_reg <= recover_next;
+    end
+
+    assign recover = recover_reg;
 
     writeback_stage u_writeback (
         .clk(clk), .rst_n(rst_n), .recover(recover),

@@ -72,6 +72,9 @@ module backend_top #(
     rob_complete_bundle_t rob_complete;
     logic [$clog2(ROB_DEPTH+1)-1:0] rob_occupancy;
     rob_tag_t rob_head_tag;
+    rob_tag_t rob_head_tag_iq0;
+    rob_tag_t rob_head_tag_iq1;
+    rob_tag_t rob_head_tag_lsq;
     logic rob_empty;
 
     phys_reg_write_bundle_t wakeup_bus, prf_write;
@@ -139,10 +142,24 @@ module backend_top #(
         writeback_event.lane1.preg  = wakeup_bus.lane1.preg;
 
         prf_read_req = '0;
-        prf_read_req.port0 = issue0_prf_req.src1;
-        prf_read_req.port1 = issue0_prf_req.src2;
-        prf_read_req.port2 = issue1_prf_req.src1;
-        prf_read_req.port3 = issue1_prf_req.src2;
+        if (!recover_o.valid) begin
+            prf_read_req.port0 = issue0_prf_req.src1;
+            prf_read_req.port1 = issue0_prf_req.src2;
+            prf_read_req.port2 = issue1_prf_req.src1;
+            prf_read_req.port3 = issue1_prf_req.src2;
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid) begin
+            rob_head_tag_iq0 <= '0;
+            rob_head_tag_iq1 <= '0;
+            rob_head_tag_lsq <= '0;
+        end else begin
+            rob_head_tag_iq0 <= rob_head_tag;
+            rob_head_tag_iq1 <= rob_head_tag;
+            rob_head_tag_lsq <= rob_head_tag;
+        end
     end
 
     always_ff @(posedge clk) begin
@@ -215,12 +232,14 @@ module backend_top #(
         .commit_bus(rob_commit_bus), .commit_ready(rob_commit_ready),
         .commit_fire(rob_commit_fire), .commit_map(commit_map),
         .recover(recover_o), .occupancy_o(rob_occupancy),
-        .head_tag_o(rob_head_tag)
+        .head_tag_o(rob_head_tag), .head_tag_iq0(), .head_tag_iq1()
     );
 
     issue_queue_pair u_issue_queues (
         .clk(clk), .rst_n(rst_n), .recover(recover_o),
-        .rob_head_tag(rob_head_tag), .wakeup_bus(wakeup_bus),
+        .rob_head_tag_iq0(rob_head_tag_iq0),
+        .rob_head_tag_iq1(rob_head_tag_iq1),
+        .wakeup_bus(wakeup_bus),
         .iq0_enq_valid(iq0_enq_valid), .iq0_enq_bus(iq0_enq_bus),
         .iq0_capacity(iq0_capacity), .iq1_enq_valid(iq1_enq_valid),
         .iq1_enq_bus(iq1_enq_bus), .iq1_capacity(iq1_capacity),
@@ -237,7 +256,7 @@ module backend_top #(
     lsq u_lsq (
         .clk(clk), .rst_n(rst_n), .enq_valid(lsq_enq_valid),
         .enq_bus(lsq_enq_bus), .capacity(lsq_capacity),
-        .wakeup_bus(wakeup_bus), .rob_head_tag(rob_head_tag),
+        .wakeup_bus(wakeup_bus), .rob_head_tag(rob_head_tag_lsq),
         .recover(recover_o), .lsu_available(lsu_available),
         .agu_issue_valid(lsq_issue_valid), .agu_issue_bus(lsq_issue_bus),
         .agu_issue_ready(lsq_issue_ready), .agu_issue_fire(),
@@ -251,7 +270,7 @@ module backend_top #(
     );
 
     issue1_arbiter u_issue1_arbiter (
-        .rob_head_tag(rob_head_tag), .iq_valid(iq1_issue_valid),
+        .rob_head_tag(rob_head_tag_lsq), .iq_valid(iq1_issue_valid),
         .iq_bus(iq1_issue_bus), .iq_ready(iq1_issue_ready),
         .lsq_valid(lsq_issue_valid), .lsq_bus(lsq_issue_bus),
         .lsq_ready(lsq_issue_ready), .issue_valid(issue1_valid),

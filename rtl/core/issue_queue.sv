@@ -13,12 +13,10 @@
 // 【关键机制】
 //   a. 唤醒（Wakeup）：每拍并行比较所有有效条目的源物理寄存器与 CDB 端口，
 //      匹配时置位 src1/2_ready。同拍入队的条目也能通过当拍 CDB 匹配唤醒。
-//   b. 选择（Select）：oldest-ready——从所有就绪（valid + 源就绪 + FU 可用）
-//      的条目中，选择 ROB 环形年龄最小的。
-//   c. Hold：下游阻塞时将选中条目锁存到 hold 寄存器，
-//      保持 issue 接口稳定并避免重复选择。
-//   d. 发射时捕获 bypass 数据：如果选中指令的源物理寄存器本拍被 CDB
-//      写回，直接捕获旁路数据（不等待 PRF 读）。
+//   b. 选择（Select）：调度器只读取已经寄存的 ready 位，不让 CDB 组合穿透
+//      oldest-ready 树；依赖指令在写回后一拍成为候选。
+//   c. Grant：oldest-ready winner 先进入 grant 寄存器，再驱动 issue/PRF 读口。
+//      下游阻塞时 grant 保持稳定并避免重复选择。
 //
 // 【BANK_ID 差异】
 //   BANK_ID=0：支持 ALU / MLU（例化为 IQ0）
@@ -68,20 +66,29 @@ module issue_queue #(
         logic        src2_ready;        // 源 2 结果已就绪
     } iq_entry_t;
 
+    typedef struct packed {
+        logic                   valid;
+        logic [INDEX_WIDTH-1:0] index;
+        rob_tag_t               rob_tag;
+    } sched_candidate_t;
+
     iq_entry_t entries [0:DEPTH-1];
 
     logic [COUNT_WIDTH-1:0] occupancy;
     logic                   select_valid;
     logic [INDEX_WIDTH-1:0] select_idx;
     iq_issue_slot_t         select_packet;
-    logic [ROB_PTR_WIDTH-1:0] select_age;
-    logic [ROB_PTR_WIDTH-1:0] scan_age;
     logic                   scan_src1_ready;
     logic                   scan_src2_ready;
 
-    logic                   hold_valid;
-    logic [INDEX_WIDTH-1:0] hold_idx;
-    iq_issue_slot_t         hold_packet;
+    sched_candidate_t       leaf_candidate [0:DEPTH-1];
+    sched_candidate_t       round1_candidate [0:3];
+    sched_candidate_t       round2_candidate [0:1];
+    sched_candidate_t       winner_candidate;
+
+    logic                   grant_valid;
+    logic [INDEX_WIDTH-1:0] grant_idx;
+    iq_issue_slot_t         grant_packet;
 
     logic [INDEX_WIDTH-1:0] free_idx0;
     logic [INDEX_WIDTH-1:0] free_idx1;
@@ -94,6 +101,8 @@ module issue_queue #(
     integer scan_idx;
     integer free_scan_idx;
     integer reset_idx;
+    integer leaf_idx;
+    integer round_idx;
 
     // ── 写回广播匹配 ──
     // 给定物理寄存器号是否被本拍任一写回端口写入。
@@ -132,47 +141,33 @@ module issue_queue #(
         endcase
     endfunction
 
+    function automatic logic rob_tag_older(input rob_tag_t a, input rob_tag_t b);
+        rob_tag_older = ((a - rob_head_tag) < (b - rob_head_tag));
+    endfunction
+
+    function automatic sched_candidate_t older_candidate(
+        input sched_candidate_t a,
+        input sched_candidate_t b
+    );
+        begin
+            if (!a.valid)
+                older_candidate = b;
+            else if (!b.valid)
+                older_candidate = a;
+            else
+                older_candidate = rob_tag_older(a.rob_tag, b.rob_tag) ? a : b;
+        end
+    endfunction
+
     // ── 构造 issue 发出包 ──
-    // 将条目内容打包为 iq_issue_slot_t，同时捕获本拍 CDB 写回数据。
-    // 如果选中指令的源物理寄存器本拍正在被写回，将数据直接旁路到
-    // issue 包中（不等待 PRF 同步读），实现写回旁路零延迟。
+    // 将条目内容打包为 iq_issue_slot_t。CDB 只更新寄存 ready 位，不再组合
+    // 穿透调度树；真正的数据由下一拍 PRF 同步读返回。
     function automatic iq_issue_slot_t make_issue_packet(input iq_entry_t entry);
         iq_issue_slot_t packet;
         begin
             packet = '0;
             packet.rob_tag = entry.payload.rob_tag;
             packet.uop     = entry.payload.uop;
-
-            // src1 bypass：检查两路 CDB 是否写回本指令的 prs1
-            if (entry.payload.uop.dec.use_rs1
-                && (entry.payload.uop.prs1 != '0)) begin
-                if (wakeup_bus.lane0.valid
-                    && (wakeup_bus.lane0.preg == entry.payload.uop.prs1)) begin
-                    packet.src1_bypass_valid = 1'b1;
-                    packet.src1_bypass_data  = wakeup_bus.lane0.data;
-                end
-                if (wakeup_bus.lane1.valid
-                    && (wakeup_bus.lane1.preg == entry.payload.uop.prs1)) begin
-                    packet.src1_bypass_valid = 1'b1;
-                    packet.src1_bypass_data  = wakeup_bus.lane1.data; // lane1 优先
-                end
-            end
-
-            // src2 bypass：同理
-            if (entry.payload.uop.dec.use_rs2
-                && (entry.payload.uop.prs2 != '0)) begin
-                if (wakeup_bus.lane0.valid
-                    && (wakeup_bus.lane0.preg == entry.payload.uop.prs2)) begin
-                    packet.src2_bypass_valid = 1'b1;
-                    packet.src2_bypass_data  = wakeup_bus.lane0.data;
-                end
-                if (wakeup_bus.lane1.valid
-                    && (wakeup_bus.lane1.preg == entry.payload.uop.prs2)) begin
-                    packet.src2_bypass_valid = 1'b1;
-                    packet.src2_bypass_data  = wakeup_bus.lane1.data; // lane1 优先
-                end
-            end
-
             make_issue_packet = packet;
         end
     endfunction
@@ -222,56 +217,59 @@ module issue_queue #(
     end
 
     // ══════════════════════════════════════════════════════════════════════════
-    // 组合逻辑块 B：Oldest-ready 选择 + issue 输出
+    // 组合逻辑块 B：Oldest-ready 选择
     // ══════════════════════════════════════════════════════════════════════════
     // 从所有 valid、源就绪、FU 类型匹配且 FU 可用的条目中，选择 ROB 年龄
-    // 最老的。年龄 = rob_tag - rob_head_tag（环形距离），值越小越老。
-    //
-    // 【就绪判断】
-    //   每个条目在 scan 时通过三重条件检查 src1/2_ready：
-    //     ① 不使用该源 → ready
-    //     ② 条目内部寄存的 src1/2_ready 已被唤醒 → ready
-    //     ③ 本拍 CDB 广播命中 → ready（当拍唤醒，无需额外周期）
+    // 最老的。调度树只读取寄存 ready 位，不直接读取 CDB。
     //
     // 【年轻 ready 越过老年未就绪】
     //   条件中要求 src1_ready && src2_ready，老指令只要任意源未就绪
     //   就被排除，年轻但就绪的指令自然被选中。无需额外逻辑。
     //
-    // 【Hold 机制】
-    //   如果下游阻塞，选中条目进入 hold 寄存器——不重复扫描选择。
-    //   这保证了 issue 接口在反压期间输出稳定。
+    // 【Grant 机制】
+    //   选中项先进入 grant 寄存器。grant 被下游消费前不会重新选择。
     // =========================================================================
     always_comb begin
         select_valid      = 1'b0;
         select_idx        = '0;
         select_packet     = '0;
-        select_age        = '1;
-        scan_age          = '0;
         scan_src1_ready   = 1'b0;
         scan_src2_ready   = 1'b0;
+        winner_candidate  = '0;
 
-        if (!hold_valid) begin
-            for (scan_idx = 0; scan_idx < DEPTH; scan_idx = scan_idx + 1) begin
-                scan_src1_ready = !entries[scan_idx].payload.uop.dec.use_rs1
-                               || entries[scan_idx].src1_ready
-                               || wakeup_match(entries[scan_idx].payload.uop.prs1);
-                scan_src2_ready = !entries[scan_idx].payload.uop.dec.use_rs2
-                               || entries[scan_idx].src2_ready
-                               || wakeup_match(entries[scan_idx].payload.uop.prs2);
-                scan_age = entries[scan_idx].payload.rob_tag - rob_head_tag;
+        for (leaf_idx = 0; leaf_idx < DEPTH; leaf_idx = leaf_idx + 1) begin
+            scan_src1_ready = !entries[leaf_idx].payload.uop.dec.use_rs1
+                           || entries[leaf_idx].src1_ready;
+            scan_src2_ready = !entries[leaf_idx].payload.uop.dec.use_rs2
+                           || entries[leaf_idx].src2_ready;
 
-                if (entries[scan_idx].valid
-                    && fu_supported(entries[scan_idx].payload.uop.dec.fu_type)
-                    && fu_available(entries[scan_idx].payload.uop.dec.fu_type)
-                    && scan_src1_ready && scan_src2_ready
-                    && (!select_valid || (scan_age < select_age))) begin
-                    select_valid  = 1'b1;
-                    select_idx    = INDEX_WIDTH'(scan_idx);
-                    select_age    = scan_age;
-                    // 构造 issue 包：含 bypass 数据、rob_tag、完整 uop
-                    select_packet = make_issue_packet(entries[scan_idx]);
-                end
-            end
+            leaf_candidate[leaf_idx] = '0;
+            leaf_candidate[leaf_idx].valid = !grant_valid
+                                          && entries[leaf_idx].valid
+                                          && fu_supported(entries[leaf_idx].payload.uop.dec.fu_type)
+                                          && fu_available(entries[leaf_idx].payload.uop.dec.fu_type)
+                                          && scan_src1_ready && scan_src2_ready;
+            leaf_candidate[leaf_idx].index   = INDEX_WIDTH'(leaf_idx);
+            leaf_candidate[leaf_idx].rob_tag = entries[leaf_idx].payload.rob_tag;
+        end
+
+        for (round_idx = 0; round_idx < 4; round_idx = round_idx + 1) begin
+            round1_candidate[round_idx] =
+                older_candidate(leaf_candidate[round_idx*2],
+                                leaf_candidate[round_idx*2+1]);
+        end
+
+        round2_candidate[0] = older_candidate(round1_candidate[0],
+                                              round1_candidate[1]);
+        round2_candidate[1] = older_candidate(round1_candidate[2],
+                                              round1_candidate[3]);
+        winner_candidate = older_candidate(round2_candidate[0],
+                                           round2_candidate[1]);
+
+        if (winner_candidate.valid) begin
+            select_valid  = 1'b1;
+            select_idx    = winner_candidate.index;
+            select_packet = make_issue_packet(entries[winner_candidate.index]);
         end
     end
 
@@ -282,10 +280,8 @@ module issue_queue #(
     // PRF 读请求仅在 issue_fire 当拍有效——不会在阻塞时反复请求 PRF。
     // =========================================================================
     always_comb begin
-        issue_valid = hold_valid || select_valid;
-        issue_bus   = hold_valid ? hold_packet : select_packet;
-        // 功能单元可用性在选择前判断；一旦 valid 在阻塞下被锁存，该选择
-        // 即视为预留对应功能单元，随后遵守标准 valid/ready 直到握手。
+        issue_valid = grant_valid;
+        issue_bus   = grant_packet;
         issue_fire  = issue_valid && issue_ready;
 
         prf_read_req = '0;
@@ -316,9 +312,9 @@ module issue_queue #(
     always_ff @(posedge clk) begin
         if (!rst_n || recover.valid) begin
             occupancy <= '0;
-            hold_valid <= 1'b0;
-            hold_idx   <= '0;
-            hold_packet <= '0;
+            grant_valid <= 1'b0;
+            grant_idx   <= '0;
+            grant_packet <= '0;
             for (reset_idx = 0; reset_idx < DEPTH; reset_idx = reset_idx + 1)
                 entries[reset_idx] <= '0;
         end else begin
@@ -337,22 +333,17 @@ module issue_queue #(
                 end
             end
 
-            // ── ③ Issue 释放 + hold 管理 ──
-            // 有 hold 条目时优先使用 hold（对外输出稳定），发射后释放。
-            // 无 hold 时使用 select 结果：发射则直接释放，阻塞则锁存到 hold。
-            if (hold_valid) begin
+            // ── ③ Issue 释放 + grant 管理 ──
+            // grant 条目对外保持稳定，直到下游完成握手。
+            if (grant_valid) begin
                 if (issue_fire) begin
-                    entries[hold_idx].valid <= 1'b0;
-                    hold_valid <= 1'b0;
+                    entries[grant_idx].valid <= 1'b0;
+                    grant_valid <= 1'b0;
                 end
             end else if (select_valid) begin
-                if (issue_fire) begin
-                    entries[select_idx].valid <= 1'b0; // 直接发射+释放
-                end else begin
-                    hold_valid  <= 1'b1;   // 阻塞，进 hold
-                    hold_idx    <= select_idx;
-                    hold_packet <= select_packet; // 锁存 bypass 数据
-                end
+                grant_valid <= 1'b1;
+                grant_idx   <= select_idx;
+                grant_packet <= select_packet;
             end
 
             // ── ④ 新入队 ──

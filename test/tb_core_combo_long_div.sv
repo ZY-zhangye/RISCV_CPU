@@ -76,10 +76,14 @@ module tb_core_combo_long_div;
     // 等待第二批年轻 ALU 真正进入 ALU0 的输入寄存边界，再返回 DIV。
     // 该上升沿 ALU0 与 MLU 会同时生成结果，从而确定性制造 WB0 冲突。
     assign collision_trigger = div_pending
-        && dut.u_backend.u_execute.operand0_valid
-        && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.fu_type == FU_ALU)
-        && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.pc >= 32'h18)
-        && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.pc <= 32'h1c);
+        && ((dut.u_backend.u_execute.operand0_valid
+             && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.fu_type == FU_ALU)
+             && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.pc >= 32'h18)
+             && (dut.u_backend.u_execute.operand0_bus.issue.uop.dec.pc <= 32'h24))
+         || (dut.u_backend.u_execute.operand1_valid
+             && (dut.u_backend.u_execute.operand1_bus.issue.uop.dec.fu_type == FU_ALU)
+             && (dut.u_backend.u_execute.operand1_bus.issue.uop.dec.pc >= 32'h18)
+             && (dut.u_backend.u_execute.operand1_bus.issue.uop.dec.pc <= 32'h24)));
     assign div_result_valid = collision_trigger;
 
     always_ff @(posedge clk) begin : divider_model
@@ -296,12 +300,14 @@ module tb_core_combo_long_div;
         u_memory.write_word(32'h14, encode_bne(5'd0, 5'd0, 8));
         u_memory.write_word(32'h18, encode_addi(5'd5, 5'd0, 11));
         u_memory.write_word(32'h1c, encode_addi(5'd6, 5'd0, 13));
-        u_memory.write_word(32'h20, 32'h0051_83b3); // add x7,x3,x5
+        u_memory.write_word(32'h20, encode_addi(5'd7, 5'd0, 15)); // independent
+        u_memory.write_word(32'h24, encode_addi(5'd8, 5'd0, 17)); // independent
+        u_memory.write_word(32'h28, 32'h0051_84b3); // add x9,x3,x5 (dependent on DIV x3 and ADD x5)
 
         repeat (3) tick();
         rst_n = 1'b1;
         tick();
-        wait_commit(32'h20, "post-DIV dependent ADD");
+        wait_commit(32'h28, "post-DIV dependent ADD");
 
         assert (saw_early_alu_before_div && saw_branch_before_div)
             else $fatal(1,
@@ -315,11 +321,14 @@ module tb_core_combo_long_div;
                 && (committed_reg(5'd4) == 32'd9)
                 && (committed_reg(5'd5) == 32'd11)
                 && (committed_reg(5'd6) == 32'd13)
-                && (committed_reg(5'd7) == 32'd25))
+                && (committed_reg(5'd7) == 32'd15)
+                && (committed_reg(5'd8) == 32'd17)
+                && (committed_reg(5'd9) == 32'd25))
             else $fatal(1,
-                "long-DIV architectural result mismatch x3=%0d x4=%0d x5=%0d x6=%0d x7=%0d",
+                "long-DIV architectural result mismatch x3=%0d x4=%0d x5=%0d x6=%0d x7=%0d x8=%0d x9=%0d",
                 committed_reg(5'd3), committed_reg(5'd4), committed_reg(5'd5),
-                committed_reg(5'd6), committed_reg(5'd7));
+                committed_reg(5'd6), committed_reg(5'd7), committed_reg(5'd8),
+                committed_reg(5'd9));
 
         $display("PASS: long DIV OoO completion + ordered commit + WB0 conflict hold");
         $finish;

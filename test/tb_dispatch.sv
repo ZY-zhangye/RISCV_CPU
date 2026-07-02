@@ -66,7 +66,9 @@ module tb_dispatch;
         .commit_map    (commit_map),
         .recover       (recover),
         .occupancy_o   (occupancy),
-        .head_tag_o    (rob_head_tag)
+        .head_tag_o    (rob_head_tag),
+        .head_tag_iq0  (),
+        .head_tag_iq1  ()
     );
 
     always #5 clk = ~clk;

@@ -15,7 +15,8 @@ module issue_queue_pair (
     input  logic                                  clk,
     input  logic                                  rst_n,
     input  wire core_port_pkg::recover_event_t    recover,
-    input  wire core_port_pkg::rob_tag_t          rob_head_tag,
+    input  wire core_port_pkg::rob_tag_t          rob_head_tag_iq0,
+    input  wire core_port_pkg::rob_tag_t          rob_head_tag_iq1,
     input  wire core_port_pkg::phys_reg_write_bundle_t wakeup_bus,
 
     // ---- IQ0 入队与容量 ----
@@ -63,7 +64,7 @@ module issue_queue_pair (
         .enq_bus        (iq0_enq_bus),
         .capacity       (iq0_capacity),
         .wakeup_bus     (wakeup_bus),
-        .rob_head_tag   (rob_head_tag),
+        .rob_head_tag   (rob_head_tag_iq0),
         .recover        (recover),
         .alu_available  (alu0_available),
         .mlu_available  (mlu_available),
@@ -88,7 +89,7 @@ module issue_queue_pair (
         .enq_bus        (iq1_enq_bus),
         .capacity       (iq1_capacity),
         .wakeup_bus     (wakeup_bus),
-        .rob_head_tag   (rob_head_tag),
+        .rob_head_tag   (rob_head_tag_iq1),
         .recover        (recover),
         .alu_available  (alu1_available),
         .mlu_available  (1'b0),

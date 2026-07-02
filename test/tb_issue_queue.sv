@@ -37,7 +37,8 @@ module tb_issue_queue;
         .clk              (clk),
         .rst_n            (rst_n),
         .recover          (recover),
-        .rob_head_tag     (rob_head_tag),
+        .rob_head_tag_iq0 (rob_head_tag),
+        .rob_head_tag_iq1 (rob_head_tag),
         .wakeup_bus       (wakeup_bus),
         .iq0_enq_valid    (iq0_enq_valid),
         .iq0_enq_bus      (iq0_enq_bus),
@@ -149,6 +150,7 @@ module tb_issue_queue;
         cycle();
         iq0_enq_valid = '0;
         issue0_ready  = 1'b1;
+        cycle();
         #1;
         assert (issue0_valid && issue0_fire
                 && (issue0_bus.rob_tag == rob_tag_t'(1)))
@@ -159,17 +161,20 @@ module tb_issue_queue;
         assert (!issue0_valid)
             else $fatal(1, "blocked older entry issued without wakeup");
 
-        // 写回广播当拍唤醒并选择老指令，同时把广播数据带入 issue 包。
+        // 写回广播唤醒老指令，下一拍选择发射。
         wakeup_bus.lane0.valid = 1'b1;
         wakeup_bus.lane0.preg  = 6'd10;
         wakeup_bus.lane0.data  = 32'haaaa_0010;
+        issue0_ready = 1'b0;
+        #1;
+        cycle();
+        wakeup_bus.lane0.valid = 1'b0;
         issue0_ready = 1'b1;
+        cycle();
         #1;
         assert (issue0_valid && issue0_fire
-                && (issue0_bus.rob_tag == rob_tag_t'(0))
-                && issue0_bus.src1_bypass_valid
-                && (issue0_bus.src1_bypass_data == 32'haaaa_0010))
-            else $fatal(1, "same-cycle wakeup/select or bypass capture failed");
+                && (issue0_bus.rob_tag == rob_tag_t'(0)))
+            else $fatal(1, "next-cycle wakeup/select failed");
         assert (issue0_prf_req.src1.valid
                 && (issue0_prf_req.src1.preg == 6'd10))
             else $fatal(1, "IQ did not drive PRF source address on issue");
@@ -188,6 +193,7 @@ module tb_issue_queue;
         cycle();
         iq0_enq_valid = '0;
         issue0_ready  = 1'b1;
+        cycle();
         #1;
         assert (issue0_fire && (issue0_bus.rob_tag == rob_tag_t'(63)))
             else $fatal(1, "ROB wrap-aware oldest selection failed");
@@ -203,11 +209,13 @@ module tb_issue_queue;
         cycle();
         iq1_enq_valid = '0;
         issue1_ready  = 1'b1;
+        cycle();
         #1;
         assert (issue1_fire && (issue1_bus.rob_tag == rob_tag_t'(1)))
             else $fatal(1, "IQ1 did not skip unavailable BRU");
         cycle();
         bru_available = 1'b1;
+        cycle();
         #1;
         assert (issue1_fire && (issue1_bus.rob_tag == rob_tag_t'(0)))
             else $fatal(1, "older BRU did not issue when unit became available");
@@ -221,16 +229,18 @@ module tb_issue_queue;
         iq0_enq_valid = '0;
         wakeup_bus.lane0 = '{valid: 1'b1, preg: 6'd20, data: 32'h2020_2020};
         wakeup_bus.lane1 = '{valid: 1'b1, preg: 6'd21, data: 32'h2121_2121};
-        issue0_ready = 1'b1;
+        issue0_ready = 1'b0;
         #1;
-        assert (issue0_fire && issue0_bus.src1_bypass_valid
-                && issue0_bus.src2_bypass_valid
-                && (issue0_bus.src1_bypass_data == 32'h2020_2020)
-                && (issue0_bus.src2_bypass_data == 32'h2121_2121))
+        cycle();
+        wakeup_bus = '0;
+        issue0_ready = 1'b1;
+        cycle();
+        #1;
+        assert (issue0_fire && (issue0_bus.rob_tag == rob_tag_t'(0)))
             else $fatal(1, "dual-broadcast source wakeup failed");
         clear_queues();
 
-        // 下游阻塞时锁存选中包；广播撤销后旁路数据仍必须稳定。
+        // 下游阻塞时锁存选中包
         fill_iq_slot(iq0_enq_bus.lane0, rob_tag_t'(0), FU_MLU,
                      6'd30, 1'b1, 1'b0, '0, 1'b0, 1'b1);
         iq0_enq_valid = 2'b01;
@@ -239,20 +249,17 @@ module tb_issue_queue;
         wakeup_bus.lane0 = '{valid: 1'b1, preg: 6'd30, data: 32'h3030_3030};
         issue0_ready = 1'b0;
         #1;
-        assert (issue0_valid && !issue0_fire
-                && issue0_bus.src1_bypass_valid)
-            else $fatal(1, "stalled wakeup candidate was not presented");
-        cycle();
+        cycle(); // wakeup updates ready bits
+        cycle(); // select enters grant while downstream is blocked
         wakeup_bus = '0;
         #1;
-        assert (issue0_valid && !issue0_fire
-                && issue0_bus.src1_bypass_valid
-                && (issue0_bus.src1_bypass_data == 32'h3030_3030))
-            else $fatal(1, "stalled issue packet or bypass data changed");
+        assert (issue0_valid && !issue0_fire)
+            else $fatal(1, "stalled wakeup candidate was not presented");
+        cycle();
         issue0_ready = 1'b1;
         #1;
-        assert (issue0_fire)
-            else $fatal(1, "held issue packet did not fire after ready");
+        assert (issue0_fire && (issue0_bus.rob_tag == rob_tag_t'(0)))
+            else $fatal(1, "held issue packet was lost after unblock");
         cycle();
         clear_inputs();
 

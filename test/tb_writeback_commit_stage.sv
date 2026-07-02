@@ -194,7 +194,7 @@ module tb_writeback_commit_stage;
         commit_csr(12'h304, 32'h0000_0800); // MEIE
         commit_csr(12'h300, 32'h0000_0008); // MIE
         irq_external_i = 1'b1;
-        repeat (2) cycle();
+        repeat (3) cycle();
         #1;
         assert (recover.valid && (recover.reason == RECOVER_INTERRUPT)
                 && (recover.target == 32'h0000_102c))
@@ -214,11 +214,12 @@ module tb_writeback_commit_stage;
         rob_commit_bus.lane0.is_mret = 1'b1;
         rob_empty = 1'b0;
         #1;
-        assert (rob_commit_ready[0] && recover.valid
-                && (recover.target == 32'h0000_0400))
-            else $fatal(1, "mret precise redirect failed");
+        assert (rob_commit_ready[0])
+            else $fatal(1, "mret precise commit ready failed");
         rob_commit_fire = 2'b01;
         cycle();
+        assert (recover.valid && (recover.target == 32'h0000_0400))
+            else $fatal(1, "mret precise redirect failed");
         rob_commit_fire = '0;
         rob_commit_bus = '0;
 

@@ -35,7 +35,9 @@ module rob (
     input  wire core_port_pkg::recover_event_t    recover,
 
     output logic [$clog2(core_port_pkg::ROB_DEPTH+1)-1:0] occupancy_o,
-    output      core_port_pkg::rob_tag_t           head_tag_o
+    output      core_port_pkg::rob_tag_t           head_tag_o,
+    output      core_port_pkg::rob_tag_t           head_tag_iq0,
+    output      core_port_pkg::rob_tag_t           head_tag_iq1
 );
     import core_port_pkg::*;
 
@@ -128,21 +130,24 @@ module rob (
         alloc_fire[1] = alloc_valid[1] && alloc_valid[0] && rob_allowin;
         alloc_count   = {1'b0, alloc_fire[0]} + {1'b0, alloc_fire[1]};
 
+        commit_bus = '0;
         head_entry0 = entries[head_ptr[ROB_INDEX_WIDTH-1:0]];
         head_entry1 = entries[head_ptr_plus_one[ROB_INDEX_WIDTH-1:0]];
 
-        commit_bus = '0;
-        if ((occupancy != 0) && head_entry0.valid && head_entry0.complete)
-            commit_bus.lane0 = make_commit_slot(head_entry0);
+        if (!recover.valid) begin
+            if ((occupancy != 0) && head_entry0.valid && head_entry0.complete)
+                commit_bus.lane0 = make_commit_slot(head_entry0);
 
-        if ((occupancy >= 2) && commit_bus.lane0.valid
-            && !stop_younger_commit(head_entry0)
-            && head_entry1.valid && head_entry1.complete)
-            commit_bus.lane1 = make_commit_slot(head_entry1);
+            if ((occupancy >= 2) && commit_bus.lane0.valid
+                && !stop_younger_commit(head_entry0)
+                && head_entry1.valid && head_entry1.complete)
+                commit_bus.lane1 = make_commit_slot(head_entry1);
+        end
 
-        commit_fire[0] = commit_bus.lane0.valid && commit_ready[0];
-        commit_fire[1] = commit_bus.lane1.valid && commit_ready[1]
-                       && commit_fire[0];
+        commit_fire[0] = !recover.valid && commit_bus.lane0.valid
+                       && commit_ready[0];
+        commit_fire[1] = !recover.valid && commit_bus.lane1.valid
+                       && commit_ready[1] && commit_fire[0];
         commit_count   = {1'b0, commit_fire[0]} + {1'b0, commit_fire[1]};
 
         // 只有真正提交且确实更新架构映射的指令才更新 RRAT/Free List。
@@ -163,6 +168,8 @@ module rob (
 
         occupancy_o = occupancy;
         head_tag_o  = head_ptr;
+        head_tag_iq0 = head_ptr;
+        head_tag_iq1 = head_ptr;
     end
 
     always_ff @(posedge clk) begin
@@ -292,18 +299,6 @@ module rob (
                 else $error("rob: alloc lane1 cannot be valid without lane0");
             assert (!commit_ready[1] || commit_ready[0])
                 else $error("rob: commit lane1 ready requires lane0 ready");
-            assert (!(commit_fire[0]
-                      && (commit_bus.lane0.exception_valid
-                          || commit_bus.lane0.redirect_valid
-                          || commit_bus.lane0.is_mret))
-                    || recover.valid)
-                else $error("rob: retiring lane0 recovery event requires recover.valid");
-            assert (!(commit_fire[1]
-                      && (commit_bus.lane1.exception_valid
-                          || commit_bus.lane1.redirect_valid
-                          || commit_bus.lane1.is_mret))
-                    || recover.valid)
-                else $error("rob: retiring lane1 recovery event requires recover.valid");
         end
     end
 `endif

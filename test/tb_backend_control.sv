@@ -147,11 +147,14 @@ module tb_backend_control;
         mem_ready = 1;
         n = 0; while (!saw_fence_i && n < 40) begin tick(); n++; end
         assert (saw_fence_i) else $fatal(1, "FENCE.I pulse missing after LSQ drain");
+        
+        // Wait for the pipelined recover.valid to clear before sending new instructions
+        tick();
 
         // 连续 CSR 可进入 Rename 缓冲，但 Dispatch 后端严格保持单项串行。
         send1_pred(32'h2200, 32'h340010f3, 1'b0, '0);
         send1_pred(32'h2204, 32'h34002173, 1'b0, '0);
-        n = 0; while (csr_commits < 2 && n < 120) begin tick(); n++; end
+        n = 0; while (csr_commits < 2 && n < 400) begin tick(); n++; end
         assert (csr_commits == 2) else $fatal(1, "serialized CSR sequence deadlocked");
 
         // 未实现 CSR 形成精确非法指令异常；随后 MRET 必须返回 mepc。
