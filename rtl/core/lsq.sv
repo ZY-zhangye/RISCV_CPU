@@ -161,12 +161,12 @@ module lsq #(
     logic memory_select_forward;
     logic [INDEX_WIDTH-1:0] memory_select_idx;
     logic [ROB_PTR_WIDTH-1:0] memory_select_age;
-    logic [XLEN-1:0] memory_forward_data;
+    logic [INDEX_WIDTH-1:0] memory_forward_store_idx;
     lsq_mem_request_t memory_select_request;
     logic memory_select_q_valid;
     logic [INDEX_WIDTH-1:0] memory_select_q_idx;
     lsq_tag_t memory_select_q_tag;
-    logic [XLEN-1:0] memory_forward_data_q;
+    logic [INDEX_WIDTH-1:0] memory_select_q_store_idx;
     logic memory_request_reg_valid;
     lsq_mem_request_t memory_request_reg;
 
@@ -190,7 +190,7 @@ module lsq #(
     logic load_safe;
     logic load_forward;
     logic [ROB_PTR_WIDTH-1:0] youngest_store_age;
-    logic [XLEN-1:0] youngest_store_word;
+    logic [INDEX_WIDTH-1:0] youngest_store_idx;
     logic [3:0] load_mask;
     logic [3:0] store_mask;
     logic overlap;
@@ -399,8 +399,9 @@ module lsq #(
     //   这允许不同 Store 的地址和数据并行准备。
     //
     // 【AGU hold 机制】
-    //   AGU 选择结果在 issue1 反压时锁存到 agu_hold_valid/hold_packet，
-    //   确保选中条目在反压期间不被其他新就绪条目抢走。
+    //   AGU 选择结果可同拍送往 issue1_arbiter。被选中时即标记
+    //   address_issued；如果 issue1 反压，再锁存到 agu_hold_valid/
+    //   hold_packet。这样 address_issued 不依赖 issue1/execute ready 反馈。
     always_comb begin
         agu_select_valid  = 1'b0;
         agu_select_idx    = '0;
@@ -544,7 +545,7 @@ module lsq #(
     //     a. 地址未知或异常 → load_safe=0（不可穿越）
     //     b. 地址已知，不重叠   → 可越过（不触发转发不设限制）
     //     c. 地址重叠，部分覆盖  → load_safe=0（保守等待）
-    //     d. 地址重叠，完全覆盖  → load_forward=true，记录 youngest_store_word
+    //     d. 地址重叠，完全覆盖  → load_forward=true，记录 youngest_store_idx
     //        同时要求 store_data_valid=1（数据就绪）
     //
     //   转发数据在 memory_select 时直接写入 load_data_valid/load_data，
@@ -559,12 +560,12 @@ module lsq #(
         memory_select_forward = 1'b0;
         memory_select_idx     = '0;
         memory_select_age     = '1;
-        memory_forward_data   = '0;
+        memory_forward_store_idx = '0;
         memory_select_request = '0;
         load_safe             = 1'b0;
         load_forward          = 1'b0;
         youngest_store_age    = '0;
-        youngest_store_word   = '0;
+        youngest_store_idx    = '0;
         load_mask             = '0;
         store_mask            = '0;
         overlap               = 1'b0;
@@ -605,7 +606,7 @@ module lsq #(
                         load_safe          = 1'b1;
                         load_forward       = 1'b0;
                         youngest_store_age = '0;
-                        youngest_store_word = '0;
+                        youngest_store_idx = '0;
                         load_mask = byte_mask(entries[memory_idx].payload.uop.dec.mem_op,
                                               entries[memory_idx].address[1:0]);
 
@@ -636,9 +637,7 @@ module lsq #(
                                             load_forward = 1'b1;
                                             youngest_store_age = entries[memory_store_idx].payload.rob_tag
                                                                - rob_head_tag;
-                                            youngest_store_word = aligned_store_word(
-                                                entries[memory_store_idx].store_data,
-                                                entries[memory_store_idx].address[1:0]);
+                                            youngest_store_idx = INDEX_WIDTH'(memory_store_idx);
                                         end
                                     end
                                 end
@@ -652,9 +651,7 @@ module lsq #(
                             memory_select_forward = load_forward;
                             memory_select_idx     = INDEX_WIDTH'(memory_idx);
                             memory_select_age     = memory_scan_age;
-                            memory_forward_data = format_load_data(
-                                entries[memory_idx].payload.uop.dec.mem_op,
-                                entries[memory_idx].address[1:0], youngest_store_word);
+                            memory_forward_store_idx = youngest_store_idx;
                             memory_select_request.is_store = 1'b0;
                             memory_select_request.lsq_tag  = entries[memory_idx].lsq_tag;
                             memory_select_request.rob_tag  = entries[memory_idx].payload.rob_tag;
@@ -744,7 +741,7 @@ module lsq #(
             memory_select_q_valid <= 1'b0;
             memory_select_q_idx <= '0;
             memory_select_q_tag <= '0;
-            memory_forward_data_q <= '0;
+            memory_select_q_store_idx <= '0;
             memory_request_reg_valid <= 1'b0;
             memory_request_reg <= '0;
             store_commit_tail <= '0;
@@ -852,19 +849,14 @@ module lsq #(
 
             // ── ③ AGU 握手 + hold 管理 ──
             // AGU 地址生成请求通过 issue1_arbiter 竞争后握手。
-            // 如果 hold 中有条目，优先处理 hold 条目；否则使用组合选择的候选。
-            // hold 中的条目一旦握手成功，立即标记 address_issued。
+            // 被选中即标记 address_issued；hold 中的请求一旦握手成功，
+            // 只需要清空 hold。
             if (agu_hold_valid) begin
-                if (agu_issue_fire) begin
-                    if (entries[agu_hold_idx].valid
-                        && (entries[agu_hold_idx].lsq_tag == agu_hold_packet.lsq_tag))
-                        entries[agu_hold_idx].address_issued <= 1'b1;
+                if (agu_issue_fire)
                     agu_hold_valid <= 1'b0;
-                end
             end else if (agu_select_valid) begin
-                if (agu_issue_fire) begin
-                    entries[agu_select_idx].address_issued <= 1'b1;
-                end else begin
+                entries[agu_select_idx].address_issued <= 1'b1;
+                if (!agu_issue_fire) begin
                     agu_hold_valid  <= 1'b1;
                     agu_hold_idx    <= agu_select_idx;
                     agu_hold_packet <= agu_select_packet;
@@ -930,7 +922,12 @@ module lsq #(
                         == memory_select_q_tag)) begin
                     entries[memory_select_q_idx].load_data_valid <= 1'b1;
                     entries[memory_select_q_idx].load_data
-                        <= memory_forward_data_q;
+                        <= format_load_data(
+                            entries[memory_select_q_idx].payload.uop.dec.mem_op,
+                            entries[memory_select_q_idx].address[1:0],
+                            aligned_store_word(
+                                entries[memory_select_q_store_idx].store_data,
+                                entries[memory_select_q_store_idx].address[1:0]));
                 end
                 memory_select_q_valid <= 1'b0;
             end
@@ -941,7 +938,7 @@ module lsq #(
                     memory_select_q_valid  <= 1'b1;
                     memory_select_q_idx    <= memory_select_idx;
                     memory_select_q_tag    <= memory_select_request.lsq_tag;
-                    memory_forward_data_q  <= memory_forward_data;
+                    memory_select_q_store_idx <= memory_forward_store_idx;
                 end else begin
                     memory_request_reg_valid <= 1'b1;
                     memory_request_reg       <= memory_select_request;

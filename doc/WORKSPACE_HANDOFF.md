@@ -91,6 +91,8 @@
 - `lsq.sv`：8 项统一 LSQ，双入队，Load/Store 地址 oldest-ready 乱序生成；
 - Store 地址和数据解耦；数据可从 PRF 或写回广播独立取得；
 - Load 不越过地址未知的老 Store，完整覆盖时支持最年轻老 Store forwarding；
+- AGU 请求被选中时即标记 `address_issued`，不让 issue1/execute ready 反馈控制 LSQ 条目状态写入；
+- Store-to-Load forwarding 先寄存 load 槽位和最年轻覆盖 store 槽位，下一拍再取数并格式化；
 - Store 仅在 ROB 顺序提交后进入寄存的内存请求级；
 - recovery 清除推测项但保留已提交 Store，独立 Store 提交序号确保恢复后排空顺序；
 - `issue1_arbiter.sv` 按 ROB 环形年龄在 IQ1 与 LSQ 候选中选择最老项；
@@ -237,12 +239,14 @@ F:\questasim64_2024.1\win64
 7. LSQ 当前对地址未知老 Store 采取保守阻塞；部分覆盖不合并，MMIO/强序访问分类和违例 replay 尚未实现。
 8. MLU 当前采用单在途策略；乘法 `MUL_LATENCY` 必须与 Vivado IP 配置一致，Divider 建议配置为 33-bit signed 并分别接出 quotient/remainder。
 9. CSR 仅实现 M-mode 最小集合，不实现特权等级切换、delegation、PMP 和 S/U CSR；`MTVEC_RESET`、`MHARTID` 与空 ROB 时的 `interrupt_pc` 由 SoC 顶层确定。
+10. FPGA 200 MHz 时序尚未收敛。2026-07-02 `phys_opt_design` 后 WNS 为 `-7.680ns`、TNS 为 `-98341.588ns`，最差路径集中在 LSQ memory select / store-drain 年龄扫描：`rob_head_tag_iq0_reg[0]` 到 `u_lsq/memory_request_reg[write_data][24]/CE`，data path `12.168ns`、29 logic levels、route 约 85%。报告位于 `fpga_impl/output/top_timing_summary_current.rpt` 和 `top_worst_paths_current.rpt`。
 
 ## 推荐后续实现顺序
 
 1. 当前统一 PowerShell 回归入口和官方 HEX 必过清单已经完成；后续改动可使用 `scripts/run-regression.ps1 -Mode all` 作为完整门禁。
-2. 下一阶段进入 Cache/SoC 集成或随机差分验证。
-3. RV32F、`mcsr` 和 Zba 留待对应功能实现后启用；`ma_data` 留待非对齐数据访问策略确定后启用。
+2. 若继续以 200 MHz 为目标，优先拆分 LSQ memory select：将 committed store drain 选择和 load safe/forward 选择进一步分级，降低 `rob_head_tag` 和 `entries[*].rob_tag` 到 `memory_request_reg`/`memory_select_q_store_idx` 的全相联扇出。
+3. 时序继续改善后，再进入 Cache/SoC 集成或随机差分验证。
+4. RV32F、`mcsr` 和 Zba 留待对应功能实现后启用；`ma_data` 留待非对齐数据访问策略确定后启用。
 
 官方回归必须遵守 `doc/OFFICIAL_HEX_REGRESSION_PLAN.md`：首次无法形成明确根因时立即交用户查波形；排除测试问题后，同一失败的 Codex RTL 修复尝试最多三次。
 
