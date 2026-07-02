@@ -92,6 +92,12 @@ module backend_top #(
 
     phys_reg_read_req_bundle_t prf_read_req;
     phys_reg_read_data_bundle_t prf_read_data;
+    logic issue0_exec_valid, issue0_exec_ready;
+    iq_issue_slot_t issue0_exec_bus;
+    iq_prf_read_req_t issue0_prf_req_q;
+    logic issue1_exec_valid, issue1_exec_ready;
+    issue1_slot_t issue1_exec_bus;
+    iq_prf_read_req_t issue1_prf_req_q;
 
     logic alu0_available, mlu_available, alu1_available;
     logic bru_available, csr_available, lsu_available;
@@ -143,10 +149,45 @@ module backend_top #(
 
         prf_read_req = '0;
         if (!recover_o.valid) begin
-            prf_read_req.port0 = issue0_prf_req.src1;
-            prf_read_req.port1 = issue0_prf_req.src2;
-            prf_read_req.port2 = issue1_prf_req.src1;
-            prf_read_req.port3 = issue1_prf_req.src2;
+            if (issue0_exec_valid && issue0_exec_ready) begin
+                prf_read_req.port0 = issue0_prf_req_q.src1;
+                prf_read_req.port1 = issue0_prf_req_q.src2;
+            end
+            if (issue1_exec_valid && issue1_exec_ready) begin
+                prf_read_req.port2 = issue1_prf_req_q.src1;
+                prf_read_req.port3 = issue1_prf_req_q.src2;
+            end
+        end
+    end
+
+    assign issue0_ready = !issue0_exec_valid || issue0_exec_ready;
+    assign issue1_ready = !issue1_exec_valid || issue1_exec_ready;
+
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid) begin
+            issue0_exec_valid <= 1'b0;
+            issue0_exec_bus   <= '0;
+            issue0_prf_req_q  <= '0;
+        end else if (issue0_ready) begin
+            issue0_exec_valid <= issue0_valid;
+            if (issue0_valid) begin
+                issue0_exec_bus  <= issue0_bus;
+                issue0_prf_req_q <= issue0_prf_req;
+            end
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid) begin
+            issue1_exec_valid <= 1'b0;
+            issue1_exec_bus   <= '0;
+            issue1_prf_req_q  <= '0;
+        end else if (issue1_ready) begin
+            issue1_exec_valid <= issue1_valid;
+            if (issue1_valid) begin
+                issue1_exec_bus  <= issue1_bus;
+                issue1_prf_req_q <= issue1_prf_req;
+            end
         end
     end
 
@@ -285,9 +326,10 @@ module backend_top #(
 
     execute_stage #(.MUL_LATENCY(MUL_LATENCY)) u_execute (
         .clk(clk), .rst_n(rst_n), .recover(recover_o),
-        .issue0_valid(issue0_valid), .issue0_bus(issue0_bus),
-        .issue0_ready(issue0_ready), .issue1_valid(issue1_valid),
-        .issue1_bus(issue1_bus), .issue1_ready(issue1_ready),
+        .issue0_valid(issue0_exec_valid), .issue0_bus(issue0_exec_bus),
+        .issue0_ready(issue0_exec_ready),
+        .issue1_valid(issue1_exec_valid), .issue1_bus(issue1_exec_bus),
+        .issue1_ready(issue1_exec_ready),
         .prf_read_data(prf_read_data), .alu0_available(alu0_available),
         .mlu_available(mlu_available), .alu1_available(alu1_available),
         .bru_available(bru_available), .csr_available(csr_available),

@@ -163,6 +163,10 @@ module lsq #(
     logic [ROB_PTR_WIDTH-1:0] memory_select_age;
     logic [XLEN-1:0] memory_forward_data;
     lsq_mem_request_t memory_select_request;
+    logic memory_select_q_valid;
+    logic [INDEX_WIDTH-1:0] memory_select_q_idx;
+    lsq_tag_t memory_select_q_tag;
+    logic [XLEN-1:0] memory_forward_data_q;
     logic memory_request_reg_valid;
     lsq_mem_request_t memory_request_reg;
 
@@ -568,7 +572,7 @@ module lsq #(
         memory_scan_age       = '0;
         committed_store_found = 1'b0;
 
-        if (!memory_request_reg_valid) begin
+        if (!memory_request_reg_valid && !memory_select_q_valid) begin
             for (memory_idx = 0; memory_idx < DEPTH;
                  memory_idx = memory_idx + 1) begin
                 memory_scan_age = entries[memory_idx].payload.rob_tag - rob_head_tag;
@@ -737,6 +741,10 @@ module lsq #(
             completion_pending_is_store <= 1'b0;
             completion_pending_exception <= 1'b0;
             completion_pending_bus <= '0;
+            memory_select_q_valid <= 1'b0;
+            memory_select_q_idx <= '0;
+            memory_select_q_tag <= '0;
+            memory_forward_data_q <= '0;
             memory_request_reg_valid <= 1'b0;
             memory_request_reg <= '0;
             store_commit_tail <= '0;
@@ -760,6 +768,7 @@ module lsq #(
                 store_drain_head <= store_drain_head + 1'b1;
             agu_hold_valid <= 1'b0;
             completion_pending_valid <= 1'b0;
+            memory_select_q_valid <= 1'b0;
 
             for (reset_idx = 0; reset_idx < DEPTH; reset_idx = reset_idx + 1) begin
                 if (entries[reset_idx].valid && is_store_entry(entries[reset_idx])
@@ -915,11 +924,24 @@ module lsq #(
                     entries[memory_request_reg.lsq_tag[INDEX_WIDTH-1:0]].valid <= 1'b0;
                 memory_request_reg_valid <= 1'b0;
             end
-            if (!memory_request_reg_valid && memory_select_valid) begin
+            if (memory_select_q_valid) begin
+                if (entries[memory_select_q_idx].valid
+                    && (entries[memory_select_q_idx].lsq_tag
+                        == memory_select_q_tag)) begin
+                    entries[memory_select_q_idx].load_data_valid <= 1'b1;
+                    entries[memory_select_q_idx].load_data
+                        <= memory_forward_data_q;
+                end
+                memory_select_q_valid <= 1'b0;
+            end
+            if (!memory_select_q_valid && !memory_request_reg_valid
+                && memory_select_valid) begin
                 entries[memory_select_idx].memory_requested <= 1'b1;
                 if (memory_select_forward) begin
-                    entries[memory_select_idx].load_data_valid <= 1'b1;
-                    entries[memory_select_idx].load_data       <= memory_forward_data;
+                    memory_select_q_valid  <= 1'b1;
+                    memory_select_q_idx    <= memory_select_idx;
+                    memory_select_q_tag    <= memory_select_request.lsq_tag;
+                    memory_forward_data_q  <= memory_forward_data;
                 end else begin
                     memory_request_reg_valid <= 1'b1;
                     memory_request_reg       <= memory_select_request;
