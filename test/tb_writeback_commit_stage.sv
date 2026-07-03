@@ -36,6 +36,7 @@ module tb_writeback_commit_stage;
         .csr_read_request(csr_read_request),
         .csr_read_response(csr_read_response),
         .csr_commit_available(csr_commit_available),
+        .csr_commit_ready_o(),
         .rob_commit_bus(rob_commit_bus), .rob_commit_fire(rob_commit_fire),
         .store_commit_ready(store_commit_ready), .fence_commit_ready(1'b1),
         .rob_empty(rob_empty),

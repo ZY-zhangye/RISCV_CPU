@@ -160,7 +160,8 @@ module tb_rename_stage;
                 && (rn_to_dp_bus.lane0.dec.pc == 32'h104))
             else $fatal(1, "slot1 did not compact after slot0 dispatch");
 
-        // A0 提交，回收初始映射 p5。回收标签从下一拍开始可分配。
+        // A0 提交，回收初始映射 p5。commit_map 先进入 retirement
+        // pipeline，回收标签从 side-effect 生效后可分配。
         commit_map.lane0.valid      = 1'b1;
         commit_map.lane0.rd         = 5'd5;
         commit_map.lane0.pdst       = 6'd32;
@@ -170,7 +171,8 @@ module tb_rename_stage;
         tick();
         clear_sideband();
 
-        // 下一拍只有 p5 空闲且 FIFO 只有一个空位，所以 B0 单发，B1 留存。
+        // p5 回收生效后 FIFO 只有一个空位，所以 B0 单发，B1 留存。
+        tick();
         tick();
         assert (rn_to_dp_valid == 2'b11)
             else $fatal(1, "B0 should append behind stalled A1");
@@ -187,7 +189,7 @@ module tb_rename_stage;
                 && (rn_to_dp_bus.lane0.dec.pc == 32'h200))
             else $fatal(1, "B0 did not remain at FIFO head");
 
-        // A1 提交回收 p6；下一拍 B1 获得 p6，并读取 B0 建立的 x7->p5。
+        // A1 提交回收 p6；side-effect 生效后 B1 获得 p6，并读取 B0 建立的 x7->p5。
         commit_map.lane0.valid      = 1'b1;
         commit_map.lane0.rd         = 5'd6;
         commit_map.lane0.pdst       = 6'd33;
@@ -196,6 +198,7 @@ module tb_rename_stage;
         writeback_event.lane0.preg  = 6'd33;
         tick();
         clear_sideband();
+        tick();
         tick();
 
         assert (rn_to_dp_valid == 2'b11)
