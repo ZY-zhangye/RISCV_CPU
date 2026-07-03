@@ -89,8 +89,8 @@ module tb_lsu_four_cycle;
 
     always #5 clk = ~clk;
 
-    // 同步单周期 DMEM 模型。请求在第 3 个边沿后握手，read_data 在该边沿
-    // 后进入第 4 个流水周期；下一边沿由 LSQ 采样。
+    // 同步单周期 DMEM 模型。AGU 返回后，LSQ 经过 Load 选择、Store 依赖
+    // 匹配和请求生成流水；外部请求应在 issue 后第 5 个边沿握手。
     always @(posedge clk) begin
         edge_count = edge_count + 1;
         if (rst_n && agu_issue_fire)
@@ -103,9 +103,9 @@ module tb_lsu_four_cycle;
             if (mem_request_valid && mem_request_ready
                 && !mem_request.is_store) begin
                 request_edge = edge_count;
-                assert ((edge_count - issue_edge) == 3)
+                assert ((edge_count - issue_edge) == 5)
                     else $fatal(1,
-                        "LSU request register timing is not fourth-cycle: issue=%0d request=%0d",
+                        "LSU request pipeline latency changed: issue=%0d request=%0d",
                         issue_edge, edge_count);
                 mem_response.valid     <= 1'b1;
                 mem_response.lsq_tag   <= mem_request.lsq_tag;
@@ -169,9 +169,9 @@ module tb_lsu_four_cycle;
         assert (writeback_bus.pdst_valid
                 && (writeback_bus.pdst == phys_reg_idx_t'(6))
                 && (writeback_bus.data == 32'h89ab_cdef))
-            else $fatal(1, "four-cycle LSU load data/writeback failed");
+            else $fatal(1, "pipelined LSU load data/writeback failed");
 
-        $display("PASS: LSU issue -> external request register -> fourth-cycle DMEM result");
+        $display("PASS: LSU issue -> pipelined request -> DMEM result");
         $finish;
     end
 

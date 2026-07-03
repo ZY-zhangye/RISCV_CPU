@@ -176,6 +176,32 @@ module tb_lsq;
         end
     endtask
 
+    task automatic wait_for_writeback(input integer max_cycles);
+        integer wait_cycles;
+        begin
+            wait_cycles = 0;
+            while (!writeback_valid && (wait_cycles < max_cycles)) begin
+                cycle();
+                wait_cycles = wait_cycles + 1;
+            end
+            assert (writeback_valid)
+                else $fatal(1, "timed out waiting for LSQ writeback");
+        end
+    endtask
+
+    task automatic wait_for_mem_request(input integer max_cycles);
+        integer wait_cycles;
+        begin
+            wait_cycles = 0;
+            while (!mem_request_valid && (wait_cycles < max_cycles)) begin
+                cycle();
+                wait_cycles = wait_cycles + 1;
+            end
+            assert (mem_request_valid)
+                else $fatal(1, "timed out waiting for LSQ memory request");
+        end
+    endtask
+
     lsq_tag_t store_tag;
     lsq_tag_t load_tag;
     lsq_tag_t store_tag1;
@@ -215,7 +241,7 @@ module tb_lsq;
         wakeup_bus.lane0 = '{valid: 1'b1, preg: 6'd6, data: 32'h1122_3344};
         cycle();
         wakeup_bus = '0;
-        cycle();
+        wait_for_writeback(8);
         #1;
         assert (writeback_valid && !writeback_bus.pdst_valid
                 && (writeback_bus.rob_tag == rob_tag_t'(0)))
@@ -234,7 +260,7 @@ module tb_lsq;
         cycle();
         commit_bus  = '0;
         commit_fire = '0;
-        cycle();
+        wait_for_mem_request(8);
         #1;
         assert (mem_request_valid && mem_request.is_store
                 && (mem_request.address == 32'h1000)
@@ -254,6 +280,58 @@ module tb_lsq;
         mem_request_ready = 1'b0;
         assert ((occupancy == 0) && !mem_request_valid)
             else $fatal(1, "accepted committed Store was not drained");
+
+        // Store 槽位释放并被年轻 Store 复用后，旧 Load 的依赖位不能复活。
+        fill_mem_slot(enq_bus.lane0, rob_tag_t'(0), 1'b1, MEM_WORD,
+                      6'd1, 1'b1, 6'd2, 1'b1, '0);
+        fill_mem_slot(enq_bus.lane1, rob_tag_t'(1), 1'b0, MEM_WORD,
+                      6'd3, 1'b1, '0, 1'b1, 6'd44);
+        enq_valid = 2'b11;
+        cycle();
+        enq_valid = '0;
+        #1;
+        assert (u_lsq.age_older[0][1]
+                && u_lsq.older_store_mask[1][0])
+            else $fatal(1, "same-cycle Store-to-Load dependency was not recorded");
+        store_tag = issue1_bus.lsq_tag;
+        cycle();
+        load_tag = issue1_bus.lsq_tag;
+        cycle();
+        send_agu_result(store_tag, 32'h0000_7000, 1'b1, 32'h1234_5678);
+        wait_for_writeback(8);
+        writeback_ready = 1'b1;
+        cycle();
+        writeback_ready = 1'b0;
+
+        commit_bus.lane0.valid = 1'b1;
+        commit_bus.lane0.tag = rob_tag_t'(0);
+        commit_bus.lane0.is_store = 1'b1;
+        commit_fire = 2'b01;
+        cycle();
+        commit_bus = '0;
+        commit_fire = '0;
+        wait_for_mem_request(8);
+        mem_request_ready = 1'b1;
+        cycle();
+        mem_request_ready = 1'b0;
+        #1;
+        assert (!u_lsq.older_store_mask[1][0] && (occupancy == 1))
+            else $fatal(1, "retired Store dependency was not cleared");
+
+        fill_mem_slot(enq_bus.lane0, rob_tag_t'(2), 1'b1, MEM_WORD,
+                      6'd20, 1'b0, 6'd21, 1'b1, '0);
+        enq_valid = 2'b01;
+        cycle();
+        enq_valid = '0;
+        #1;
+        assert (!u_lsq.older_store_mask[1][0])
+            else $fatal(1, "reused Store slot reappeared in an older Load dependency");
+
+        send_agu_result(load_tag, 32'h0000_8000, 1'b0, '0);
+        wait_for_mem_request(10);
+        assert (!mem_request.is_store && (mem_request.lsq_tag == load_tag))
+            else $fatal(1, "younger reused Store slot blocked an older Load");
+        clear_lsq();
 
         // 双 Store 同拍提交后即使发生 recovery，也必须保持提交顺序排空。
         fill_mem_slot(enq_bus.lane0, rob_tag_t'(0), 1'b1, MEM_WORD,
@@ -296,7 +374,7 @@ module tb_lsq;
         recover.reason = RECOVER_BRANCH;
         cycle();
         recover = '0;
-        cycle();
+        wait_for_mem_request(8);
         #1;
         assert (mem_request_valid && mem_request.is_store
                 && (mem_request.address == 32'h1800))
@@ -304,7 +382,7 @@ module tb_lsq;
         mem_request_ready = 1'b1;
         cycle();
         mem_request_ready = 1'b0;
-        cycle();
+        wait_for_mem_request(8);
         #1;
         assert (mem_request_valid && mem_request.is_store
                 && (mem_request.address == 32'h1804))
@@ -342,9 +420,11 @@ module tb_lsq;
         load_tag = issue1_bus.lsq_tag;
         cycle();
         send_agu_result(load_tag, 32'h0000_2000, 1'b0, '0);
-        cycle();
-        assert (!mem_request_valid)
-            else $fatal(1, "Load crossed an older Store with unknown address");
+        repeat (6) begin
+            cycle();
+            assert (!mem_request_valid)
+                else $fatal(1, "Load crossed an older Store with unknown address");
+        end
 
         wakeup_bus.lane0 = '{valid: 1'b1, preg: 6'd10, data: 32'h0000_3000};
         #1;
@@ -355,7 +435,7 @@ module tb_lsq;
         cycle();
         wakeup_bus = '0;
         send_agu_result(store_tag, 32'h0000_3000, 1'b1, 32'haabb_ccdd);
-        cycle();
+        wait_for_mem_request(10);
         #1;
         assert (mem_request_valid && !mem_request.is_store
                 && (mem_request.lsq_tag == load_tag))
@@ -375,7 +455,7 @@ module tb_lsq;
         mem_response.read_data = 32'h5566_7788;
         cycle();
         mem_response = '0;
-        cycle();
+        wait_for_writeback(8);
         #1;
         assert (writeback_valid && writeback_bus.pdst_valid
                 && (writeback_bus.pdst == 6'd40)
@@ -409,7 +489,16 @@ module tb_lsq;
             cycle();
             writeback_ready = 1'b0;
         end
-        cycle();
+        begin : wait_forward_writeback
+            integer forward_wait_cycles;
+            forward_wait_cycles = 0;
+            while (!writeback_valid && (forward_wait_cycles < 10)) begin
+                assert (!mem_request_valid)
+                    else $fatal(1, "forwarded Load touched DMEM");
+                cycle();
+                forward_wait_cycles = forward_wait_cycles + 1;
+            end
+        end
         #1;
         assert (!mem_request_valid && writeback_valid
                 && writeback_bus.pdst_valid
@@ -436,9 +525,11 @@ module tb_lsq;
         load_tag = issue1_bus.lsq_tag;
         send_agu_result(store_tag, 32'h0000_5001, 1'b1, 32'h0000_00aa);
         send_agu_result(load_tag, 32'h0000_5000, 1'b0, '0);
-        repeat (2) cycle();
-        assert (!mem_request_valid)
-            else $fatal(1, "partially covered Load should wait conservatively");
+        repeat (8) begin
+            cycle();
+            assert (!mem_request_valid)
+                else $fatal(1, "partially covered Load should wait conservatively");
+        end
         clear_lsq();
 
         fill_mem_slot(enq_bus.lane0, rob_tag_t'(0), 1'b0, MEM_WORD,
@@ -449,7 +540,7 @@ module tb_lsq;
         load_tag = issue1_bus.lsq_tag;
         cycle();
         send_agu_result(load_tag, 32'h0000_6002, 1'b0, '0);
-        cycle();
+        wait_for_writeback(8);
         #1;
         assert (writeback_valid && writeback_bus.exception_valid
                 && (writeback_bus.exc_code == `EXC_LOAD_MISALIGNED)

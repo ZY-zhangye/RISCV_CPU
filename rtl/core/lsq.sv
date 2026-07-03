@@ -16,7 +16,7 @@
 //      内存访问在有地址、且已检测转发条件后才发起。
 //   b. Load 不预测越过地址未知的老 Store。如果任意老 Store
 //      地址未知、存在部分覆盖、或全覆盖但数据未就绪时，Load
-//      必须等待。该等待由 load_safe 条件控制。
+//      必须等待。该等待由 forwarding 流水的 safe 条件控制。
 //   c. 完全覆盖且数据就绪的 Store 可以直接转发给 Load，
 //      无需访问内存。转发数据在 LSQ 内部直接完成。
 //   d. Store 可乱序完成地址和数据准备，但只有 ROB 顺序提交后
@@ -123,13 +123,39 @@ module lsq #(
         logic                       completion_sent;    // 已完成事件已发出
     } lsq_entry_t;
 
+    typedef struct packed {
+        logic [INDEX_WIDTH-1:0]    idx;
+        lsq_tag_t                  lsq_tag;
+        rob_tag_t                  rob_tag;
+        logic [`ADDR_WIDTH-1:0]    address;
+        mem_op_e                   mem_op;
+        logic [DEPTH-1:0]          older_store_mask;
+    } load_forward_s0_t;
+
+    typedef struct packed {
+        logic [INDEX_WIDTH-1:0]    idx;
+        lsq_tag_t                  lsq_tag;
+        rob_tag_t                  rob_tag;
+        logic [`ADDR_WIDTH-1:0]    address;
+        mem_op_e                   mem_op;
+        logic                      safe;
+        logic                      forward;
+        logic [XLEN-1:0]           forward_word;
+    } load_forward_s1_t;
+
     lsq_entry_t entries [0:DEPTH-1];
     logic [LSQ_GEN_WIDTH-1:0] slot_generation [0:DEPTH-1]; // 每个槽位的 generation 计数器
+    logic [DEPTH-1:0] age_older [0:DEPTH-1];
+    logic [DEPTH-1:0] age_older_next [0:DEPTH-1];
+    logic [DEPTH-1:0] older_store_mask [0:DEPTH-1];
+    logic [DEPTH-1:0] older_store_mask_next [0:DEPTH-1];
+    logic [DEPTH-1:0] release_mask;
+    logic [DEPTH-1:0] active_store_mask;
+    logic [DEPTH-1:0] recover_preserve_mask;
     logic [COUNT_WIDTH-1:0] occupancy;
     logic [STORE_SEQ_WIDTH-1:0] store_commit_tail;
     logic [STORE_SEQ_WIDTH-1:0] store_drain_head;
     logic [1:0] commit_store_count;
-    logic committed_store_found;
 
     logic [INDEX_WIDTH-1:0] free_idx0;
     logic [INDEX_WIDTH-1:0] free_idx1;
@@ -140,8 +166,7 @@ module lsq #(
 
     logic agu_select_valid;
     logic [INDEX_WIDTH-1:0] agu_select_idx;
-    logic [ROB_PTR_WIDTH-1:0] agu_select_age;
-    logic [ROB_PTR_WIDTH-1:0] agu_scan_age;
+    logic [DEPTH-1:0] agu_candidate_mask;
     lsq_agu_issue_t agu_select_packet;
     logic agu_hold_valid;
     logic [INDEX_WIDTH-1:0] agu_hold_idx;
@@ -149,7 +174,10 @@ module lsq #(
 
     logic completion_select_valid;
     logic [INDEX_WIDTH-1:0] completion_select_idx;
-    logic [ROB_PTR_WIDTH-1:0] completion_select_age;
+    logic [DEPTH-1:0] completion_candidate_mask;
+    logic completion_select_q_valid;
+    logic [INDEX_WIDTH-1:0] completion_select_q_idx;
+    lsq_tag_t completion_select_q_tag;
     logic completion_pending_valid;
     logic [INDEX_WIDTH-1:0] completion_pending_idx;
     lsq_tag_t completion_pending_tag;
@@ -157,16 +185,24 @@ module lsq #(
     logic completion_pending_exception;
     lsq_writeback_t completion_pending_bus;
 
-    logic memory_select_valid;
-    logic memory_select_forward;
-    logic [INDEX_WIDTH-1:0] memory_select_idx;
-    logic [ROB_PTR_WIDTH-1:0] memory_select_age;
-    logic [INDEX_WIDTH-1:0] memory_forward_store_idx;
-    lsq_mem_request_t memory_select_request;
-    logic memory_select_q_valid;
-    logic [INDEX_WIDTH-1:0] memory_select_q_idx;
-    lsq_tag_t memory_select_q_tag;
-    logic [INDEX_WIDTH-1:0] memory_select_q_store_idx;
+    logic store_select_valid;
+    logic [INDEX_WIDTH-1:0] store_select_idx;
+    logic store_drain_q_valid;
+    logic [INDEX_WIDTH-1:0] store_drain_q_idx;
+    lsq_tag_t store_drain_q_tag;
+    logic load_select_valid;
+    logic [INDEX_WIDTH-1:0] load_select_idx;
+    logic [DEPTH-1:0] load_candidate_mask;
+    logic [DEPTH-1:0] load_retry_mask;
+    logic load_s0_valid;
+    load_forward_s0_t load_s0;
+    logic load_s1_valid;
+    load_forward_s1_t load_s1;
+    logic load_match_safe;
+    logic load_match_forward;
+    logic [INDEX_WIDTH-1:0] load_match_store_idx;
+    logic [XLEN-1:0] load_match_forward_word;
+    logic request_slot_available;
     logic memory_request_reg_valid;
     lsq_mem_request_t memory_request_reg;
 
@@ -176,21 +212,27 @@ module lsq #(
     integer agu_idx;
     integer commit_entry_idx;
     integer completion_idx;
-    integer memory_idx;
+    integer store_select_scan_idx;
+    integer load_select_scan_idx;
     integer memory_store_idx;
+    integer agu_age_other_idx;
+    integer completion_age_other_idx;
+    integer load_age_other_idx;
+    integer metadata_idx;
+    integer metadata_other_idx;
+    integer metadata_ff_idx;
     integer preserve_idx;
     integer free_scan_idx;
     integer reset_idx;
     integer commit_port_idx;
+    integer assertion_idx;
+    integer assertion_other_idx;
 
     logic scan_src1_ready;
     logic scan_src2_ready;
-    logic [ROB_PTR_WIDTH-1:0] completion_scan_age;
-    logic [ROB_PTR_WIDTH-1:0] memory_scan_age;
-    logic load_safe;
-    logic load_forward;
-    logic [ROB_PTR_WIDTH-1:0] youngest_store_age;
-    logic [INDEX_WIDTH-1:0] youngest_store_idx;
+    logic agu_older_candidate_found;
+    logic completion_older_candidate_found;
+    logic load_older_candidate_found;
     logic [3:0] load_mask;
     logic [3:0] store_mask;
     logic overlap;
@@ -387,6 +429,111 @@ module lsq #(
         enq_count   = {1'b0, enq_fire[0]} + {1'b0, enq_fire[1]};
     end
 
+    // LSQ 内部年龄关系与 Load→Store 依赖均使用槽位 one-hot 表示。
+    // age_older[i][j]=1 表示 i 比 j 老；Load 依赖掩码只在 Store
+    // 释放时清位，槽位复用后的年轻 Store 不会重新阻塞已有 Load。
+    always_comb begin
+        release_mask = '0;
+        active_store_mask = '0;
+        recover_preserve_mask = '0;
+
+        if (memory_request_reg_valid && mem_request_ready
+            && memory_request_reg.is_store)
+            release_mask[memory_request_reg.lsq_tag[INDEX_WIDTH-1:0]] = 1'b1;
+        if (writeback_fire
+            && (!completion_pending_is_store || completion_pending_exception))
+            release_mask[completion_pending_idx] = 1'b1;
+
+        for (metadata_idx = 0; metadata_idx < DEPTH;
+             metadata_idx = metadata_idx + 1) begin
+            if (entries[metadata_idx].valid
+                && is_store_entry(entries[metadata_idx]))
+                active_store_mask[metadata_idx] = 1'b1;
+            if (entries[metadata_idx].valid
+                && is_store_entry(entries[metadata_idx])
+                && (entries[metadata_idx].committed
+                    || commit_matches_entry(entries[metadata_idx]))
+                && !release_mask[metadata_idx])
+                recover_preserve_mask[metadata_idx] = 1'b1;
+        end
+
+        for (metadata_idx = 0; metadata_idx < DEPTH;
+             metadata_idx = metadata_idx + 1) begin
+            age_older_next[metadata_idx] = age_older[metadata_idx];
+            older_store_mask_next[metadata_idx] = older_store_mask[metadata_idx];
+        end
+
+        if (recover.valid) begin
+            for (metadata_idx = 0; metadata_idx < DEPTH;
+                 metadata_idx = metadata_idx + 1) begin
+                older_store_mask_next[metadata_idx] = '0;
+                for (metadata_other_idx = 0; metadata_other_idx < DEPTH;
+                     metadata_other_idx = metadata_other_idx + 1)
+                    age_older_next[metadata_idx][metadata_other_idx]
+                        = age_older[metadata_idx][metadata_other_idx]
+                       && recover_preserve_mask[metadata_idx]
+                       && recover_preserve_mask[metadata_other_idx];
+            end
+        end else begin
+            for (metadata_idx = 0; metadata_idx < DEPTH;
+                 metadata_idx = metadata_idx + 1) begin
+                age_older_next[metadata_idx]
+                    = release_mask[metadata_idx]
+                    ? '0 : (age_older[metadata_idx] & ~release_mask);
+                older_store_mask_next[metadata_idx]
+                    = release_mask[metadata_idx]
+                    ? '0 : (older_store_mask[metadata_idx] & ~release_mask);
+
+                if (entries[metadata_idx].valid
+                    && !release_mask[metadata_idx]) begin
+                    if (enq_fire[0])
+                        age_older_next[metadata_idx][free_idx0] = 1'b1;
+                    if (enq_fire[1])
+                        age_older_next[metadata_idx][free_idx1] = 1'b1;
+                end
+            end
+
+            if (enq_fire[0]) begin
+                age_older_next[free_idx0] = '0;
+                if (enq_fire[1])
+                    age_older_next[free_idx0][free_idx1] = 1'b1;
+                if (!enq_bus.lane0.uop.dec.mem_write)
+                    older_store_mask_next[free_idx0]
+                        = active_store_mask & ~release_mask;
+                else
+                    older_store_mask_next[free_idx0] = '0;
+            end
+            if (enq_fire[1]) begin
+                age_older_next[free_idx1] = '0;
+                if (!enq_bus.lane1.uop.dec.mem_write) begin
+                    older_store_mask_next[free_idx1]
+                        = active_store_mask & ~release_mask;
+                    if (enq_bus.lane0.uop.dec.mem_write)
+                        older_store_mask_next[free_idx1][free_idx0] = 1'b1;
+                end else begin
+                    older_store_mask_next[free_idx1] = '0;
+                end
+            end
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            for (metadata_ff_idx = 0; metadata_ff_idx < DEPTH;
+                 metadata_ff_idx = metadata_ff_idx + 1) begin
+                age_older[metadata_ff_idx] <= '0;
+                older_store_mask[metadata_ff_idx] <= '0;
+            end
+        end else begin
+            for (metadata_ff_idx = 0; metadata_ff_idx < DEPTH;
+                 metadata_ff_idx = metadata_ff_idx + 1) begin
+                age_older[metadata_ff_idx] <= age_older_next[metadata_ff_idx];
+                older_store_mask[metadata_ff_idx]
+                    <= older_store_mask_next[metadata_ff_idx];
+            end
+        end
+    end
+
     // ══════════════════════════════════════════════════════════════════════════
     // 组合逻辑块 B：AGU 地址生成 oldest-ready 乱序选择
     // ══════════════════════════════════════════════════════════════════════════
@@ -405,27 +552,36 @@ module lsq #(
     always_comb begin
         agu_select_valid  = 1'b0;
         agu_select_idx    = '0;
-        agu_select_age    = '1;
-        agu_scan_age      = '0;
+        agu_candidate_mask = '0;
         agu_select_packet = '0;
         scan_src1_ready   = 1'b0;
         scan_src2_ready   = 1'b0;
+        agu_older_candidate_found = 1'b0;
 
         if (!agu_hold_valid && lsu_available) begin
             for (agu_idx = 0; agu_idx < DEPTH; agu_idx = agu_idx + 1) begin
                 scan_src1_ready = !entries[agu_idx].payload.uop.dec.use_rs1
                                || entries[agu_idx].src1_ready
                                || wakeup_match(entries[agu_idx].payload.uop.prs1);
-                agu_scan_age = entries[agu_idx].payload.rob_tag - rob_head_tag;
                 if (entries[agu_idx].valid
                     && !entries[agu_idx].address_valid
                     && !entries[agu_idx].address_issued
                     && !entries[agu_idx].exception_valid
-                    && scan_src1_ready
-                    && (!agu_select_valid || (agu_scan_age < agu_select_age))) begin
+                    && scan_src1_ready)
+                    agu_candidate_mask[agu_idx] = 1'b1;
+            end
+
+            for (agu_idx = 0; agu_idx < DEPTH; agu_idx = agu_idx + 1) begin
+                agu_older_candidate_found = 1'b0;
+                for (agu_age_other_idx = 0; agu_age_other_idx < DEPTH;
+                     agu_age_other_idx = agu_age_other_idx + 1)
+                    if (agu_candidate_mask[agu_age_other_idx]
+                        && age_older[agu_age_other_idx][agu_idx])
+                        agu_older_candidate_found = 1'b1;
+                if (agu_candidate_mask[agu_idx]
+                    && !agu_older_candidate_found) begin
                     agu_select_valid  = 1'b1;
                     agu_select_idx    = INDEX_WIDTH'(agu_idx);
-                    agu_select_age    = agu_scan_age;
                     agu_select_packet = make_agu_packet(entries[agu_idx]);
                 end
             end
@@ -499,23 +655,35 @@ module lsq #(
     always_comb begin
         completion_select_valid = 1'b0;
         completion_select_idx   = '0;
-        completion_select_age   = '1;
-        completion_scan_age = '0;
+        completion_candidate_mask = '0;
+        completion_older_candidate_found = 1'b0;
         for (completion_idx = 0; completion_idx < DEPTH;
              completion_idx = completion_idx + 1) begin
-            completion_scan_age = entries[completion_idx].payload.rob_tag - rob_head_tag;
             if (entries[completion_idx].valid && !entries[completion_idx].completion_sent
                 && (entries[completion_idx].exception_valid
                     || (!is_store_entry(entries[completion_idx])
                         && entries[completion_idx].load_data_valid)
                     || (is_store_entry(entries[completion_idx])
                         && entries[completion_idx].address_valid
-                        && entries[completion_idx].store_data_valid))
-                && (!completion_select_valid
-                    || (completion_scan_age < completion_select_age))) begin
-                completion_select_valid = 1'b1;
-                completion_select_idx   = INDEX_WIDTH'(completion_idx);
-                completion_select_age   = completion_scan_age;
+                        && entries[completion_idx].store_data_valid)))
+                completion_candidate_mask[completion_idx] = 1'b1;
+        end
+
+        if (!completion_select_q_valid) begin
+            for (completion_idx = 0; completion_idx < DEPTH;
+                 completion_idx = completion_idx + 1) begin
+                completion_older_candidate_found = 1'b0;
+                for (completion_age_other_idx = 0;
+                     completion_age_other_idx < DEPTH;
+                     completion_age_other_idx = completion_age_other_idx + 1)
+                    if (completion_candidate_mask[completion_age_other_idx]
+                        && age_older[completion_age_other_idx][completion_idx])
+                        completion_older_candidate_found = 1'b1;
+                if (completion_candidate_mask[completion_idx]
+                    && !completion_older_candidate_found) begin
+                    completion_select_valid = 1'b1;
+                    completion_select_idx   = INDEX_WIDTH'(completion_idx);
+                end
             end
         end
 
@@ -525,146 +693,122 @@ module lsq #(
     end
 
     // ══════════════════════════════════════════════════════════════════════════
-    // 组合逻辑块 E：安全内存调度 + Store-to-Load Forwarding
+    // 组合逻辑块 E：Store drain 与 Load forwarding 分离调度
     // ══════════════════════════════════════════════════════════════════════════
-    // 核心逻辑——也全是最深组合路径的来源。
-    //
-    // 【Load 的调度条件】
-    //   1. address_valid=1, memory_requested=0, 非异常
-    //   2. load_safe = true（没有不可穿越的老 Store）
-    //   3. 如果没有更老的 Store 已准备好写入内存（committed & store_seq == drain_head），
-    //      则 Load 会被选为内存访问候选
-    //
-    // 【Store 的调度条件】
-    //   1. address_valid=1, memory_requested=0, 非异常
-    //   2. committed=1 && store_seq == store_drain_head（队首已提交 Store）
-    //   3. store_data_valid=1（数据就绪）
-    //
-    // 【Store-to-Load Forwarding】
-    //   对于每个 Load，扫描所有比它老的 Store（age < load_age）：
-    //     a. 地址未知或异常 → load_safe=0（不可穿越）
-    //     b. 地址已知，不重叠   → 可越过（不触发转发不设限制）
-    //     c. 地址重叠，部分覆盖  → load_safe=0（保守等待）
-    //     d. 地址重叠，完全覆盖  → load_forward=true，记录 youngest_store_idx
-    //        同时要求 store_data_valid=1（数据就绪）
-    //
-    //   转发数据在 memory_select 时直接写入 load_data_valid/load_data，
-    //   不经过外部内存路径。
-    //
-    // 【"最年轻老 Store"转发语义】
-    //   多个老 Store 覆盖同一 Load 时，转发最年轻的那个（age 最接近 load）。
-    //   因为最年轻的覆盖了之前所有老 Store 的写入，其数据就是最终值。
-    //   代码中通过 youngest_store_age 持续更新来实现 this。
+    // Store 只按本地 store_seq 队头选择。Load 先按年龄矩阵选出一项，
+    // 下一拍仅扫描该 Load 的 older_store_mask，避免 Load×Store 嵌套选择。
     always_comb begin
-        memory_select_valid   = 1'b0;
-        memory_select_forward = 1'b0;
-        memory_select_idx     = '0;
-        memory_select_age     = '1;
-        memory_forward_store_idx = '0;
-        memory_select_request = '0;
-        load_safe             = 1'b0;
-        load_forward          = 1'b0;
-        youngest_store_age    = '0;
-        youngest_store_idx    = '0;
-        load_mask             = '0;
-        store_mask            = '0;
-        overlap               = 1'b0;
-        full_cover            = 1'b0;
-        memory_scan_age       = '0;
-        committed_store_found = 1'b0;
+        store_select_valid = 1'b0;
+        store_select_idx = '0;
+        if (!store_drain_q_valid) begin
+            for (store_select_scan_idx = 0; store_select_scan_idx < DEPTH;
+                 store_select_scan_idx = store_select_scan_idx + 1) begin
+                if (entries[store_select_scan_idx].valid
+                    && is_store_entry(entries[store_select_scan_idx])
+                    && entries[store_select_scan_idx].address_valid
+                    && entries[store_select_scan_idx].store_data_valid
+                    && entries[store_select_scan_idx].committed
+                    && !entries[store_select_scan_idx].memory_requested
+                    && !entries[store_select_scan_idx].exception_valid
+                    && (entries[store_select_scan_idx].store_seq
+                        == store_drain_head)) begin
+                    store_select_valid = 1'b1;
+                    store_select_idx = INDEX_WIDTH'(store_select_scan_idx);
+                end
+            end
+        end
+    end
 
-        if (!memory_request_reg_valid && !memory_select_q_valid) begin
-            for (memory_idx = 0; memory_idx < DEPTH;
-                 memory_idx = memory_idx + 1) begin
-                memory_scan_age = entries[memory_idx].payload.rob_tag - rob_head_tag;
-                if (entries[memory_idx].valid && entries[memory_idx].address_valid
-                    && !entries[memory_idx].memory_requested
-                    && !entries[memory_idx].exception_valid) begin
-                    if (is_store_entry(entries[memory_idx])) begin
-                        if (entries[memory_idx].committed
-                            && (entries[memory_idx].store_seq == store_drain_head)
-                            && entries[memory_idx].store_data_valid
-                            ) begin
-                            committed_store_found = 1'b1;
-                            memory_select_valid   = 1'b1;
-                            memory_select_forward = 1'b0;
-                            memory_select_idx     = INDEX_WIDTH'(memory_idx);
-                            memory_select_age     = memory_scan_age;
-                            memory_select_request.is_store = 1'b1;
-                            memory_select_request.lsq_tag  = entries[memory_idx].lsq_tag;
-                            memory_select_request.rob_tag  = entries[memory_idx].payload.rob_tag;
-                            memory_select_request.address  = entries[memory_idx].address;
-                            memory_select_request.mem_op   = entries[memory_idx].payload.uop.dec.mem_op;
-                            memory_select_request.write_strobe = byte_mask(
-                                entries[memory_idx].payload.uop.dec.mem_op,
-                                entries[memory_idx].address[1:0]);
-                            memory_select_request.write_data = aligned_store_word(
-                                entries[memory_idx].store_data,
-                                entries[memory_idx].address[1:0]);
-                        end
+    always_comb begin
+        load_select_valid = 1'b0;
+        load_select_idx = '0;
+        load_candidate_mask = '0;
+        load_older_candidate_found = 1'b0;
+
+        if (!load_s0_valid && !load_s1_valid) begin
+            for (load_select_scan_idx = 0; load_select_scan_idx < DEPTH;
+                 load_select_scan_idx = load_select_scan_idx + 1) begin
+                if (entries[load_select_scan_idx].valid
+                    && !is_store_entry(entries[load_select_scan_idx])
+                    && entries[load_select_scan_idx].address_valid
+                    && !entries[load_select_scan_idx].memory_requested
+                    && !entries[load_select_scan_idx].exception_valid
+                    && !load_retry_mask[load_select_scan_idx])
+                    load_candidate_mask[load_select_scan_idx] = 1'b1;
+            end
+
+            for (load_select_scan_idx = 0; load_select_scan_idx < DEPTH;
+                 load_select_scan_idx = load_select_scan_idx + 1) begin
+                load_older_candidate_found = 1'b0;
+                for (load_age_other_idx = 0; load_age_other_idx < DEPTH;
+                     load_age_other_idx = load_age_other_idx + 1)
+                    if (load_candidate_mask[load_age_other_idx]
+                        && age_older[load_age_other_idx][load_select_scan_idx])
+                        load_older_candidate_found = 1'b1;
+                if (load_candidate_mask[load_select_scan_idx]
+                    && !load_older_candidate_found) begin
+                    load_select_valid = 1'b1;
+                    load_select_idx = INDEX_WIDTH'(load_select_scan_idx);
+                end
+            end
+        end
+    end
+
+    // Forward stage 1：只对已寄存 Load 的依赖 Store 做地址/覆盖比较，
+    // 同时把最终 Store 数据字寄存，避免 Store 槽位释放后再次读取。
+    always_comb begin
+        load_match_safe = 1'b1;
+        load_match_forward = 1'b0;
+        load_match_store_idx = '0;
+        load_match_forward_word = '0;
+        load_mask = byte_mask(load_s0.mem_op, load_s0.address[1:0]);
+        store_mask = '0;
+        overlap = 1'b0;
+        full_cover = 1'b0;
+
+        if (load_s0_valid) begin
+            for (memory_store_idx = 0; memory_store_idx < DEPTH;
+                 memory_store_idx = memory_store_idx + 1) begin
+                if (load_s0.older_store_mask[memory_store_idx]
+                    && entries[memory_store_idx].valid
+                    && is_store_entry(entries[memory_store_idx])) begin
+                    if (!entries[memory_store_idx].address_valid
+                        || entries[memory_store_idx].exception_valid) begin
+                        load_match_safe = 1'b0;
                     end else begin
-                        load_safe          = 1'b1;
-                        load_forward       = 1'b0;
-                        youngest_store_age = '0;
-                        youngest_store_idx = '0;
-                        load_mask = byte_mask(entries[memory_idx].payload.uop.dec.mem_op,
-                                              entries[memory_idx].address[1:0]);
-
-                        for (memory_store_idx = 0; memory_store_idx < DEPTH;
-                             memory_store_idx = memory_store_idx + 1) begin
-                            if (entries[memory_store_idx].valid
-                                && is_store_entry(entries[memory_store_idx])
-                                && ((entries[memory_store_idx].payload.rob_tag - rob_head_tag)
-                                    < memory_scan_age)) begin
-                                if (!entries[memory_store_idx].address_valid
-                                    || entries[memory_store_idx].exception_valid) begin
-                                    load_safe = 1'b0;
-                                end else begin
-                                    store_mask = byte_mask(
-                                        entries[memory_store_idx].payload.uop.dec.mem_op,
-                                        entries[memory_store_idx].address[1:0]);
-                                    overlap = (entries[memory_store_idx].address[31:2]
-                                               == entries[memory_idx].address[31:2])
-                                           && (|(store_mask & load_mask));
-                                    full_cover = ((store_mask & load_mask) == load_mask);
-                                    if (overlap) begin
-                                        if (!full_cover
-                                            || !entries[memory_store_idx].store_data_valid) begin
-                                            load_safe = 1'b0;
-                                        end else if (!load_forward
-                                            || ((entries[memory_store_idx].payload.rob_tag
-                                                 - rob_head_tag) > youngest_store_age)) begin
-                                            load_forward = 1'b1;
-                                            youngest_store_age = entries[memory_store_idx].payload.rob_tag
-                                                               - rob_head_tag;
-                                            youngest_store_idx = INDEX_WIDTH'(memory_store_idx);
-                                        end
-                                    end
-                                end
+                        store_mask = byte_mask(
+                            entries[memory_store_idx].payload.uop.dec.mem_op,
+                            entries[memory_store_idx].address[1:0]);
+                        overlap = (entries[memory_store_idx].address[31:2]
+                                   == load_s0.address[31:2])
+                               && (|(store_mask & load_mask));
+                        full_cover = ((store_mask & load_mask) == load_mask);
+                        if (overlap) begin
+                            if (!full_cover
+                                || !entries[memory_store_idx].store_data_valid) begin
+                                load_match_safe = 1'b0;
+                            end else if (!load_match_forward
+                                || age_older[load_match_store_idx]
+                                            [memory_store_idx]) begin
+                                load_match_forward = 1'b1;
+                                load_match_store_idx
+                                    = INDEX_WIDTH'(memory_store_idx);
+                                load_match_forward_word = aligned_store_word(
+                                    entries[memory_store_idx].store_data,
+                                    entries[memory_store_idx].address[1:0]);
                             end
-                        end
-
-                        if (load_safe && !committed_store_found
-                            && (!memory_select_valid
-                                || (memory_scan_age < memory_select_age))) begin
-                            memory_select_valid   = 1'b1;
-                            memory_select_forward = load_forward;
-                            memory_select_idx     = INDEX_WIDTH'(memory_idx);
-                            memory_select_age     = memory_scan_age;
-                            memory_forward_store_idx = youngest_store_idx;
-                            memory_select_request.is_store = 1'b0;
-                            memory_select_request.lsq_tag  = entries[memory_idx].lsq_tag;
-                            memory_select_request.rob_tag  = entries[memory_idx].payload.rob_tag;
-                            memory_select_request.address  = entries[memory_idx].address;
-                            memory_select_request.mem_op   = entries[memory_idx].payload.uop.dec.mem_op;
                         end
                     end
                 end
             end
         end
+    end
 
+    always_comb begin
+        request_slot_available = !memory_request_reg_valid
+                               || mem_request_ready;
         mem_request_valid = memory_request_reg_valid;
-        mem_request       = memory_request_reg;
+        mem_request = memory_request_reg;
     end
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -738,10 +882,17 @@ module lsq #(
             completion_pending_is_store <= 1'b0;
             completion_pending_exception <= 1'b0;
             completion_pending_bus <= '0;
-            memory_select_q_valid <= 1'b0;
-            memory_select_q_idx <= '0;
-            memory_select_q_tag <= '0;
-            memory_select_q_store_idx <= '0;
+            completion_select_q_valid <= 1'b0;
+            completion_select_q_idx <= '0;
+            completion_select_q_tag <= '0;
+            store_drain_q_valid <= 1'b0;
+            store_drain_q_idx <= '0;
+            store_drain_q_tag <= '0;
+            load_s0_valid <= 1'b0;
+            load_s0 <= '0;
+            load_s1_valid <= 1'b0;
+            load_s1 <= '0;
+            load_retry_mask <= '0;
             memory_request_reg_valid <= 1'b0;
             memory_request_reg <= '0;
             store_commit_tail <= '0;
@@ -764,8 +915,12 @@ module lsq #(
                 && memory_request_reg.is_store)
                 store_drain_head <= store_drain_head + 1'b1;
             agu_hold_valid <= 1'b0;
+            completion_select_q_valid <= 1'b0;
             completion_pending_valid <= 1'b0;
-            memory_select_q_valid <= 1'b0;
+            store_drain_q_valid <= 1'b0;
+            load_s0_valid <= 1'b0;
+            load_s1_valid <= 1'b0;
+            load_retry_mask <= '0;
 
             for (reset_idx = 0; reset_idx < DEPTH; reset_idx = reset_idx + 1) begin
                 if (entries[reset_idx].valid && is_store_entry(entries[reset_idx])
@@ -916,32 +1071,95 @@ module lsq #(
                     entries[memory_request_reg.lsq_tag[INDEX_WIDTH-1:0]].valid <= 1'b0;
                 memory_request_reg_valid <= 1'b0;
             end
-            if (memory_select_q_valid) begin
-                if (entries[memory_select_q_idx].valid
-                    && (entries[memory_select_q_idx].lsq_tag
-                        == memory_select_q_tag)) begin
-                    entries[memory_select_q_idx].load_data_valid <= 1'b1;
-                    entries[memory_select_q_idx].load_data
-                        <= format_load_data(
-                            entries[memory_select_q_idx].payload.uop.dec.mem_op,
-                            entries[memory_select_q_idx].address[1:0],
-                            aligned_store_word(
-                                entries[memory_select_q_store_idx].store_data,
-                                entries[memory_select_q_store_idx].address[1:0]));
-                end
-                memory_select_q_valid <= 1'b0;
+            if (!store_drain_q_valid && store_select_valid) begin
+                store_drain_q_valid <= 1'b1;
+                store_drain_q_idx <= store_select_idx;
+                store_drain_q_tag <= entries[store_select_idx].lsq_tag;
             end
-            if (!memory_select_q_valid && !memory_request_reg_valid
-                && memory_select_valid) begin
-                entries[memory_select_idx].memory_requested <= 1'b1;
-                if (memory_select_forward) begin
-                    memory_select_q_valid  <= 1'b1;
-                    memory_select_q_idx    <= memory_select_idx;
-                    memory_select_q_tag    <= memory_select_request.lsq_tag;
-                    memory_select_q_store_idx <= memory_forward_store_idx;
-                end else begin
-                    memory_request_reg_valid <= 1'b1;
-                    memory_request_reg       <= memory_select_request;
+
+            if (load_s0_valid && !load_s1_valid) begin
+                load_s1_valid <= 1'b1;
+                load_s1.idx <= load_s0.idx;
+                load_s1.lsq_tag <= load_s0.lsq_tag;
+                load_s1.rob_tag <= load_s0.rob_tag;
+                load_s1.address <= load_s0.address;
+                load_s1.mem_op <= load_s0.mem_op;
+                load_s1.safe <= load_match_safe;
+                load_s1.forward <= load_match_forward;
+                load_s1.forward_word <= load_match_forward_word;
+                load_s0_valid <= 1'b0;
+            end
+
+            if (load_s1_valid && !load_s1.safe) begin
+                load_s1_valid <= 1'b0;
+                load_retry_mask <= '0;
+                load_retry_mask[load_s1.idx] <= 1'b1;
+            end else if (load_s1_valid && load_s1.forward) begin
+                if (entries[load_s1.idx].valid
+                    && (entries[load_s1.idx].lsq_tag == load_s1.lsq_tag)) begin
+                    entries[load_s1.idx].memory_requested <= 1'b1;
+                    entries[load_s1.idx].load_data_valid <= 1'b1;
+                    entries[load_s1.idx].load_data <= format_load_data(
+                        load_s1.mem_op, load_s1.address[1:0],
+                        load_s1.forward_word);
+                end
+                load_s1_valid <= 1'b0;
+            end
+
+            if (request_slot_available) begin
+                if (store_drain_q_valid) begin
+                    store_drain_q_valid <= 1'b0;
+                    if (entries[store_drain_q_idx].valid
+                        && (entries[store_drain_q_idx].lsq_tag
+                            == store_drain_q_tag)) begin
+                        entries[store_drain_q_idx].memory_requested <= 1'b1;
+                        memory_request_reg_valid <= 1'b1;
+                        memory_request_reg.is_store <= 1'b1;
+                        memory_request_reg.lsq_tag <= store_drain_q_tag;
+                        memory_request_reg.rob_tag
+                            <= entries[store_drain_q_idx].payload.rob_tag;
+                        memory_request_reg.address
+                            <= entries[store_drain_q_idx].address;
+                        memory_request_reg.mem_op
+                            <= entries[store_drain_q_idx].payload.uop.dec.mem_op;
+                        memory_request_reg.write_strobe <= byte_mask(
+                            entries[store_drain_q_idx].payload.uop.dec.mem_op,
+                            entries[store_drain_q_idx].address[1:0]);
+                        memory_request_reg.write_data <= aligned_store_word(
+                            entries[store_drain_q_idx].store_data,
+                            entries[store_drain_q_idx].address[1:0]);
+                    end
+                end else if (load_s1_valid && load_s1.safe
+                             && !load_s1.forward) begin
+                    load_s1_valid <= 1'b0;
+                    if (entries[load_s1.idx].valid
+                        && (entries[load_s1.idx].lsq_tag == load_s1.lsq_tag)) begin
+                        entries[load_s1.idx].memory_requested <= 1'b1;
+                        memory_request_reg_valid <= 1'b1;
+                        memory_request_reg.is_store <= 1'b0;
+                        memory_request_reg.lsq_tag <= load_s1.lsq_tag;
+                        memory_request_reg.rob_tag <= load_s1.rob_tag;
+                        memory_request_reg.address <= load_s1.address;
+                        memory_request_reg.mem_op <= load_s1.mem_op;
+                        memory_request_reg.write_data <= '0;
+                        memory_request_reg.write_strobe <= '0;
+                    end
+                end
+            end
+
+            if (!load_s0_valid && !load_s1_valid) begin
+                if (load_select_valid) begin
+                    load_s0_valid <= 1'b1;
+                    load_s0.idx <= load_select_idx;
+                    load_s0.lsq_tag <= entries[load_select_idx].lsq_tag;
+                    load_s0.rob_tag <= entries[load_select_idx].payload.rob_tag;
+                    load_s0.address <= entries[load_select_idx].address;
+                    load_s0.mem_op <= entries[load_select_idx].payload.uop.dec.mem_op;
+                    load_s0.older_store_mask
+                        <= older_store_mask[load_select_idx];
+                    load_retry_mask <= '0;
+                end else if (|load_retry_mask) begin
+                    load_retry_mask <= '0;
                 end
             end
 
@@ -988,24 +1206,42 @@ module lsq #(
                 end
                 completion_pending_valid <= 1'b0;
             end
-            if (!completion_pending_valid && completion_select_valid) begin
-                completion_pending_valid <= 1'b1;
-                completion_pending_idx   <= completion_select_idx;
-                completion_pending_tag   <= entries[completion_select_idx].lsq_tag;
-                completion_pending_is_store <= is_store_entry(entries[completion_select_idx]);
-                completion_pending_exception <= entries[completion_select_idx].exception_valid;
-                completion_pending_bus.rob_tag <= entries[completion_select_idx].payload.rob_tag;
-                completion_pending_bus.pdst_valid
-                    <= !is_store_entry(entries[completion_select_idx])
-                    && !entries[completion_select_idx].exception_valid
-                    && entries[completion_select_idx].payload.uop.pdst_valid;
-                completion_pending_bus.pdst <= entries[completion_select_idx].payload.uop.pdst;
-                completion_pending_bus.data <= entries[completion_select_idx].load_data;
-                completion_pending_bus.exception_valid
-                    <= entries[completion_select_idx].exception_valid;
-                completion_pending_bus.exc_code <= entries[completion_select_idx].exc_code;
-                completion_pending_bus.exc_tval <= entries[completion_select_idx].exc_tval;
-                entries[completion_select_idx].completion_sent <= 1'b1;
+            if (completion_select_q_valid
+                && (!completion_pending_valid || writeback_ready)) begin
+                completion_select_q_valid <= 1'b0;
+                if (entries[completion_select_q_idx].valid
+                    && (entries[completion_select_q_idx].lsq_tag
+                        == completion_select_q_tag)) begin
+                    completion_pending_valid <= 1'b1;
+                    completion_pending_idx <= completion_select_q_idx;
+                    completion_pending_tag <= completion_select_q_tag;
+                    completion_pending_is_store
+                        <= is_store_entry(entries[completion_select_q_idx]);
+                    completion_pending_exception
+                        <= entries[completion_select_q_idx].exception_valid;
+                    completion_pending_bus.rob_tag
+                        <= entries[completion_select_q_idx].payload.rob_tag;
+                    completion_pending_bus.pdst_valid
+                        <= !is_store_entry(entries[completion_select_q_idx])
+                        && !entries[completion_select_q_idx].exception_valid
+                        && entries[completion_select_q_idx].payload.uop.pdst_valid;
+                    completion_pending_bus.pdst
+                        <= entries[completion_select_q_idx].payload.uop.pdst;
+                    completion_pending_bus.data
+                        <= entries[completion_select_q_idx].load_data;
+                    completion_pending_bus.exception_valid
+                        <= entries[completion_select_q_idx].exception_valid;
+                    completion_pending_bus.exc_code
+                        <= entries[completion_select_q_idx].exc_code;
+                    completion_pending_bus.exc_tval
+                        <= entries[completion_select_q_idx].exc_tval;
+                    entries[completion_select_q_idx].completion_sent <= 1'b1;
+                end
+            end
+            if (!completion_select_q_valid && completion_select_valid) begin
+                completion_select_q_valid <= 1'b1;
+                completion_select_q_idx <= completion_select_idx;
+                completion_select_q_tag <= entries[completion_select_idx].lsq_tag;
             end
 
             // ── ⑧ 新入队 ──
@@ -1070,6 +1306,22 @@ module lsq #(
         if (rst_n && !recover.valid) begin
             assert (!enq_valid[1] || enq_valid[0])
                 else $error("lsq: enqueue lane1 requires lane0");
+            for (assertion_idx = 0; assertion_idx < DEPTH;
+                 assertion_idx = assertion_idx + 1) begin
+                assert (!age_older[assertion_idx][assertion_idx])
+                    else $error("lsq: age matrix contains a self edge");
+                if (entries[assertion_idx].valid
+                    && !is_store_entry(entries[assertion_idx]))
+                    assert ((older_store_mask[assertion_idx]
+                             & ~active_store_mask) == '0)
+                        else $error("lsq: Load dependency points to a non-Store slot");
+                for (assertion_other_idx = 0;
+                     assertion_other_idx < DEPTH;
+                     assertion_other_idx = assertion_other_idx + 1)
+                    assert (!(age_older[assertion_idx][assertion_other_idx]
+                              && age_older[assertion_other_idx][assertion_idx]))
+                        else $error("lsq: age matrix is not antisymmetric");
+            end
         end
     end
 `endif
