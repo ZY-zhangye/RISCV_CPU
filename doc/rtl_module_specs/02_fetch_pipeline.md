@@ -1,0 +1,67 @@
+# Fetch Pipeline 设计
+
+建议模块名：fetch_pipeline，内部阶段 F0、F1、F2。
+
+## 1. 输入输出端口
+
+| 方向 | 端口 | 类型/位宽 | 说明 |
+|---|---|---:|---|
+| input | clk_i、rst_i | 1 | 时钟复位 |
+| input | redirect_valid_i | 1 | 已寄存重定向 |
+| input | redirect_pc_i | 32 | 分支、异常或 MRET 目标 |
+| input | ibuf_ready_i | 1 | Instruction Buffer 可收一包 |
+| output | fetch_valid_o | 1 | F2 包有效 |
+| output | fetch_packet_o | fetch_packet_t | 最多四条指令 |
+| output | bp_query_o | typed | F0 预测器查询 |
+| input | bp_result_i | typed | F1 预测器结果 |
+| output | imem_req_o | typed | 16-byte 对齐读请求 |
+| input | imem_resp_i | typed | 128-bit 同步返回 |
+
+## 2. 内部状态
+
+- pc_f0_q：当前请求 PC。
+- pc_f1_q、pc_f2_q：与 IROM/预测结果对齐的 PC。
+- valid_f1_q、valid_f2_q：流水有效位。
+- fetch_id_q：每接受一个取指块递增。
+- epoch_q：每次 redirect 翻转或递增，用于丢弃旧返回。
+
+## 3. 周期级时序
+
+| 周期阶段 | 主要工作 | 寄存输出 |
+|---|---|---|
+| F0 | 生成 block PC，查询 IROM/BTB/BHT | PC、slot offset、epoch |
+| F1 | 接收 128-bit IROM 和预测元数据 | 指令块、BTB/BHT 结果 |
+| F2 | 选择块内最早预测跳转，生成 slot_valid 和 next PC | fetch_packet |
+
+F2 只做四槽小规模选择和地址生成。IROM 数据不得在同周期经过复杂预测选择后继续进入
+Decode；必须先进入 Instruction Buffer。
+
+## 4. PC 更新
+
+优先级：
+
+1. rst_i：PC 置 RESET_PC。
+2. redirect_valid_i：清 F1/F2 valid，PC 置 redirect_pc_i，更新 epoch。
+3. F2 包被 ibuf 接收：PC 置预测目标或顺序下一块。
+4. 其他情况：保持。
+
+顺序 next PC 需要考虑当前 PC[3:2]，但输出包的 block_pc 始终 16-byte 对齐。
+slot_valid 从起始 slot 开始，预测跳转之后的槽清零。
+
+## 5. 反压
+
+F2 使用一项弹性寄存器。ibuf_ready_i=0 时，F2 payload 保持，F0/F1 逐级停住。
+该反压最多穿过本模块内部三个小阶段，不得越过 Instruction Buffer 直接依赖 Decode。
+
+## 6. 异常与边界
+
+- 当前无 RVC，PC[1:0] 非零形成 instruction-address-misaligned 取指异常包。
+- 16 KB IROM 越界策略由顶层地址映射确定，可产生 access fault。
+- redirect 与旧 IROM 返回同周期到达时，以 redirect 为准，旧 epoch 返回丢弃。
+
+## 7. 关键断言
+
+- imem_req 地址低 4 位为 0。
+- fetch_packet.slot_valid 在预测跳转槽之后全为 0。
+- redirect 后旧 epoch 包不会写入 ibuf。
+- F2 stall 时 fetch_packet 稳定。
