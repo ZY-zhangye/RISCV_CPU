@@ -37,6 +37,7 @@ module writeback_commit_stage #(
     input  wire core_port_pkg::csr_read_request_t     csr_read_request,
     output      core_port_pkg::csr_read_response_t    csr_read_response,
     output logic                                      csr_commit_available,
+    output logic [1:0]                                csr_commit_ready_o,
 
     // ROB/LSQ commit 侧。
     input  wire core_port_pkg::rob_commit_bundle_t    rob_commit_bus,
@@ -76,6 +77,8 @@ module writeback_commit_stage #(
     recover_event_t fence_i_recover;
     recover_event_t recover_next;
     recover_event_t recover_reg;
+
+    assign csr_commit_ready_o = csr_commit_ready;
 
     always_comb begin
         fence_i_recover = '0;

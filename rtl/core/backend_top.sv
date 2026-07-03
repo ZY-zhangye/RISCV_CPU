@@ -62,10 +62,12 @@ module backend_top #(
     rn_rob_bundle_t rob_alloc_bus;
     rob_tag_pair_t rob_alloc_tag;
     logic rob_allowin;
+    dispatch_capacity_t rob_dispatch_capacity_q;
     logic [1:0] iq0_enq_valid, iq1_enq_valid, lsq_enq_valid;
     dp_iq_bundle_t iq0_enq_bus, iq1_enq_bus;
     dp_lsq_bundle_t lsq_enq_bus;
     dispatch_capacity_t iq0_capacity, iq1_capacity, lsq_capacity;
+    dispatch_capacity_t iq0_capacity_q, iq1_capacity_q, lsq_capacity_q;
 
     rob_commit_bundle_t rob_commit_bus;
     logic [1:0] rob_commit_ready, rob_commit_fire;
@@ -111,18 +113,61 @@ module backend_top #(
     csr_read_request_t csr_read_request;
     csr_read_response_t csr_read_response;
     logic csr_commit_available;
+    logic [1:0] csr_commit_ready;
 
     logic [1:0] store_commit_ready;
+    logic [1:0] store_commit_ready_q;
     logic lsq_wb_valid, lsq_wb_ready;
     lsq_writeback_t lsq_wb;
     logic [$clog2(LSQ_DEPTH+1)-1:0] lsq_occupancy;
     logic fence_commit_ready;
+    logic fence_commit_ready_q;
     logic lsq_empty_q;
+    logic [1:0] csr_commit_ready_q;
     logic [`ADDR_WIDTH-1:0] retire_next_pc;
+    rob_commit_bundle_t retire_commit_bus_d1;
+    rob_commit_bundle_t retire_commit_bus_d2;
+    logic [1:0] retire_commit_fire_d1;
+    logic [1:0] retire_commit_fire_d2;
 
     function automatic logic serial_slot(input rn_rob_slot_t slot);
         serial_slot = slot.is_csr || slot.is_fence || slot.is_mret
                     || slot.exception_valid;
+    endfunction
+
+    function automatic dispatch_capacity_t cap_after_enq(
+        input dispatch_capacity_t cap,
+        input logic [1:0]         enq_valid
+    );
+        int remaining;
+        begin
+            remaining = int'(cap)
+                      - int'({1'b0, enq_valid[0]})
+                      - int'({1'b0, enq_valid[1]});
+            if (remaining >= 2)
+                cap_after_enq = dispatch_capacity_t'(2);
+            else if (remaining == 1)
+                cap_after_enq = dispatch_capacity_t'(1);
+            else
+                cap_after_enq = '0;
+        end
+    endfunction
+
+    function automatic dispatch_capacity_t rob_capacity_after_cycle();
+        int free_after;
+        begin
+            free_after = int'(ROB_DEPTH) - int'(rob_occupancy)
+                       - int'({1'b0, rob_alloc_valid[0]})
+                       - int'({1'b0, rob_alloc_valid[1]})
+                       + int'({1'b0, rob_commit_fire[0]})
+                       + int'({1'b0, rob_commit_fire[1]});
+            if (free_after >= 2)
+                rob_capacity_after_cycle = dispatch_capacity_t'(2);
+            else if (free_after == 1)
+                rob_capacity_after_cycle = dispatch_capacity_t'(1);
+            else
+                rob_capacity_after_cycle = '0;
+        end
     endfunction
 
     assign dispatch_enable = !serializing_pending;
@@ -132,13 +177,15 @@ module backend_top #(
     // 完成内存可见更新；否则 FENCE.I 的重取可能与 Store 写入同沿发生，
     // IMEM 仍会采到旧指令。
     assign fence_commit_ready = (lsq_occupancy == '0) && lsq_empty_q;
-    assign commit_bus_o = rob_commit_bus;
-    assign commit_fire_o = rob_commit_fire;
+    assign commit_bus_o = retire_commit_bus_d2;
+    assign commit_fire_o = retire_commit_fire_d2;
     assign fence_i_commit_o = (rob_commit_fire[0] && rob_commit_bus.lane0.is_fence_i)
                             || (rob_commit_fire[1] && rob_commit_bus.lane1.is_fence_i);
     assign backend_idle_o = rob_empty && fence_commit_ready
                           && !serializing_pending && csr_commit_available
-                          && mlu_available && !recover_o.valid;
+                          && mlu_available && !recover_o.valid
+                          && !(|retire_commit_fire_d1)
+                          && !(|retire_commit_fire_d2);
 
     always_comb begin
         writeback_event = '0;
@@ -210,6 +257,39 @@ module backend_top #(
             lsq_empty_q <= (lsq_occupancy == '0);
     end
 
+    // Commit resource-ready snapshots. Store/CSR/FENCE readiness can be high
+    // fanout and physically distant from ROB; commit_controller consumes the
+    // registered snapshot so those resources do not drive commit_fire directly.
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid) begin
+            store_commit_ready_q <= '0;
+            csr_commit_ready_q   <= '0;
+            fence_commit_ready_q <= 1'b0;
+        end else begin
+            store_commit_ready_q <= store_commit_ready;
+            csr_commit_ready_q   <= csr_commit_ready;
+            fence_commit_ready_q <= fence_commit_ready;
+        end
+    end
+
+    // Dispatch consumes local capacity credits instead of current queue
+    // capacity outputs. The q values are conservative: they subtract this
+    // cycle's accepted enqueues and only learn about issue/drain frees after
+    // the owning queue's registered state exposes them.
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover_o.valid) begin
+            rob_dispatch_capacity_q <= '0;
+            iq0_capacity_q          <= '0;
+            iq1_capacity_q          <= '0;
+            lsq_capacity_q          <= '0;
+        end else begin
+            rob_dispatch_capacity_q <= rob_capacity_after_cycle();
+            iq0_capacity_q          <= cap_after_enq(iq0_capacity, iq0_enq_valid);
+            iq1_capacity_q          <= cap_after_enq(iq1_capacity, iq1_enq_valid);
+            lsq_capacity_q          <= cap_after_enq(lsq_capacity, lsq_enq_valid);
+        end
+    end
+
     always_ff @(posedge clk) begin
         if (!rst_n || recover_o.valid)
             serializing_pending <= 1'b0;
@@ -246,6 +326,22 @@ module backend_top #(
                             : (rob_commit_bus.lane0.pc + 32'd4);
     end
 
+    // 对外提交观测点对齐 Rename/RRAT retirement side-effect。
+    // 内部 ROB/LSQ/CSR 仍使用 rob_commit_fire 的提交决策事件。
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            retire_commit_bus_d1  <= '0;
+            retire_commit_bus_d2  <= '0;
+            retire_commit_fire_d1 <= '0;
+            retire_commit_fire_d2 <= '0;
+        end else begin
+            retire_commit_bus_d1  <= rob_commit_bus;
+            retire_commit_bus_d2  <= retire_commit_bus_d1;
+            retire_commit_fire_d1 <= rob_commit_fire;
+            retire_commit_fire_d2 <= retire_commit_fire_d1;
+        end
+    end
+
     rename_stage #(.RENAME_FIFO_DEPTH(RENAME_FIFO_DEPTH)) u_rename (
         .clk(clk), .rst_n(rst_n), .ds_to_rn_valid(ds_to_rn_valid),
         .rn_allowin(rn_allowin), .ds_to_rn_bus(ds_to_rn_bus),
@@ -257,12 +353,13 @@ module backend_top #(
     dispatch u_dispatch (
         .dispatch_enable(dispatch_enable),
         .rn_to_dp_valid(rn_to_dp_valid), .rn_to_dp_bus(rn_to_dp_bus),
-        .dp_ready(dp_ready), .rob_allowin(rob_allowin),
+        .dp_ready(dp_ready),
+        .rob_allowin(rob_dispatch_capacity_q == dispatch_capacity_t'(2)),
         .rob_alloc_tag(rob_alloc_tag), .rob_alloc_valid(rob_alloc_valid),
-        .rob_alloc_bus(rob_alloc_bus), .iq0_capacity(iq0_capacity),
-        .iq1_capacity(iq1_capacity), .iq0_enq_valid(iq0_enq_valid),
+        .rob_alloc_bus(rob_alloc_bus), .iq0_capacity(iq0_capacity_q),
+        .iq1_capacity(iq1_capacity_q), .iq0_enq_valid(iq0_enq_valid),
         .iq1_enq_valid(iq1_enq_valid), .iq0_enq_bus(iq0_enq_bus),
-        .iq1_enq_bus(iq1_enq_bus), .lsq_capacity(lsq_capacity),
+        .iq1_enq_bus(iq1_enq_bus), .lsq_capacity(lsq_capacity_q),
         .lsq_enq_valid(lsq_enq_valid), .lsq_enq_bus(lsq_enq_bus)
     );
 
@@ -366,9 +463,10 @@ module backend_top #(
         .lsq_bus(lsq_wb), .lsq_ready(lsq_wb_ready), .csr_valid(csr_wb_valid),
         .csr_bus(csr_wb), .csr_update(csr_update), .csr_ready(csr_wb_ready),
         .csr_read_request(csr_read_request), .csr_read_response(csr_read_response),
-        .csr_commit_available(csr_commit_available), .rob_commit_bus(rob_commit_bus),
-        .rob_commit_fire(rob_commit_fire), .store_commit_ready(store_commit_ready),
-        .fence_commit_ready(fence_commit_ready), .rob_empty(rob_empty),
+        .csr_commit_available(csr_commit_available),
+        .csr_commit_ready_o(csr_commit_ready), .rob_commit_bus(rob_commit_bus),
+        .rob_commit_fire(rob_commit_fire), .store_commit_ready(store_commit_ready_q),
+        .fence_commit_ready(fence_commit_ready_q), .rob_empty(rob_empty),
         .interrupt_pc(retire_next_pc), .rob_commit_ready(rob_commit_ready),
         .irq_software_i(irq_software_i), .irq_timer_i(irq_timer_i),
         .irq_external_i(irq_external_i), .recover(recover_o),
@@ -384,8 +482,19 @@ module backend_top #(
             assert (!(rob_alloc_valid[0] && serial_slot(rob_alloc_bus.lane0)
                       && rob_alloc_valid[1]))
                 else $error("backend_top: lane1 entered behind serializing lane0");
+            assert (!(|rob_alloc_valid) || rob_allowin)
+                else $error("backend_top: dispatch ROB credit over-admitted allocation");
+            assert ((int'(iq0_enq_valid[0]) + int'(iq0_enq_valid[1]))
+                    <= int'(iq0_capacity))
+                else $error("backend_top: dispatch IQ0 credit over-admitted enqueue");
+            assert ((int'(iq1_enq_valid[0]) + int'(iq1_enq_valid[1]))
+                    <= int'(iq1_capacity))
+                else $error("backend_top: dispatch IQ1 credit over-admitted enqueue");
+            assert ((int'(lsq_enq_valid[0]) + int'(lsq_enq_valid[1]))
+                    <= int'(lsq_capacity))
+                else $error("backend_top: dispatch LSQ credit over-admitted enqueue");
             if (fence_i_commit_o)
-                assert (fence_commit_ready)
+                assert (fence_commit_ready_q)
                     else $error("backend_top: FENCE.I committed before LSQ drained");
         end
     end

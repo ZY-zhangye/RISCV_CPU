@@ -70,15 +70,21 @@ module rob (
     rob_entry_t entries [0:ROB_DEPTH-1];
     rob_entry_t head_entry0;
     rob_entry_t head_entry1;
+    rob_commit_bundle_t commit_bus_q;
+    rob_commit_bundle_t commit_bus_next;
 
     rob_tag_t head_ptr;
     rob_tag_t tail_ptr;
     rob_tag_t head_ptr_plus_one;
     rob_tag_t tail_ptr_plus_one;
+    rob_tag_t next_head_ptr;
+    rob_tag_t next_head_ptr_plus_one;
     logic [ROB_COUNT_WIDTH-1:0] occupancy;
+    logic [ROB_COUNT_WIDTH-1:0] occupancy_next;
     logic [1:0] alloc_fire;
     logic [1:0] alloc_count;
     logic [1:0] commit_count;
+    logic commit_recover_now;
     integer reset_idx;
 
     function automatic logic stop_younger_commit(input rob_entry_t entry);
@@ -117,6 +123,83 @@ module rob (
         end
     endfunction
 
+    function automatic rob_entry_t make_alloc_entry(
+        input rn_rob_slot_t slot,
+        input rob_tag_t     tag
+    );
+        rob_entry_t entry;
+        begin
+            entry = '{
+                valid:             1'b1,
+                complete:          slot.complete_on_alloc,
+                tag:               tag,
+                pc:                slot.pc,
+                rd:                slot.rd,
+                pdst:              slot.pdst,
+                stale_pdst:        slot.stale_pdst,
+                pdst_valid:        slot.pdst_valid,
+                is_branch:         slot.is_branch,
+                is_store:          slot.is_store,
+                is_csr:            slot.is_csr,
+                is_fence:          slot.is_fence,
+                is_fence_i:        slot.is_fence_i,
+                is_mret:           slot.is_mret,
+                exception_valid:   slot.exception_valid,
+                exc_code:          slot.exc_code,
+                exc_tval:          slot.exc_tval,
+                redirect_valid:    1'b0,
+                redirect_target:   '0,
+                next_pc_valid:     1'b0,
+                next_pc:           '0
+            };
+            make_alloc_entry = entry;
+        end
+    endfunction
+
+    function automatic rob_entry_t entry_after_updates(input rob_tag_t tag);
+        rob_entry_t entry;
+        begin
+            entry = entries[tag[ROB_INDEX_WIDTH-1:0]];
+
+            if (complete_bus.lane0.valid && entry.valid
+                && (entry.tag == complete_bus.lane0.tag)
+                && (tag == complete_bus.lane0.tag)) begin
+                entry.complete         = 1'b1;
+                entry.exception_valid  = complete_bus.lane0.exception_valid;
+                entry.exc_code         = complete_bus.lane0.exc_code;
+                entry.exc_tval         = complete_bus.lane0.exc_tval;
+                entry.redirect_valid   = complete_bus.lane0.redirect_valid;
+                entry.redirect_target  = complete_bus.lane0.redirect_target;
+                entry.next_pc_valid    = complete_bus.lane0.next_pc_valid;
+                entry.next_pc          = complete_bus.lane0.next_pc;
+            end
+            if (complete_bus.lane1.valid && entry.valid
+                && (entry.tag == complete_bus.lane1.tag)
+                && (tag == complete_bus.lane1.tag)) begin
+                entry.complete         = 1'b1;
+                entry.exception_valid  = complete_bus.lane1.exception_valid;
+                entry.exc_code         = complete_bus.lane1.exc_code;
+                entry.exc_tval         = complete_bus.lane1.exc_tval;
+                entry.redirect_valid   = complete_bus.lane1.redirect_valid;
+                entry.redirect_target  = complete_bus.lane1.redirect_target;
+                entry.next_pc_valid    = complete_bus.lane1.next_pc_valid;
+                entry.next_pc          = complete_bus.lane1.next_pc;
+            end
+
+            if (commit_fire[0] && (tag == head_ptr))
+                entry.valid = 1'b0;
+            if (commit_fire[1] && (tag == head_ptr_plus_one))
+                entry.valid = 1'b0;
+
+            if (alloc_fire[0] && (tag == tail_ptr))
+                entry = make_alloc_entry(alloc_bus.lane0, tail_ptr);
+            if (alloc_fire[1] && (tag == tail_ptr_plus_one))
+                entry = make_alloc_entry(alloc_bus.lane1, tail_ptr_plus_one);
+
+            entry_after_updates = entry;
+        end
+    endfunction
+
     always_comb begin
         head_ptr_plus_one = head_ptr + ROB_PTR_WIDTH'(1);
         tail_ptr_plus_one = tail_ptr + ROB_PTR_WIDTH'(1);
@@ -130,25 +213,41 @@ module rob (
         alloc_fire[1] = alloc_valid[1] && alloc_valid[0] && rob_allowin;
         alloc_count   = {1'b0, alloc_fire[0]} + {1'b0, alloc_fire[1]};
 
-        commit_bus = '0;
-        head_entry0 = entries[head_ptr[ROB_INDEX_WIDTH-1:0]];
-        head_entry1 = entries[head_ptr_plus_one[ROB_INDEX_WIDTH-1:0]];
-
-        if (!recover.valid) begin
-            if ((occupancy != 0) && head_entry0.valid && head_entry0.complete)
-                commit_bus.lane0 = make_commit_slot(head_entry0);
-
-            if ((occupancy >= 2) && commit_bus.lane0.valid
-                && !stop_younger_commit(head_entry0)
-                && head_entry1.valid && head_entry1.complete)
-                commit_bus.lane1 = make_commit_slot(head_entry1);
-        end
+        commit_bus = recover.valid ? '0 : commit_bus_q;
 
         commit_fire[0] = !recover.valid && commit_bus.lane0.valid
                        && commit_ready[0];
         commit_fire[1] = !recover.valid && commit_bus.lane1.valid
                        && commit_ready[1] && commit_fire[0];
         commit_count   = {1'b0, commit_fire[0]} + {1'b0, commit_fire[1]};
+        commit_recover_now = (commit_fire[0]
+                              && (commit_bus.lane0.exception_valid
+                                  || commit_bus.lane0.redirect_valid
+                                  || commit_bus.lane0.is_mret
+                                  || commit_bus.lane0.is_fence_i))
+                          || (commit_fire[1]
+                              && (commit_bus.lane1.exception_valid
+                                  || commit_bus.lane1.redirect_valid
+                                  || commit_bus.lane1.is_mret
+                                  || commit_bus.lane1.is_fence_i));
+        occupancy_next = occupancy + ROB_COUNT_WIDTH'(alloc_count)
+                                   - ROB_COUNT_WIDTH'(commit_count);
+        next_head_ptr = head_ptr + ROB_PTR_WIDTH'(commit_count);
+        next_head_ptr_plus_one = next_head_ptr + ROB_PTR_WIDTH'(1);
+
+        commit_bus_next = '0;
+        head_entry0 = entry_after_updates(next_head_ptr);
+        head_entry1 = entry_after_updates(next_head_ptr_plus_one);
+
+        if (!recover.valid && !commit_recover_now) begin
+            if ((occupancy_next != 0) && head_entry0.valid && head_entry0.complete)
+                commit_bus_next.lane0 = make_commit_slot(head_entry0);
+
+            if ((occupancy_next >= 2) && commit_bus_next.lane0.valid
+                && !stop_younger_commit(head_entry0)
+                && head_entry1.valid && head_entry1.complete)
+                commit_bus_next.lane1 = make_commit_slot(head_entry1);
+        end
 
         // 只有真正提交且确实更新架构映射的指令才更新 RRAT/Free List。
         // 异常指令本身不提交其推测映射；误预测分支则可以正常提交映射。
@@ -177,6 +276,7 @@ module rob (
             head_ptr  <= '0;
             tail_ptr  <= '0;
             occupancy <= '0;
+            commit_bus_q <= '0;
             for (reset_idx = 0; reset_idx < ROB_DEPTH; reset_idx = reset_idx + 1)
                 entries[reset_idx] <= '0;
         end else begin
@@ -184,6 +284,7 @@ module rob (
             tail_ptr  <= tail_ptr + ROB_PTR_WIDTH'(alloc_count);
             occupancy <= occupancy + ROB_COUNT_WIDTH'(alloc_count)
                                    - ROB_COUNT_WIDTH'(commit_count);
+            commit_bus_q <= commit_bus_next;
 
             if (commit_fire[0])
                 entries[head_ptr[ROB_INDEX_WIDTH-1:0]].valid <= 1'b0;
@@ -239,55 +340,13 @@ module rob (
             end
 
             if (alloc_fire[0]) begin
-                entries[tail_ptr[ROB_INDEX_WIDTH-1:0]] <= '{
-                    valid:             1'b1,
-                    complete:          alloc_bus.lane0.complete_on_alloc,
-                    tag:               tail_ptr,
-                    pc:                alloc_bus.lane0.pc,
-                    rd:                alloc_bus.lane0.rd,
-                    pdst:              alloc_bus.lane0.pdst,
-                    stale_pdst:        alloc_bus.lane0.stale_pdst,
-                    pdst_valid:        alloc_bus.lane0.pdst_valid,
-                    is_branch:         alloc_bus.lane0.is_branch,
-                    is_store:          alloc_bus.lane0.is_store,
-                    is_csr:            alloc_bus.lane0.is_csr,
-                    is_fence:          alloc_bus.lane0.is_fence,
-                    is_fence_i:        alloc_bus.lane0.is_fence_i,
-                    is_mret:           alloc_bus.lane0.is_mret,
-                    exception_valid:   alloc_bus.lane0.exception_valid,
-                    exc_code:          alloc_bus.lane0.exc_code,
-                    exc_tval:          alloc_bus.lane0.exc_tval,
-                    redirect_valid:    1'b0,
-                    redirect_target:   '0,
-                    next_pc_valid:     1'b0,
-                    next_pc:           '0
-                };
+                entries[tail_ptr[ROB_INDEX_WIDTH-1:0]]
+                    <= make_alloc_entry(alloc_bus.lane0, tail_ptr);
             end
 
             if (alloc_fire[1]) begin
-                entries[tail_ptr_plus_one[ROB_INDEX_WIDTH-1:0]] <= '{
-                    valid:             1'b1,
-                    complete:          alloc_bus.lane1.complete_on_alloc,
-                    tag:               tail_ptr_plus_one,
-                    pc:                alloc_bus.lane1.pc,
-                    rd:                alloc_bus.lane1.rd,
-                    pdst:              alloc_bus.lane1.pdst,
-                    stale_pdst:        alloc_bus.lane1.stale_pdst,
-                    pdst_valid:        alloc_bus.lane1.pdst_valid,
-                    is_branch:         alloc_bus.lane1.is_branch,
-                    is_store:          alloc_bus.lane1.is_store,
-                    is_csr:            alloc_bus.lane1.is_csr,
-                    is_fence:          alloc_bus.lane1.is_fence,
-                    is_fence_i:        alloc_bus.lane1.is_fence_i,
-                    is_mret:           alloc_bus.lane1.is_mret,
-                    exception_valid:   alloc_bus.lane1.exception_valid,
-                    exc_code:          alloc_bus.lane1.exc_code,
-                    exc_tval:          alloc_bus.lane1.exc_tval,
-                    redirect_valid:    1'b0,
-                    redirect_target:   '0,
-                    next_pc_valid:     1'b0,
-                    next_pc:           '0
-                };
+                entries[tail_ptr_plus_one[ROB_INDEX_WIDTH-1:0]]
+                    <= make_alloc_entry(alloc_bus.lane1, tail_ptr_plus_one);
             end
         end
     end

@@ -147,6 +147,7 @@ module rename_stage #(
     logic [1:0]             alloc_valid;
     logic [1:0]             alloc_fire;
     phys_reg_pair_t         alloc_preg;
+    commit_map_bundle_t     commit_map_q;
     phys_reg_event_bundle_t free_event;
     logic [PHYS_REG_COUNT-1:0] free_bitmap_unused;
     logic [$clog2(PHYS_REG_COUNT+1)-1:0] free_count_unused;
@@ -303,7 +304,7 @@ module rename_stage #(
     // 本块从候选指令和 Free List 分配结果出发，构建：
     //   - rat_req：送往 RAT/RRAT 的查询请求
     //   - alloc_event：送往 Busy Table 的分配事件
-    //   - free_event：从 commit_map 提取的回收事件，送 Free List
+    //   - free_event：从寄存后的 commit_map_q 提取回收事件，送 Free List
     //   - busy_query：送往 Busy Table 的就绪查询
     //
     // 【关键数据依赖】
@@ -312,11 +313,13 @@ module rename_stage #(
     //   → 组合路径：candidate → RAT → Busy Table
     //
     // 【free_event 数据流】
-    //   commit_map.stale_pdst（ROB 提交时携带）
+    //   commit_map_q.stale_pdst（ROB 提交后一拍携带）
     //   → free_event.preg → Free List free_mask
     //   → free_bitmap_next = (free_bitmap | free_mask) & ~alloc_mask
-    //   注意：commit_map 中的 stale_pdst 来自 ROB 条目中保存的 rename 时刻快照，
-    //   不是 Rename 级的实时数据。Rename 只负责转发。
+    //   注意：commit_map_q 中的 stale_pdst 来自 ROB 条目中保存的 rename 时刻快照。
+    //   这里打一拍后再转发，切断 ROB/commit 控制到 Free List 位图 D 端的长路径；
+    //   recover 同样已在 writeback_commit_stage 中寄存，因此恢复使用的 RRAT_next
+    //   与 commit_map_q 自然对齐。
     // ==========================================================================
     always_comb begin
         rat_req = '0;
@@ -344,12 +347,12 @@ module rename_stage #(
         alloc_event.lane1.preg  = alloc_preg.lane1;
 
         free_event = '0;
-        free_event.lane0.valid = commit_map.lane0.valid
-                               && (commit_map.lane0.stale_pdst != '0);
-        free_event.lane0.preg  = commit_map.lane0.stale_pdst;
-        free_event.lane1.valid = commit_map.lane1.valid
-                               && (commit_map.lane1.stale_pdst != '0);
-        free_event.lane1.preg  = commit_map.lane1.stale_pdst;
+        free_event.lane0.valid = commit_map_q.lane0.valid
+                               && (commit_map_q.lane0.stale_pdst != '0);
+        free_event.lane0.preg  = commit_map_q.lane0.stale_pdst;
+        free_event.lane1.valid = commit_map_q.lane1.valid
+                               && (commit_map_q.lane1.stale_pdst != '0);
+        free_event.lane1.preg  = commit_map_q.lane1.stale_pdst;
 
         busy_query = '0;
         busy_query.lane0.use_src1 = candidate0.use_rs1;
@@ -577,6 +580,15 @@ module rename_stage #(
         end
     end
 
+    // 提交 side-effect 事件包打一拍：RRAT 更新与 stale pdst 回收都消费
+    // commit_map_q，避免 ROB head/commit gating 直接穿透到 Rename/Free List。
+    always_ff @(posedge clk) begin
+        if (!rst_n || recover.valid)
+            commit_map_q <= '0;
+        else
+            commit_map_q <= commit_map;
+    end
+
     // ==========================================================================
     // 子模块例化
     // ==========================================================================
@@ -611,7 +623,7 @@ module rename_stage #(
         .rename_req        (rat_req),
         .rename_fire       (rename_fire),
         .rename_rsp        (rat_rsp),
-        .commit_map        (commit_map),
+        .commit_map        (commit_map_q),
         .recover           (recover),
         .recover_used_mask (recover_used_mask)
     );
@@ -628,5 +640,15 @@ module rename_stage #(
         .recover         (recover),
         .busy_bitmap_o   (busy_bitmap_unused)
     );
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n) begin
+            assert (!(free_event.lane0.valid && free_event.lane1.valid
+                      && (free_event.lane0.preg == free_event.lane1.preg)))
+                else $error("rename_stage: duplicate stale pdst release");
+        end
+    end
+`endif
 
 endmodule
