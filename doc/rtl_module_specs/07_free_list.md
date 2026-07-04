@@ -10,13 +10,20 @@
 | output | alloc_valid_o | 1 | 可满足完整请求 |
 | output | alloc_prd0_o、alloc_prd1_o | 6 | 选择结果 |
 | input | alloc_fire_i | 1 | 真正消耗结果 |
+| input | alloc_cancel_i | 1 | 取消尚未消耗的 reservation |
 | input | reclaim_valid_i | 2 | Commit 延迟回收 |
 | input | reclaim_prd_i | 2×6 | old PRD |
+| output | reclaim_ready_o | 1 | Reclaim Buffer 可原子接受整个前缀有效 bundle |
 | input | checkpoint_save_i | 1 | 保存恢复信息 |
 | input | checkpoint_id_i | 2 | checkpoint 槽 |
+| input | checkpoint_keep_count_i | 2 | 当前分配 bundle 中位于分支及其之前的 PRD 数 |
+| input | checkpoint_clear_i / checkpoint_clear_id_i | 1 / 2 | 正确预测后释放 checkpoint |
 | input | branch_restore_i | 1 | 分支恢复 |
+| input | branch_restore_id_i | 2 | 待恢复 checkpoint 槽 |
+| output | branch_restore_done_o | 1 | allocation log 回滚完成脉冲 |
 | input | rebuild_start_i | 1 | 异常后重建 |
 | input | amt_map_i | 32×6 | 已提交映射扫描源 |
+| output | busy_o | 1 | rollback/rebuild 期间禁止新分配 |
 | output | rebuild_done_o | 1 | 重建完成 |
 | output | free_count_o | 7 | 空闲数 |
 
@@ -40,6 +47,12 @@ bank_same 性能事件。选择结果必须先写入 allocator reservation/respo
 Rename R1 使用；禁止 `alloc_req → bitmap priority encode → alloc_resp` 同周期组合返回。
 reservation 在 `alloc_fire` 前保持且不清 bitmap，flush/cancel 时无副作用释放。
 
+V1 使用 S0/S1 两拍选择和单个 reservation 寄存器：S0 只选择第一个 PRD 并寄存，S1
+基于已寄存的第一个 PRD 选择第二个 PRD，禁止两套组/组内优先编码器组合串联。
+reservation 被 fire/cancel 清除后的下一周期才重新开始选择，不建立
+`alloc_fire → bitmap update → next selection` 的同周期穿越路径。吞吐优化应通过后续增加
+第二个预选槽完成，而不是放宽该时序边界。
+
 ## 4. 更新规则
 
 alloc_fire 时清除所选 bit。reclaim 被吸收时置位对应 bit。若同周期同一 PRD 被错误地
@@ -50,8 +63,16 @@ Reclaim Buffer 满时 Commit 必须局部停顿，不允许把压力组合传到
 ## 5. 分支恢复
 
 推荐 checkpoint 保存 allocation log tail，而非复制完整 64-bit bitmap。每次分配把
-PRD 写入小型 allocation log；误预测按 checkpoint tail 回滚年轻分配，并将这些 PRD
-逐周期归还。恢复期间暂停 Rename，允许用数周期换取较短关键路径。
+PRD 写入 64 项 allocation log；误预测按 checkpoint tail 回滚年轻分配，并将这些 PRD
+逐周期归还。恢复期间暂停 Rename，允许用数周期换取较短关键路径。ROB 深度为 32，必须
+保证任一活动 checkpoint 后的未决 PRD 分配数小于 allocation log 容量。
+
+checkpoint 与 `alloc_fire` 同周期保存。`checkpoint_keep_count_i` 指明当前 bundle 中应保留
+在 checkpoint 之前的 PRD 数：lane0 分支时不得错误保留 lane1 的年轻 PRD；lane1 分支时
+可包含 lane0 和 lane1 自身的目的 PRD。checkpoint clear 只释放日志位置标记，不改 bitmap。
+
+allocation log 动态读取必须先进入 `rollback_prd` 寄存器，下一拍才写 free bitmap，禁止
+`64:1 log read mux → bitmap write decoder` 同周期级联。
 
 若最终选择 bitmap snapshot，必须将 snapshot 寄存分布实现，恢复也在本地时序完成。
 
@@ -63,6 +84,9 @@ rebuild_start 后：
 2. 每周期扫描 2 至 4 个 AMT 项，标记其 PRD 已使用。
 3. 扫描完毕后 free_bitmap = ~used_bitmap，并强制清 p0。
 4. 更新 group_nonempty，拉高 rebuild_done。
+
+AMT 的动态双项读取与 used-bitmap 标记必须由寄存器隔开；恢复多一个启动周期可以接受，
+不得形成 `32:1 AMT mux → 64-bit used decoder/update` 的单周期路径。
 
 ## 7. 断言
 

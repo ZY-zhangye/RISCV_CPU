@@ -521,8 +521,9 @@ Free List 推荐采用分组 Bitmap。
 分配流程：
 
 ```text
-一级：选择非空组
-二级：组内 first-one / second-one
+S0：选择第一个非空组和组内 first-one，寄存 PRD0
+S1：从排除 PRD0 的位图选择 PRD1，写入 reservation
+Fire：Rename 接受时原子清 bitmap
 ```
 
 避免使用：
@@ -538,6 +539,10 @@ lane0_new_prd[0] != lane1_new_prd[0]
 ```
 
 从而降低未来写回和读取冲突。
+
+V1 不允许请求经优先编码器同周期组合返回 Rename。单 reservation 在 fire/cancel 后留出
+一个重新选择周期，以换取明确的时钟边界；若综合后需要提高吞吐，只允许增加第二个预选
+槽，不得恢复组合响应。
 
 ---
 
@@ -560,6 +565,11 @@ Commit 本周期产生回收 PRD
 → 写入 Reclaim Buffer
 → 下一周期写入 Free List
 ```
+
+分支 checkpoint 保存 64 项 allocation log 的 tail。误预测时每周期回退一个日志项并
+归还对应 PRD；异常恢复每周期扫描两个 AMT 映射，并用一个读出寄存周期隔离 AMT Mux，
+约 17 周期重建 bitmap。两类恢复期间均
+停止新分配，禁止单周期复制或重算完整空闲表。
 
 ---
 

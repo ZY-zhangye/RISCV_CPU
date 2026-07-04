@@ -19,6 +19,7 @@
 | D12 | RAT map 与 PRD ready 是否同拍级联 | 强制分拍；ready 只由已寄存 PRD 编号查询 | rename、rat_amt |
 | D13 | Allocator 是否允许组合响应 | 禁止；使用保持到 fire/cancel 的寄存 reservation | free_list、rename、ROB、LSQ |
 | D14 | 200 MHz 如何验收 | xc7k325tffg900-2、5.000 ns、route 后 WNS/WHS≥0、无未约束路径 | 全核 |
+| D15 | Free List 分配返回结构 | S0/S1 分拍选择后进入单 reservation；不串联两个优先选择器 | free_list、rename |
 
 ## 变更规则
 
