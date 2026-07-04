@@ -11,14 +11,14 @@
 | input | fetch_packet_i | fetch_packet_t | 最多四条 |
 | output | decode_valid_o | 2 | 前缀有效 |
 | input | decode_ready_i | 1 | Decode 接受整个输出 bundle |
-| output | decode_slots_o | 2×fetch_slot_t | PC、inst、预测信息 |
+| output | decode_slot0_o / decode_slot1_o | 2×fetch_slot_t | PC、inst、预测信息 |
 | input | flush_i | 1 | 重定向清空 |
 | output | occupancy_o | 4 | 0 至 8 |
 
 ## 2. 存储结构
 
 8 个固定 entry 环形队列。每项保存 inst、pc、pred_taken、pred_target、fetch_id 和
-必要的 fetch exception。维护 3-bit head/tail 与 4-bit occupancy。
+fetch exception 的 valid/cause/tval。维护 3-bit head/tail 与 4-bit occupancy。
 
 不使用整体移位。四写通过 tail、tail+1、tail+2、tail+3 的直接索引完成；双读通过
 head 和 head+1 完成。

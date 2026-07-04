@@ -19,18 +19,19 @@
 
 ## 2. 内部状态
 
-- pc_f0_q：当前请求 PC。
-- pc_f1_q、pc_f2_q：与 IROM/预测结果对齐的 PC。
-- valid_f1_q、valid_f2_q：流水有效位。
-- fetch_id_q：每接受一个取指块递增。
-- epoch_q：每次 redirect 翻转或递增，用于丢弃旧返回。
+- pc_f0_q：下一个投机请求 PC，每次发出请求后顺序推进。
+- request metadata：保存未决 IROM 请求的 PC、fetch_id、epoch 和预测结果。
+- F1 response FIFO：2 项，一项正常流水槽加一项 skid 槽。
+- valid_f2_q：F2 弹性输出有效位。
+- next_fetch_id_q：每发出一个取指事务递增，被冲刷的 ID 可以留下空洞。
+- epoch_q：每次 redirect 或内部预测 taken 翻转，用于丢弃旧返回。
 
 ## 3. 周期级时序
 
 | 周期阶段 | 主要工作 | 寄存输出 |
 |---|---|---|
-| F0 | 生成 block PC，查询 IROM/BTB/BHT | PC、slot offset、epoch |
-| F1 | 接收 128-bit IROM 和预测元数据 | 指令块、BTB/BHT 结果 |
+| F0 | 生成 block PC，查询 IROM/BTB/BHT，投机推进顺序 PC | PC、fetch_id、epoch |
+| F1 | 接收 128-bit IROM 和预测元数据 | 2 项 response FIFO |
 | F2 | 选择块内最早预测跳转，生成 slot_valid 和 next PC | fetch_packet |
 
 F2 只做四槽小规模选择和地址生成。IROM 数据不得在同周期经过复杂预测选择后继续进入
@@ -42,16 +43,22 @@ Decode；必须先进入 Instruction Buffer。
 
 1. rst_i：PC 置 RESET_PC。
 2. redirect_valid_i：清 F1/F2 valid，PC 置 redirect_pc_i，更新 epoch。
-3. F2 包被 ibuf 接收：PC 置预测目标或顺序下一块。
-4. 其他情况：保持。
+3. F1 选中的包预测 taken：PC 置预测目标，冲刷所有年轻响应和请求。
+4. F0 发出普通请求：PC 投机更新为顺序下一块。
+5. 其他情况：保持。
 
 顺序 next PC 需要考虑当前 PC[3:2]，但输出包的 block_pc 始终 16-byte 对齐。
 slot_valid 从起始 slot 开始，预测跳转之后的槽清零。
 
 ## 5. 反压
 
-F2 使用一项弹性寄存器。ibuf_ready_i=0 时，F2 payload 保持，F0/F1 逐级停住。
-该反压最多穿过本模块内部三个小阶段，不得越过 Instruction Buffer 直接依赖 Decode。
+F2 使用一项弹性寄存器，F1 使用两项 response FIFO。前端以
+`F2 + F1 FIFO + outstanding request` 计算信用，只有在已发请求一定有落点时
+才继续发请求。ibuf_ready_i=0 时 F2 payload 保持；skid 槽先吸收已发响应，
+信用耗尽后 F0 停发。反压不得越过 Instruction Buffer 直接依赖 Decode。
+
+当 IROM 为一拍、有序同步返回时，流水填满后每周期可发出一个 128-bit 取指块。
+若 IROM 延迟增加，本版本的单未决请求接口会自动降低速率，但不会丢失响应。
 
 ## 6. 异常与边界
 

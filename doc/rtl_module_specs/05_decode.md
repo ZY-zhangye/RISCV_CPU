@@ -8,10 +8,10 @@
 |---|---|---|---|
 | input | in_valid_i | 2-bit | 前缀有效 |
 | output | in_ready_o | 1 | 输出寄存器可接收 |
-| input | fetch_slot_i | 2×fetch_slot_t | 两条原始指令 |
+| input | fetch_slot0_i / fetch_slot1_i | 2×fetch_slot_t | 两条原始指令 |
 | output | out_valid_o | 2-bit | 双路译码结果 |
 | input | out_ready_i | 1 | Rename R0 接收 |
-| output | decoded_uop_o | 2×decoded_uop_t | 统一微操作 |
+| output | decoded_uop0_o / decoded_uop1_o | 2×decoded_uop_t | 统一微操作 |
 | input | flush_i | 1 | 清空输出寄存器 |
 
 ## 2. 译码输出

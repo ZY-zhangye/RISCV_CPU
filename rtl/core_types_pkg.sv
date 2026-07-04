@@ -81,8 +81,8 @@ package core_types_pkg;
   } div_op_t;
 
   // CSR 操作类型枚举
-  typedef enum logic [1:0] {
-    CSR_RW, CSR_RS, CSR_RSI, CSR_RWI
+  typedef enum logic [2:0] {
+    CSR_RW, CSR_RS, CSR_RC, CSR_RWI, CSR_RSI, CSR_RCI
   } csr_op_t;
 
   // ==========================================================================
@@ -137,6 +137,7 @@ package core_types_pkg;
     logic [FETCH_ID_W_FULL-1:0] fetch_id; // 对应的取指事务 ID
     logic        exception_valid;// 是否携带取指异常 (如指令不对齐)
     logic [ 3:0] exception_cause;// 异常原因编码
+    logic [31:0] exception_tval; // 精确的取指异常地址
   } fetch_slot_t;
 
   // F2 阶段向指令缓冲 (Instruction Buffer) 输出的完整 4 路取指包
@@ -179,6 +180,8 @@ package core_types_pkg;
     mul_op_t     mul_op;         // 乘法指令选择
     div_op_t     div_op;         // 除法指令选择
     csr_op_t     csr_op;         // CSR 指令选择
+    logic [11:0] csr_addr;       // CSR 编号
+    logic [ 4:0] csr_zimm;       // CSR 立即数操作数
 
     // 特殊控制指令标记
     logic        serializing;   // 序列化标志 (如 CSR, MRET 等，需清空流水线或单发)
@@ -247,6 +250,8 @@ package core_types_pkg;
     mul_op_t          mul_op;
     div_op_t          div_op;
     csr_op_t          csr_op;
+    logic [11:0]      csr_addr;
+    logic [ 4:0]      csr_zimm;
 
     // 路由及回收 ID
     logic [ROB_ID_W-1:0] rob_id;        // 对应的 ROB 追踪 ID
@@ -288,6 +293,8 @@ package core_types_pkg;
     mul_op_t              mul_op;
     div_op_t              div_op;
     csr_op_t              csr_op;
+    logic [11:0]          csr_addr;
+    logic [ 4:0]          csr_zimm;
 
     logic [CHECKPOINTS-1:0] branch_mask; // 分支掩码
     logic                   write_rd;    // 是否写回目的寄存器
@@ -353,15 +360,26 @@ package core_types_pkg;
   // ==========================================================================
   // 重命名与外部模块分配接口 (Allocation Request & Response)
   // ==========================================================================
+  typedef struct packed {
+    logic                   valid;
+    logic [4:0]             arch_rd;
+    logic [PRD_W-1:0]       prd;
+  } commit_map_t;
+
   // 重命名阶段向物理寄存器 Free List、ROB、LSQ 请求分配资源的信号包
   typedef struct packed {
-    logic [1:0]    count;          // 请求分配的指令数量 (超标量：0/1/2)
-    logic          need_lsq;       // 是否有指令需要分配 Load/Store 队列资源
+    logic          valid;
+    logic [1:0]    lane_valid;     // 前缀有效：01/11
+    logic [1:0]    need_prd;
+    logic [1:0]    need_lq;
+    logic [1:0]    need_sq;
+    logic [1:0]    need_checkpoint;
   } alloc_req_t;
 
   // 资源分配响应包 (寄存后在 Rename 阶段使用)
   typedef struct packed {
     logic                 valid;         // 资源分配响应有效
+    logic [1:0]           lane_valid;    // 可原子授予的前缀 lane
     logic [1:0][PRD_W-1:0]    prd;       // 分配的物理寄存器
     logic [1:0][ROB_ID_W-1:0] rob_id;    // 分配的 ROB ID
     logic [1:0][LQ_ID_W-1:0]  lq_id;     // 分配的 LQ ID

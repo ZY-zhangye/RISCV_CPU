@@ -7,7 +7,7 @@ module tb_fetch_pipeline;
   logic rst_i = 1'b1;
   logic redirect_valid_i = 1'b0;
   logic [31:0] redirect_target_i = '0;
-  logic ibuf_ready_i = 1'b0;
+  logic ibuf_ready_i = 1'b1;
   logic fetch_valid_o;
   fetch_packet_t fetch_packet_o;
   logic bp_query_valid_o;
@@ -18,111 +18,147 @@ module tb_fetch_pipeline;
   logic imem_resp_valid_i = 1'b0;
   logic [127:0] imem_resp_data_i = '0;
 
+  logic branch_enable = 1'b0;
+  integer cycle_count = 0;
+
   fetch_pipeline dut (.*);
 
   always #5 clk_i = ~clk_i;
 
-  task automatic send_response(
-      input logic [127:0] data,
-      input bp_pred_t pred
-  );
-    // First let the request be sampled on a rising edge, then return it on a
-    // later rising edge as a synchronous memory would.
-    @(posedge clk_i);
+  function automatic logic [127:0] memory_block(input logic [31:0] addr);
+    memory_block = {addr + 32'd12, addr + 32'd8,
+                    addr + 32'd4, addr};
+  endfunction
+
+  function automatic bp_pred_t prediction_for(input logic [31:0] addr);
+    bp_pred_t prediction;
+    prediction = '0;
+    if (branch_enable && (addr == 32'h8000_0040)) begin
+      prediction.valid      = 1'b1;
+      prediction.btb_hit    = 4'b0010;
+      prediction.bht_taken  = 4'b0010;
+      prediction.btb_slot   = 2'd1;
+      prediction.btb_target = 32'h8000_0100;
+    end
+    return prediction;
+  endfunction
+
+  // One-cycle, ordered synchronous IROM and predictor model.
+  always_ff @(posedge clk_i) begin
+    cycle_count <= cycle_count + 1;
+    if (rst_i) begin
+      imem_resp_valid_i <= 1'b0;
+      imem_resp_data_i  <= '0;
+      bp_result_i       <= '0;
+    end else begin
+      imem_resp_valid_i <= imem_req_valid_o;
+      if (imem_req_valid_o)
+        imem_resp_data_i <= memory_block(imem_req_addr_o);
+      if (bp_query_valid_o)
+        bp_result_i <= prediction_for(bp_query_o.pc);
+      else
+        bp_result_i <= '0;
+    end
+  end
+
+  task automatic pulse_redirect(input logic [31:0] target);
     @(negedge clk_i);
-    imem_resp_data_i  = data;
-    imem_resp_valid_i = 1'b1;
-    bp_result_i       = pred;
+    redirect_target_i = target;
+    redirect_valid_i  = 1'b1;
     @(negedge clk_i);
-    imem_resp_valid_i = 1'b0;
-    bp_result_i       = '0;
+    redirect_valid_i  = 1'b0;
   endtask
 
-  task automatic expect_request(input logic [31:0] addr);
-    wait (imem_req_valid_o === 1'b1);
-    if (imem_req_addr_o !== addr)
-      $fatal(1, "request address: got %h expected %h", imem_req_addr_o, addr);
-    if (bp_query_o.pc !== addr)
-      $fatal(1, "BP query address: got %h expected %h", bp_query_o.pc, addr);
+  task automatic wait_packet(input logic [31:0] expected_block);
+    while (!fetch_valid_o)
+      @(negedge clk_i);
+    if (fetch_packet_o.block_pc !== expected_block)
+      $fatal(1, "packet block: got %h expected %h",
+             fetch_packet_o.block_pc, expected_block);
   endtask
 
   initial begin
-    bp_pred_t pred;
+    integer request_number;
+    integer previous_request_cycle;
+    logic [31:0] expected_address;
     fetch_packet_t stalled_packet;
 
     repeat (2) @(posedge clk_i);
     @(negedge clk_i);
     rst_i = 1'b0;
 
-    // Reset PC, little-endian slot extraction, and F2 hold under backpressure.
-    expect_request(32'h8000_0000);
-    pred = '0;
-    send_response(128'h4444_4444_3333_3333_2222_2222_1111_1111, pred);
-    wait (fetch_valid_o === 1'b1);
-    #1;
-    if (fetch_packet_o.block_pc !== 32'h8000_0000 ||
-        fetch_packet_o.slot_valid !== 4'b1111 ||
-        fetch_packet_o.inst[0] !== 32'h1111_1111 ||
-        fetch_packet_o.inst[3] !== 32'h4444_4444)
-      $fatal(1, "bad first fetch packet");
-    stalled_packet = fetch_packet_o;
-    repeat (2) begin
+    // Once started, an unstalled one-cycle IROM must accept a new sequential
+    // block every cycle rather than waiting for the previous F2 packet.
+    request_number = 0;
+    previous_request_cycle = -1;
+    while (request_number < 6) begin
       @(posedge clk_i);
-      #1;
+      if (imem_req_valid_o) begin
+        expected_address = 32'h8000_0000 + request_number * 16;
+        if (imem_req_addr_o !== expected_address)
+          $fatal(1, "request %0d: got %h expected %h", request_number,
+                 imem_req_addr_o, expected_address);
+        if ((previous_request_cycle >= 0) &&
+            (cycle_count != previous_request_cycle + 1))
+          $fatal(1, "sequential requests were not issued in adjacent cycles");
+        previous_request_cycle = cycle_count;
+        request_number = request_number + 1;
+      end
+    end
+    // Verify packet contents and then apply backpressure.  The F2 payload must
+    // remain stable, and request issue must stop after the reserved response is
+    // absorbed by the skid entry.
+    wait_packet(32'h8000_0020);
+    if (fetch_packet_o.inst[0] !== 32'h8000_0020 ||
+        fetch_packet_o.inst[3] !== 32'h8000_002c ||
+        fetch_packet_o.slot_valid !== 4'b1111)
+      $fatal(1, "bad sequential fetch packet");
+
+    @(negedge clk_i);
+    ibuf_ready_i = 1'b0;
+    stalled_packet = fetch_packet_o;
+    repeat (4) begin
+      @(negedge clk_i);
       if (!fetch_valid_o || fetch_packet_o !== stalled_packet)
         $fatal(1, "F2 payload changed while stalled");
     end
-
-    @(negedge clk_i);
+    if (imem_req_valid_o)
+      $fatal(1, "request issue did not stop after frontend credits filled");
     ibuf_ready_i = 1'b1;
-    @(posedge clk_i);
-    #1;
-    if (fetch_valid_o)
-      $fatal(1, "accepted F2 packet did not retire");
+    repeat (2) @(posedge clk_i);
 
-    // A predicted branch in slot 1 keeps slots 0..1 and redirects next PC.
-    expect_request(32'h8000_0010);
-    pred = '0;
-    pred.valid      = 1'b1;
-    pred.btb_hit    = 4'b0010;
-    pred.bht_taken  = 4'b0010;
-    pred.btb_slot   = 2'd1;
-    pred.btb_target = 32'h8000_0040;
-    send_response(128'hdddd_dddd_cccc_cccc_bbbb_bbbb_aaaa_aaaa, pred);
-    wait (fetch_valid_o === 1'b1);
-    #1;
+    // Redirect to a block with a predicted-taken branch in slot 1.  Sequential
+    // younger requests may have reached IROM, but none may escape to the IBUF.
+    branch_enable = 1'b1;
+    pulse_redirect(32'h8000_0040);
+    wait_packet(32'h8000_0040);
     if (!fetch_packet_o.pred_taken ||
         fetch_packet_o.pred_slot !== 2'd1 ||
-        fetch_packet_o.pred_target !== 32'h8000_0040 ||
+        fetch_packet_o.pred_target !== 32'h8000_0100 ||
         fetch_packet_o.slot_valid !== 4'b0011)
       $fatal(1, "bad predicted-taken packet");
+
     @(posedge clk_i);
-    #1;
-    expect_request(32'h8000_0040);
-
-    // Redirect while the 0x40 request is pending.  Its late response must be
-    // drained, and the misaligned redirect becomes a synthetic exception.
     @(negedge clk_i);
-    redirect_target_i = 32'h8000_0082;
-    redirect_valid_i  = 1'b1;
-    @(negedge clk_i);
-    redirect_valid_i  = 1'b0;
-    send_response(128'hffff_ffff_eeee_eeee_dddd_dddd_cccc_cccc, '0);
+    wait_packet(32'h8000_0100);
 
-    wait (fetch_valid_o === 1'b1);
-    #1;
+    // Misaligned redirects create one synthetic exception packet without an
+    // IROM access for the bad address.
+    branch_enable = 1'b0;
+    pulse_redirect(32'h8000_0182);
+    wait_packet(32'h8000_0180);
     if (!fetch_packet_o.exception_valid ||
         fetch_packet_o.exception_cause !== 4'd0 ||
-        fetch_packet_o.exception_tval !== 32'h8000_0082 ||
+        fetch_packet_o.exception_tval !== 32'h8000_0182 ||
         fetch_packet_o.slot_valid !== 4'b0001)
       $fatal(1, "bad misaligned fetch exception packet");
 
-    $display("PASS: fetch_pipeline directed tests");
+    $display("PASS: elastic fetch_pipeline directed tests");
     $finish;
   end
 
   initial begin
-    #2000;
+    #4000;
     $fatal(1, "timeout");
   end
 endmodule

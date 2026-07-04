@@ -8,15 +8,16 @@
 |---|---|---|---|
 | input | dec_valid_i | 2-bit | 双路前缀有效 |
 | output | dec_ready_o | 1 | R0 输入寄存器可接收 |
-| input | dec_uop_i | 2×decoded_uop_t | 译码微操作 |
+| input | dec_uop0_i / dec_uop1_i | 2×decoded_uop_t | 译码微操作 |
 | output | rn_valid_o | 2-bit | 已重命名 bundle |
 | input | rn_ready_i | 1 | Dispatch Buffer 可接收 |
-| output | rn_uop_o | 2×renamed_uop_t | 物理寄存器和各类 ID |
-| input | commit_map_i | 2×typed | AMT 更新与 old_prd 回收事件 |
+| output | rn_uop0_o / rn_uop1_o | 2×renamed_uop_t | 物理寄存器和各类 ID |
+| input | commit_map0_i / commit_map1_i | 2×commit_map_t | AMT 更新事件 |
 | input | wb_ready_set_i | 2×PRD | 写回 ready 更新 |
 | input | recovery_i | recovery_t | 分支或异常恢复 |
 | output | alloc_req_o | alloc_req_t | Free List/ROB/LSQ/Checkpoint 需求 |
 | input | alloc_resp_i | alloc_resp_t | R1 使用的已寄存分配结果 |
+| output | alloc_fire_o / alloc_cancel_o | 1 / 1 | 原子消耗或恢复取消保留资源 |
 
 ## 2. RAT/AMT
 
@@ -50,6 +51,9 @@ checkpoint。发生 rn_fire 时原子执行：
 5. 将 renamed_uop 写入 Dispatch Buffer。
 
 所有资源必须同时可用才允许该 lane 接受。双路不能出现部分写 ROB、未写 IQ 的状态。
+alloc_req/alloc_resp 使用前缀 `lane_valid`，并分 lane 表达 PRD/LQ/SQ/Checkpoint 需求。
+allocator 的 response 在 `alloc_fire_o` 前只保留不消耗；恢复冲刷 R1 时由
+`alloc_cancel_o` 释放保留。
 
 ## 5. Lane 内依赖
 
