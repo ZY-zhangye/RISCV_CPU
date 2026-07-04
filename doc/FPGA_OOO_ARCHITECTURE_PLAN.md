@@ -573,6 +573,49 @@ Commit 本周期产生回收 PRD
 
 ---
 
+## 9.2 当前 200 MHz OOC 时序问题与优化计划
+
+2026-07-04 使用 Vivado 2023.2、`xc7k325tffg900-2`、5.000 ns 时钟约束进行单模块
+综合后，Free List 是当前七个已实现模块中唯一未通过 200 MHz 的模块。报告位于：
+
+```text
+F:\RISCV_CPU_Vivado_20260703\reports_200mhz\free_list_timing_summary.txt
+```
+
+报告状态为 synthesized/unplaced OOC，不等价于完整布局布线结果，但足以定位 RTL
+组合深度问题：
+
+| 指标 | 当前结果 |
+|---|---:|
+| WNS | -1.413 ns |
+| TNS | -10.926 ns |
+| 失败端点 | 16 |
+| 最差数据路径 | 6.387 ns |
+| 逻辑级数 | 17（6×CARRY4、11×LUT） |
+| 起点 | `selection_prd0_q_reg[1]` |
+| 终点 | `reservation_prd1_q_reg[1]` |
+
+当前 S1 仍包含：根据 PRD0 动态清 bit、选择奇偶 mask、四组 nonempty 归约、旋转组选
+择、16-bit priority encode 和 reservation 写入。尤其 `pick_group()` 中以 `integer offset`
+执行 `start_group + offset`，高度疑似被 Vivado 扩展成不必要的宽加法，关键路径中实际出现
+6 级 CARRY4。
+
+按以下顺序优化，每一步均重新做 5.000 ns OOC 综合：
+
+1. 将旋转组选取改为四种 start group 的显式 `case` 固定优先级，禁止整数加法进入选择器。
+2. S0 同时寄存 PRD0 的 64-bit one-hot mask；S1 使用按位 mask 排除 PRD0，移除
+   `selection_prd0 → 6-to-64 dynamic clear` 路径。
+3. 保留偶/奇 Bank 优先策略，但将偶、奇候选 nonempty 并行预计算，避免串行构造整条
+   preferred bitmap。
+4. 若 5 ns 下裕量仍不足 1.0 ns，在 S1 增加 `second_group/second_word` 寄存边界；允许增加
+   分配延迟，不允许重新形成组合 allocator response。
+
+Free List 优化完成的门槛：5.000 ns OOC WNS 至少 +1.0 ns，并在 4.000 ns OOC 约束下
+WNS 不小于 0；选择关键路径中不应再出现由旋转索引算法产生的 CARRY4。最终仍须以完整
+`route_design` 后 5.000 ns WNS/WHS 均不小于 0 为全核验收标准。
+
+---
+
 # 10. ROB
 
 ## 10.1 ROB 规模
@@ -1704,6 +1747,41 @@ AMT 恢复
 | Branch Redirect | ≥ 250 MHz |
 
 单模块只达到 200 MHz，完整布局布线后通常难以稳定达到 200 MHz。
+
+## 28.1 2026-07-04 已实现模块 OOC 风险排序
+
+Vivado 2023.2、`xc7k325tffg900-2`、5.000 ns synthesized/unplaced OOC 结果如下：
+
+| 模块 | WNS | 风险等级 | 主要问题 |
+|---|---:|---|---|
+| Free List | -1.413 ns | P0 | 第二 PRD 选择器 17 级，含 6×CARRY4 |
+| Branch Predictor | +0.475 ns | P0 | 更新路径接近上限，BTB/BHT 基本展开为 FF/LUT/MUX |
+| Instruction Buffer | +1.485 ns | P1 | tail 驱动宽阵列多写译码，布线占路径 83.5% |
+| Fetch Pipeline | +1.655 ns | P1 | prediction slot 到 F2 控制，布线占路径 83.2% |
+| Rename Stage | +2.468 ns | P2 | 内部安全，但单模块 OOC 未验证 allocator 跨模块路径 |
+| RAT/AMT | +2.529 ns | P2 | checkpoint/restore 控制未来可能形成高扇出 |
+| Decode | +2.728 ns | 低 | 现有寄存边界有效，暂不重构 |
+
+Branch Predictor 是 Free List 之后最需要主动整改的模块。当前消耗 4162 LUT、8115 FF、
+1545 个 F7 Mux、720 个 F8 Mux，只映射 32 个 LUTRAM、0 BRAM。最差路径从 Update FIFO
+中的 PC 到 BTB entry 写使能，数据路径 4.264 ns、9 级逻辑。优化方向：将更新处理拆为
+“更新出队/地址寄存 → BTB 旧项读取 → 比较并写回”，并把 BHT 改为每个 16-byte block
+一行四个 counter，使 BTB/BHT 查询可并行同步读取。目标是 4.000 ns OOC WNS≥0，并通过
+RAM utilization 确认 BTB/BHT 不再大规模展开为寄存器多路器。
+
+Instruction Buffer 当前功能时序通过，但 8×宽 entry 的四写译码使 tail 控制扇出到大量
+entry 控制端。若 4 ns OOC 或集成后失败，应增加 enqueue command 寄存器，提前生成本地
+one-hot write enable 与压缩 payload；pending command 必须计入 8 项容量。也可评估按 entry
+bank 分组以局部化写使能，不允许撤销 Decode 侧 FO 寄存边界。
+
+Fetch Pipeline 应将 prediction slot/taken 到 slot mask、redirect 和 F2 write-enable 的控制
+局部化；必要时在 response FIFO 与 F2 之间增加预测预解码寄存器。不得为了省一拍把该路径
+与 Branch Predictor 查询或 Instruction Buffer ready 重新组合相连。
+
+Rename、RAT/AMT 和 Decode 当前无需立即修改，但后续必须增加成组 OOC：
+`branch_predictor+fetch_pipeline`、`instruction_buffer+decode`、
+`rename_stage+free_list+dispatch_buffer`。单模块报告没有验证完整跨模块路径，不能证明
+集成连接满足 200 MHz。最终结论仍以 placed/routed 全核报告为准。
 
 ---
 

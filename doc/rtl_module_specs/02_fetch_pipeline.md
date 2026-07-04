@@ -72,3 +72,21 @@ F2 使用一项弹性寄存器，F1 使用两项 response FIFO。前端以
 - fetch_packet.slot_valid 在预测跳转槽之后全为 0。
 - redirect 后旧 epoch 包不会写入 ibuf。
 - F2 stall 时 fetch_packet 稳定。
+
+## 8. 200 MHz OOC 风险与优化方向
+
+2026-07-04 的 5.000 ns synthesized/unplaced OOC 报告 WNS=+1.655 ns。最差路径从
+response FIFO 中 prediction slot 到 F2 packet 的写控制，数据路径 3.084 ns、5 级 LUT，
+其中 83.2% 为估算布线延迟。当前通过 200 MHz，但与 Branch Predictor、IROM 和 IBuf
+集成后仍有跨模块布线恶化风险。
+
+优化约束：
+
+- prediction slot/taken 到 slot mask、internal redirect 和 F2 write-enable 的解码应局部化。
+- 若成组 OOC 或 route 后裕量不足，在 response FIFO 与 F2 之间增加预测预解码寄存器，
+  保存 taken、target 和最终 slot_valid，而不是把 raw `bp_pred_t` 直接送入 F2 控制。
+- 不允许把 Predictor 查询结果、IROM response 和 IBuf ready 重新组合成一条单周期路径。
+- 保持现有 credit/skid 结构；优化不能降低已发 IMem response 一定有落点的安全性。
+
+需增加 `branch_predictor+fetch_pipeline` 成组 OOC，4.000 ns 下 WNS≥0；单独 Fetch 暂不
+因当前报告增加流水级。

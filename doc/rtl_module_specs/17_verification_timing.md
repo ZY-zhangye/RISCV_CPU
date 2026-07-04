@@ -58,6 +58,18 @@
 | WB arbitration | 250 MHz |
 | Branch resolve | 250 MHz |
 
+除单模块 OOC 外，必须增加以下集群级时序测试，覆盖真实模块边界：
+
+| OOC 集群 | 最低目标 | 重点检查 |
+|---|---:|---|
+| branch_predictor + fetch_pipeline | 250 MHz | predictor 返回、update 写口、F1 预解码 |
+| instruction_buffer + decode_stage | 250 MHz | entry 写控制、FO→Decode |
+| rename_stage + free_list + dispatch_buffer | 250 MHz | reservation response、ready 隔离 |
+
+2026-07-04 基线中 Branch Predictor 仅有 +0.475 ns 的 5 ns WNS，不满足“完整核留余量”的
+意图；Free List 为 -1.413 ns。二者整改后均须在 4.000 ns OOC 下 WNS≥0。IBuf/Fetch 若
+4 ns 失败，应按对应模块规格增加局部寄存边界，不允许放宽完整核 5 ns 目标。
+
 完整核目标为 200 MHz。独立综合报告必须记录器件、时钟约束、WNS、逻辑级数、LUT/FF/
 BRAM/DSP 和最差路径端点。
 
@@ -65,6 +77,23 @@ BRAM/DSP 和最差路径端点。
 `report_timing_summary`、`report_utilization -hierarchical`、`report_ram_utilization` 和
 `report_high_fanout_nets`。预测器 BTB/BHT、IROM/Data RAM 是否推断为预期存储原语，必须
 以 RAM utilization 报告为准。
+
+### 5.1 2026-07-04 当前 RTL 与 OOC 状态
+
+当前工作分支为 `codex/full-rtl-refactor`。以下数据来自用户在
+`F:\RISCV_CPU_Vivado_20260703\reports` 下执行的 XC7K325T-FFG900-2 单模块 OOC 综合报告
+或用户口头同步结果；完整核仍以 route 后 5.000 ns WNS/WHS 为最终验收。
+
+| 模块 | RTL 状态 | 5.000 ns OOC WNS | 当前决策 |
+|---|---|---:|---|
+| Free List | 已完成时序重构 | +0.827 ns | 冻结，后续只在成组/route 暴露问题时再改 |
+| Branch Predictor | update 路径已拆两拍 | +0.628 ns | 冻结，暂不做 BHT row 化 |
+| ROB | V1 RTL 与 directed test 完成 | +1.36 ns | 可进入后续集成 |
+| Dispatch Buffer | V1 RTL 与 directed test 完成 | +1.712 ns | 可进入后续集成 |
+| Issue Queue | select 已拆 S0/S1 两级 | +1.167 ns | 冻结，下一步实现 issue_arbiter |
+
+`results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
+下一次继续时应从 `doc/HANDOFF_2026-07-04.md` 和 `09_dispatch_issue.md` 的 5.1 节开始。
 
 ## 6. 关键属性
 

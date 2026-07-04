@@ -59,3 +59,29 @@ V1 不实现 Return Address Stack。JALR，包括典型的 jalr x0, x1, 0 函数
 断言非法 BTB type 不产生 taken；更新队列满时不得静默丢更新；JALR 预测目标只能
 来自命中的 BTB。统计 query、BTB hit、BHT taken、JALR BTB hit、mispredict 和
 target miss。
+
+## 8. 200 MHz OOC 风险与整改方向
+
+2026-07-04 的 5.000 ns synthesized/unplaced OOC 报告虽通过，但 WNS 仅 +0.475 ns。最差
+路径从 `update_fifo_q[1].pc` 到 BTB entry 的写使能，数据路径 4.264 ns、9 级逻辑；资源为
+4162 LUT、8115 FF、1545 F7 Mux、720 F8 Mux，仅 32 LUTRAM、0 BRAM。当前实现不能视为
+已获得足够的全核 200 MHz 裕量。
+
+主要问题：
+
+- 更新端由 PC 动态索引 BTB、读取旧 entry、比较 tag/slot 并生成写使能，集中在同一拍。
+- 查询和更新对 BTB/BHT 的多种动态访问阻碍 RAM 推断，BTB 大量展开为 FF 和层级 Mux。
+- BHT 地址依赖 BTB 命中的 slot，使两个表难以形成真正并行的同步读取。
+- Update FIFO 没有明确的 ready/full 握手；后续实现不得在满时静默覆盖更新。
+
+整改顺序：
+
+1. 更新端增加寄存边界：update dequeue/address → BTB old-entry read → compare/replace write。
+2. BHT 重排为 128 行×8 bit，每行保存四个 2-bit counter，与 BTB 使用同一 block index
+   并行读取；slot 只在读出后选择 counter。
+3. 分离查询端和更新端 RAM 端口，保持 data array 不做全阵列复位，valid 独立维护；根据
+   OOC 结果选择 BTB BRAM、BHT distributed RAM。
+4. 增加 `update_ready` 或扩大带握手的 update queue，补充满队列与查询/写冲突测试。
+
+完成门槛：4.000 ns OOC WNS≥0；5.000 ns 下建议 WNS≥1.0 ns；RAM utilization 与 MUX
+数量证明表项不再大规模展开。接口延迟变化必须同步修改 Fetch 对预测返回的捕获协议。

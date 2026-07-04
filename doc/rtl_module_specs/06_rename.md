@@ -92,3 +92,21 @@ lane1 必须由 Decode/R0 弹性寄存器保持并在下一次成为 lane0。序
 - RAT[x0] 和 AMT[x0] 始终为 p0。
 - 任一 active RAT 映射不指向 Free List 中的空闲 PRD。
 - lane1 RAW/WAW 结果与顺序执行两个单独 rename 等价。
+
+## 9. 200 MHz OOC 状态与集成风险
+
+2026-07-04 的 5.000 ns synthesized/unplaced OOC 结果：`rename_stage` WNS=+2.468 ns，
+`rat_amt` WNS=+2.529 ns。最差内部路径分别只有 3 级和 4 级 LUT，说明 RAT map/PRD ready
+分拍有效，当前不需要再次切分正常 Rename 路径。
+
+仍需保留以下风险约束：
+
+- 单模块 OOC 不包含真实 Free List reservation 和 Dispatch Buffer 布线，必须补做
+  `rename_stage+free_list+dispatch_buffer` 成组 OOC。
+- allocator response 必须来自寄存 reservation；禁止因为 Free List 延迟增加而改回组合返回。
+- branch checkpoint snapshot、branch mask clear 和恢复控制在完整核中可能形成高扇出。
+  若 route 报告命中，应采用 RAT 分组、控制复制或分组恢复，不增加正常路径全局 bypass。
+- `rat_amt` 当前 1960 LUT、1193 FF，`rename_stage` 为 2205 LUT、2260 FF；面积可接受，但
+  checkpoint snapshot 的布局应尽量靠近 RAT banks。
+
+当前完成门槛保持不变：成组 OOC 4.000 ns WNS≥0，完整 route 后 5.000 ns WNS/WHS≥0。

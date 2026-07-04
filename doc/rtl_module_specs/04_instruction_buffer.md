@@ -58,3 +58,23 @@ flush_i 优先于 enqueue/dequeue：清 occupancy、head/tail 复位，所有旧
 - decode_valid=10 永不出现。
 - stall 时 decode_slots 和 decode_valid 保持。
 - flush 后下一周期 occupancy 为 0。
+
+## 7. 200 MHz OOC 风险与优化方向
+
+2026-07-04 的 5.000 ns synthesized/unplaced OOC 报告 WNS=+1.485 ns。最差路径从
+`tail_q[2]` 到宽 entry 阵列的控制端，数据路径 3.147 ns、5 级 LUT，其中 83.5% 为估算
+布线延迟。资源为 2858 LUT、1439 FF、0 BRAM；8 项×宽 payload、最多四写的动态地址译码
+是主要面积和布线来源，而 Decode 侧 FO 寄存边界不是当前瓶颈。
+
+优化顺序：
+
+1. 先做 `instruction_buffer+decode` 成组 OOC 和完整布局布线观察，不因单模块通过结果立即
+   增加延迟。
+2. 若 4.000 ns OOC 或集成后失败，增加 enqueue command 寄存器：先完成 slot compaction、
+   one-hot entry write-enable 和目标索引生成，下一拍局部写 entries。
+3. enqueue command 中的 pending 指令数必须计入总 occupancy，逻辑总容量仍为 8；flush
+   同时清 pending command。
+4. 可进一步按 entry group/bank 复制局部写使能，降低 tail 和公共控制的扇出；不得恢复
+   entries 到 Decode 的组合直通。
+
+目标是 4.000 ns OOC WNS≥0，并显著降低 tail 到 entry 控制端的扇出和估算布线占比。

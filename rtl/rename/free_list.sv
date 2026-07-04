@@ -80,21 +80,30 @@ module free_list (
   logic rebuild_done_q;
 
   logic [3:0] group_nonempty0;
-  logic [3:0] group_nonempty1;
+  logic [3:0] group_nonempty1_even;
+  logic [3:0] group_nonempty1_odd;
   logic [2:0] group_select0;
-  logic [2:0] group_select1;
+  logic [2:0] group_select1_even;
+  logic [2:0] group_select1_odd;
   logic [4:0] bit_select0;
-  logic [4:0] bit_select1;
+  logic [4:0] bit_select1_even;
+  logic [4:0] bit_select1_odd;
   logic [15:0] selected_word0;
-  logic [15:0] selected_word1;
-  logic [PHYS_REGS-1:0] remaining_bitmap;
-  logic [PHYS_REGS-1:0] preferred_bitmap;
-  logic [PHYS_REGS-1:0] second_bitmap;
+  logic [15:0] selected_word1_even;
+  logic [15:0] selected_word1_odd;
+  logic [15:0] selection_exclude_word1;
+  logic [PHYS_REGS-1:0] available_bitmap1;
+  logic [PHYS_REGS-1:0] even_bitmap1;
+  logic [PHYS_REGS-1:0] odd_bitmap1;
   logic candidate0_valid;
+  logic candidate1_even_valid;
+  logic candidate1_odd_valid;
   logic candidate1_valid;
   logic [PRD_W-1:0] candidate_prd0;
+  logic [PRD_W-1:0] candidate_prd1_even;
+  logic [PRD_W-1:0] candidate_prd1_odd;
   logic [PRD_W-1:0] candidate_prd1;
-  logic selection_can_start;
+  logic selection_request_ready;
 
   logic [1:0] reclaim_input_count;
   logic reclaim_accept;
@@ -105,34 +114,157 @@ module free_list (
       input logic [3:0] nonempty,
       input logic [1:0] start_group
   );
-    integer offset;
-    logic found;
-    logic [1:0] group_index;
     begin
       pick_group = '0;
-      found = 1'b0;
-      for (offset = 0; offset < 4; offset = offset + 1) begin
-        group_index = start_group + offset;
-        if (!found && nonempty[group_index]) begin
-          pick_group = {1'b1, group_index};
-          found = 1'b1;
+      case (start_group)
+        2'd0: begin
+          if (nonempty[0])
+            pick_group = 3'b100;
+          else if (nonempty[1])
+            pick_group = 3'b101;
+          else if (nonempty[2])
+            pick_group = 3'b110;
+          else if (nonempty[3])
+            pick_group = 3'b111;
         end
-      end
+        2'd1: begin
+          if (nonempty[1])
+            pick_group = 3'b101;
+          else if (nonempty[2])
+            pick_group = 3'b110;
+          else if (nonempty[3])
+            pick_group = 3'b111;
+          else if (nonempty[0])
+            pick_group = 3'b100;
+        end
+        2'd2: begin
+          if (nonempty[2])
+            pick_group = 3'b110;
+          else if (nonempty[3])
+            pick_group = 3'b111;
+          else if (nonempty[0])
+            pick_group = 3'b100;
+          else if (nonempty[1])
+            pick_group = 3'b101;
+        end
+        default: begin
+          if (nonempty[3])
+            pick_group = 3'b111;
+          else if (nonempty[0])
+            pick_group = 3'b100;
+          else if (nonempty[1])
+            pick_group = 3'b101;
+          else if (nonempty[2])
+            pick_group = 3'b110;
+        end
+      endcase
+    end
+  endfunction
+
+  function automatic logic [2:0] pick_bit4(input logic [3:0] word);
+    begin
+      casez (word)
+        4'b???1: pick_bit4 = 3'b100;
+        4'b??10: pick_bit4 = 3'b101;
+        4'b?100: pick_bit4 = 3'b110;
+        4'b1000: pick_bit4 = 3'b111;
+        default: pick_bit4 = 3'b000;
+      endcase
     end
   endfunction
 
   function automatic logic [4:0] pick_bit16(input logic [15:0] word);
-    integer bit_index;
-    logic found;
+    logic [3:0] nibble_nonempty;
+    logic [1:0] nibble_index;
+    logic [3:0] selected_nibble;
+    logic [2:0] bit_in_nibble;
     begin
       pick_bit16 = '0;
-      found = 1'b0;
-      for (bit_index = 0; bit_index < 16; bit_index = bit_index + 1) begin
-        if (!found && word[bit_index]) begin
-          pick_bit16 = {1'b1, bit_index[3:0]};
-          found = 1'b1;
-        end
+      nibble_nonempty = {|word[15:12], |word[11:8], |word[7:4], |word[3:0]};
+      nibble_index = 2'd0;
+      selected_nibble = word[3:0];
+
+      if (nibble_nonempty[0]) begin
+        nibble_index = 2'd0;
+        selected_nibble = word[3:0];
+      end else if (nibble_nonempty[1]) begin
+        nibble_index = 2'd1;
+        selected_nibble = word[7:4];
+      end else if (nibble_nonempty[2]) begin
+        nibble_index = 2'd2;
+        selected_nibble = word[11:8];
+      end else if (nibble_nonempty[3]) begin
+        nibble_index = 2'd3;
+        selected_nibble = word[15:12];
       end
+
+      bit_in_nibble = pick_bit4(selected_nibble);
+      if (bit_in_nibble[2]) begin
+        pick_bit16 = {1'b1, nibble_index, bit_in_nibble[1:0]};
+      end
+    end
+  endfunction
+
+  function automatic logic [15:0] bit_onehot16(input logic [3:0] bit_index);
+    begin
+      case (bit_index)
+        4'd0: bit_onehot16 = 16'h0001;
+        4'd1: bit_onehot16 = 16'h0002;
+        4'd2: bit_onehot16 = 16'h0004;
+        4'd3: bit_onehot16 = 16'h0008;
+        4'd4: bit_onehot16 = 16'h0010;
+        4'd5: bit_onehot16 = 16'h0020;
+        4'd6: bit_onehot16 = 16'h0040;
+        4'd7: bit_onehot16 = 16'h0080;
+        4'd8: bit_onehot16 = 16'h0100;
+        4'd9: bit_onehot16 = 16'h0200;
+        4'd10: bit_onehot16 = 16'h0400;
+        4'd11: bit_onehot16 = 16'h0800;
+        4'd12: bit_onehot16 = 16'h1000;
+        4'd13: bit_onehot16 = 16'h2000;
+        4'd14: bit_onehot16 = 16'h4000;
+        default: bit_onehot16 = 16'h8000;
+      endcase
+    end
+  endfunction
+
+  function automatic logic [1:0] next_group(input logic [1:0] group_index);
+    begin
+      case (group_index)
+        2'd0: next_group = 2'd1;
+        2'd1: next_group = 2'd2;
+        2'd2: next_group = 2'd3;
+        default: next_group = 2'd0;
+      endcase
+    end
+  endfunction
+
+  function automatic logic [3:0] group_nonempty(
+      input logic [PHYS_REGS-1:0] bitmap
+  );
+    begin
+      group_nonempty[0] = |bitmap[15:0];
+      group_nonempty[1] = |bitmap[31:16];
+      group_nonempty[2] = |bitmap[47:32];
+      group_nonempty[3] = |bitmap[63:48];
+    end
+  endfunction
+
+  function automatic logic [PRD_W-1:0] make_prd(
+      input logic [2:0] group_select,
+      input logic [4:0] bit_select
+  );
+    begin
+      make_prd = {group_select[1:0], bit_select[3:0]};
+    end
+  endfunction
+
+  function automatic logic candidate_valid(
+      input logic [2:0] group_select,
+      input logic [4:0] bit_select
+  );
+    begin
+      candidate_valid = group_select[2] && bit_select[4];
     end
   endfunction
 
@@ -149,36 +281,64 @@ module free_list (
   endfunction
 
   always @* begin
-    group_nonempty0[0] = |free_bitmap_q[15:0];
-    group_nonempty0[1] = |free_bitmap_q[31:16];
-    group_nonempty0[2] = |free_bitmap_q[47:32];
-    group_nonempty0[3] = |free_bitmap_q[63:48];
+    group_nonempty0 = group_nonempty(free_bitmap_q);
     group_select0 = pick_group(group_nonempty0, rotate_group_q);
     selected_word0 = group_word(free_bitmap_q, group_select0[1:0]);
     bit_select0 = pick_bit16(selected_word0);
-    candidate0_valid = group_select0[2] && bit_select0[4];
-    candidate_prd0 = {group_select0[1:0], bit_select0[3:0]};
+    candidate0_valid = candidate_valid(group_select0, bit_select0);
+    candidate_prd0 = make_prd(group_select0, bit_select0);
+    selection_exclude_word1 = bit_onehot16(selection_prd0_q[3:0]);
+    available_bitmap1 = free_bitmap_q;
+    if (selection_pending_q) begin
+      case (selection_prd0_q[5:4])
+        2'd0:
+          available_bitmap1[15:0] = free_bitmap_q[15:0] &
+                                    ~selection_exclude_word1;
+        2'd1:
+          available_bitmap1[31:16] = free_bitmap_q[31:16] &
+                                     ~selection_exclude_word1;
+        2'd2:
+          available_bitmap1[47:32] = free_bitmap_q[47:32] &
+                                     ~selection_exclude_word1;
+        default:
+          available_bitmap1[63:48] = free_bitmap_q[63:48] &
+                                     ~selection_exclude_word1;
+      endcase
+    end
+    even_bitmap1 = available_bitmap1 & EVEN_PRD_MASK;
+    odd_bitmap1 = available_bitmap1 & ODD_PRD_MASK;
 
-    remaining_bitmap = free_bitmap_q;
-    if (selection_pending_q)
-      remaining_bitmap[selection_prd0_q] = 1'b0;
+    group_nonempty1_even = group_nonempty(even_bitmap1);
+    group_select1_even = pick_group(group_nonempty1_even,
+                                    selection_prd0_q[5:4]);
+    selected_word1_even = group_word(even_bitmap1, group_select1_even[1:0]);
+    bit_select1_even = pick_bit16(selected_word1_even);
+    candidate1_even_valid = candidate_valid(group_select1_even,
+                                            bit_select1_even);
+    candidate_prd1_even = make_prd(group_select1_even, bit_select1_even);
 
-    preferred_bitmap = remaining_bitmap &
-                       (selection_prd0_q[0] ? EVEN_PRD_MASK : ODD_PRD_MASK);
-    second_bitmap = (preferred_bitmap != 0) ? preferred_bitmap : remaining_bitmap;
-    group_nonempty1[0] = |second_bitmap[15:0];
-    group_nonempty1[1] = |second_bitmap[31:16];
-    group_nonempty1[2] = |second_bitmap[47:32];
-    group_nonempty1[3] = |second_bitmap[63:48];
-    group_select1 = pick_group(group_nonempty1, selection_prd0_q[5:4]);
-    selected_word1 = group_word(second_bitmap, group_select1[1:0]);
-    bit_select1 = pick_bit16(selected_word1);
-    candidate1_valid = group_select1[2] && bit_select1[4];
-    candidate_prd1 = {group_select1[1:0], bit_select1[3:0]};
+    group_nonempty1_odd = group_nonempty(odd_bitmap1);
+    group_select1_odd = pick_group(group_nonempty1_odd,
+                                   selection_prd0_q[5:4]);
+    selected_word1_odd = group_word(odd_bitmap1, group_select1_odd[1:0]);
+    bit_select1_odd = pick_bit16(selected_word1_odd);
+    candidate1_odd_valid = candidate_valid(group_select1_odd,
+                                           bit_select1_odd);
+    candidate_prd1_odd = make_prd(group_select1_odd, bit_select1_odd);
 
-    selection_can_start = !reservation_valid_q && !selection_pending_q &&
-                          !busy_o && (alloc_count_i != 0) &&
-                          (alloc_count_i != 2'd3) && candidate0_valid;
+    if (selection_prd0_q[0]) begin
+      candidate1_valid = candidate1_even_valid || candidate1_odd_valid;
+      candidate_prd1 = candidate1_even_valid ? candidate_prd1_even :
+                                               candidate_prd1_odd;
+    end else begin
+      candidate1_valid = candidate1_odd_valid || candidate1_even_valid;
+      candidate_prd1 = candidate1_odd_valid ? candidate_prd1_odd :
+                                             candidate_prd1_even;
+    end
+
+    selection_request_ready = !reservation_valid_q && !selection_pending_q &&
+                              !busy_o && (alloc_count_i != 0) &&
+                              (alloc_count_i != 2'd3);
   end
 
   assign reclaim_input_count = (reclaim_valid_i == 2'b11) ? 2'd2 :
@@ -348,8 +508,8 @@ module free_list (
           end
           allocation_tail_q <= allocation_tail_q + reservation_count_q;
           rotate_group_q <= (reservation_count_q == 2'd2) ?
-                            reservation_prd1_q[5:4] + 2'd1 :
-                            reservation_prd0_q[5:4] + 2'd1;
+                            next_group(reservation_prd1_q[5:4]) :
+                            next_group(reservation_prd0_q[5:4]);
           reservation_valid_q <= 1'b0;
         end else if (selection_pending_q &&
                      ((selection_count_q == 2'd1) || candidate1_valid)) begin
@@ -358,8 +518,8 @@ module free_list (
           reservation_prd0_q <= selection_prd0_q;
           reservation_prd1_q <= (selection_count_q == 2'd2) ? candidate_prd1 : '0;
           selection_pending_q <= 1'b0;
-        end else if (selection_can_start) begin
-          selection_pending_q <= 1'b1;
+        end else if (selection_request_ready) begin
+          selection_pending_q <= candidate0_valid;
           selection_count_q <= alloc_count_i;
           selection_prd0_q <= candidate_prd0;
         end

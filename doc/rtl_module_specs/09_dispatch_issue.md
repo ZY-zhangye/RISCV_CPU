@@ -50,6 +50,27 @@ Integer IQ 12 项分 3 组，每组 4 项：
 Memory IQ 8 项可分 2 组；MDU IQ 4 项单组。年龄使用 ROB 环形年龄函数，不使用完整年龄
 矩阵。候选只携带 RR 所需字段。
 
+### 4.1 当前 RTL 实现状态
+
+截至 2026-07-04，`rtl/dispatch/dispatch_buffer.sv`、`rtl/issue/issue_queue.sv` 已完成
+V1 RTL 与 directed test。
+
+Dispatch Buffer 当前实现为 6 项固定槽环形队列，支持 Rename 双路输入并按顺序向
+INT/MEM/MDU 三类 IQ 分发。lane0 阻塞时 lane1 不越过；recovery 周期整 buffer flush，
+用于避免固定槽队列产生复杂 head hole 处理路径。
+
+Issue Queue 当前实现为参数化固定槽队列，默认 `ENTRIES=12`、`GROUPS=3`，字段数组存储，
+支持双入队、双写回 tag wakeup、分支恢复 kill、延迟清除 issued slot。为满足
+XC7K325T-FFG900-2 上 200 MHz 以上时序，select 路径已经拆为两级：
+
+1. S0：每组内每 2-entry pair 先完成 ready/age 选择，并寄存 pair winner。
+2. S1：每 group 从 pair winner 中选择最终 candidate 并对外输出。
+
+该结构切断 `valid/src_ready/need_rs/rob_id -> candidate_slot` 的长组合路径。代价是
+wakeup 或 push 后 candidate 可见延迟增加约 1 拍；grant 后当前 group 插入 1 拍 bubble，
+防止刚授权的旧 candidate 被重新送出。2026-07-04 用户后台单模块综合报告显示
+`issue_queue` 在 5.000 ns 约束下 WNS=+1.167 ns，当前不再继续局部优化。
+
 ## 5. 全局 Issue Arbiter
 
 输入为各队列候选和执行端 ready，输出最多三条 issue slot。检查：
@@ -62,6 +83,24 @@ Memory IQ 8 项可分 2 组；MDU IQ 4 项单组。年龄使用 ROB 环形年龄
 - memory candidate 已经通过 LSQ 发射许可。
 
 仲裁结果必须寄存后再驱动 PRF Read。未授权 candidate 保留在 IQ。
+
+### 5.1 下一步实现计划
+
+下一模块应实现 `rtl/issue/issue_arbiter.sv`，并新增 `test/tb_issue_arbiter.sv`。
+实现时序优先级高于单周期发射激进度：
+
+- 输入只接收各 IQ 已寄存 candidate，不直接连接 IQ 内部 ready/select 组合逻辑。
+- 仲裁输出必须寄存后再进入 PRF Read / operand_read。
+- 第一版允许固定优先级加小范围年龄比较，不实现全局完整 oldest 矩阵。
+- 如果单模块 5.000 ns WNS 小于 +0.3 ns，则优先把“候选挑选”和“PRF bank 检查”再拆为两拍。
+
+V1 规则：
+
+- 全局总发射数不超过 3。
+- INT 最多 2 条，INT0/INT1 各一条；Branch 只能进入 INT1。
+- LSU 最多 1 条；MDU 最多 1 条。
+- PRF bank 读源计数每 bank 每周期不超过 3，只统计 `need_rs1/need_rs2`。
+- 执行端 not ready、LSQ 未许可或 MDU 不可接受时，对应 candidate 不授权。
 
 ## 6. Kill 与恢复
 

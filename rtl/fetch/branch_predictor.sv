@@ -58,6 +58,19 @@ module branch_predictor (
   logic update_tail_q;                 // FIFO 写指针 (尾)
   logic [1:0] update_count_q;          // FIFO 计数器 (0/1/2)
 
+  // 更新流水寄存器：U0 从 FIFO 出队并读取旧表项，U1 比较后写回。
+  // 这样避免 update FIFO PC 在同一周期穿过 BTB/BHT 读、比较和写使能。
+  logic update_pipe_valid_q;
+  branch_update_t update_pipe_q;
+  logic [BTB_INDEX_W-1:0] update_pipe_btb_idx_q;
+  logic [BHT_INDEX_W-1:0] update_pipe_bht_idx_q;
+  logic [BTB_TAG_W-1:0] update_pipe_tag_q;
+  logic [1:0] update_pipe_slot_q;
+  btb_entry_t update_pipe_entry_q;
+  logic update_pipe_btb_valid_q;
+  logic [1:0] update_pipe_bht_counter_q;
+  logic update_pipe_bht_valid_q;
+
   // 预测结果寄存器与输出
   bp_pred_t pred_q;
   assign pred_o = pred_q;
@@ -104,7 +117,6 @@ module branch_predictor (
   always_ff @(posedge clk_i) begin : predictor_state
     btb_entry_t query_entry;
     btb_entry_t update_entry;
-    btb_entry_t replacement_entry;
     branch_update_t applied_update;
     logic [BTB_INDEX_W-1:0] query_btb_idx;
     logic [BHT_INDEX_W-1:0] query_bht_idx;
@@ -112,6 +124,14 @@ module branch_predictor (
     logic [BHT_INDEX_W-1:0] update_bht_idx;
     logic query_tag_hit;
     logic update_replaces_btb;
+    logic update_dequeue;
+    logic update_btb_valid;
+    logic [1:0] update_bht_counter;
+    logic update_bht_valid;
+    logic s1_bht_write;
+    logic [1:0] s1_bht_next_counter;
+    logic s1_btb_write;
+    btb_entry_t s1_btb_entry;
 
     if (rst_i) begin
       // 同步复位初始化
@@ -121,7 +141,23 @@ module branch_predictor (
       update_head_q  <= 1'b0;
       update_tail_q  <= 1'b0;
       update_count_q <= 2'd0;
+      update_pipe_valid_q <= 1'b0;
+      update_pipe_q <= '0;
+      update_pipe_btb_idx_q <= '0;
+      update_pipe_bht_idx_q <= '0;
+      update_pipe_tag_q <= '0;
+      update_pipe_slot_q <= '0;
+      update_pipe_entry_q <= '0;
+      update_pipe_btb_valid_q <= 1'b0;
+      update_pipe_bht_counter_q <= 2'b00;
+      update_pipe_bht_valid_q <= 1'b0;
     end else begin
+      update_dequeue = (update_count_q != 2'd0);
+      s1_bht_write = 1'b0;
+      s1_bht_next_counter = 2'b00;
+      s1_btb_write = 1'b0;
+      s1_btb_entry = '0;
+
       // ========================================================================
       // 1. 查询处理阶段 (F0 -> F1 寄存输出时序接口)
       // ========================================================================
@@ -187,57 +223,78 @@ module branch_predictor (
       end
 
       // ========================================================================
-      // 2. 更新处理阶段 (FIFO 排水退休，每周期最多执行一次更新)
+      // 2. 更新处理阶段
+      //    U1：使用上一拍寄存的旧表项做比较并写回。
+      //    U0：本拍从 FIFO 出队，读取旧 BTB/BHT 表项，供下一拍 U1 使用。
       // ========================================================================
-      if (update_count_q != 2'd0) begin
-        // 出队一个更新项并解析
+      if (update_pipe_valid_q) begin
+        applied_update = update_pipe_q;
+
+        if (applied_update.is_branch) begin
+          s1_bht_write = 1'b1;
+          if (update_pipe_bht_valid_q)
+            s1_bht_next_counter = bht_next(update_pipe_bht_counter_q,
+                                           applied_update.taken);
+          else
+            s1_bht_next_counter = applied_update.taken ? 2'b10 : 2'b01;
+
+          bht_q[update_pipe_bht_idx_q] <= s1_bht_next_counter;
+          bht_valid_q[update_pipe_bht_idx_q] <= 1'b1;
+        end
+
+        if (applied_update.is_branch || applied_update.is_jal ||
+            applied_update.is_jalr) begin
+          update_replaces_btb = !update_pipe_btb_valid_q ||
+              (update_pipe_entry_q.tag != update_pipe_tag_q) ||
+              (update_pipe_slot_q <= update_pipe_entry_q.slot);
+
+          if (update_replaces_btb) begin
+            s1_btb_write = 1'b1;
+            s1_btb_entry.tag    = update_pipe_tag_q;
+            s1_btb_entry.slot   = update_pipe_slot_q;
+            s1_btb_entry.target = applied_update.target;
+            if (applied_update.is_jalr)
+              s1_btb_entry.branch_type = BTB_JALR;
+            else if (applied_update.is_jal)
+              s1_btb_entry.branch_type = BTB_JAL;
+            else
+              s1_btb_entry.branch_type = BTB_COND;
+
+            btb_valid_q[update_pipe_btb_idx_q] <= 1'b1;
+            btb_q[update_pipe_btb_idx_q] <= s1_btb_entry;
+          end
+        end
+      end
+
+      update_pipe_valid_q <= update_dequeue;
+      if (update_dequeue) begin
         applied_update = update_fifo_q[update_head_q];
         update_btb_idx = btb_index(applied_update.pc);
         update_bht_idx = bht_index(applied_update.pc);
-        update_entry   = btb_q[update_btb_idx];
+        update_entry = btb_q[update_btb_idx];
+        update_btb_valid = btb_valid_q[update_btb_idx];
+        update_bht_counter = bht_q[update_bht_idx];
+        update_bht_valid = bht_valid_q[update_bht_idx];
 
-        // A. 更新条件分支历史表 (BHT)
-        if (applied_update.is_branch) begin
-          if (bht_valid_q[update_bht_idx])
-            // 改变已有的 2-bit 饱和计数器值
-            bht_q[update_bht_idx] <= bht_next(bht_q[update_bht_idx],
-                                              applied_update.taken);
-          else
-            // 未初始化条目，首次依实际方向以弱状态初始化 (Taken -> 10 弱跳转, Not Taken -> 01 弱不跳转)
-            bht_q[update_bht_idx] <= applied_update.taken ? 2'b10 : 2'b01;
-          bht_valid_q[update_bht_idx] <= 1'b1;
+        // 连续更新同一 entry 时，U0 需要看到 U1 本拍即将写回后的状态。
+        if (s1_btb_write && (update_btb_idx == update_pipe_btb_idx_q)) begin
+          update_entry = s1_btb_entry;
+          update_btb_valid = 1'b1;
+        end
+        if (s1_bht_write && (update_bht_idx == update_pipe_bht_idx_q)) begin
+          update_bht_counter = s1_bht_next_counter;
+          update_bht_valid = 1'b1;
         end
 
-        // B. 更新分支目标缓冲 (BTB)
-        if (applied_update.is_branch || applied_update.is_jal ||
-            applied_update.is_jalr) begin
-          // 判定是否应当替换当前 BTB 中的数据项。
-          // 当满足以下任一条件时进行覆盖更新：
-          // 1) 原项无效；
-          // 2) Tag 不匹配 (发生索引冲突)；
-          // 3) 原项命中，但当前更新的分支比旧分支在 16字节块中更靠前 (slot更小)。
-          // 这样做可保证多发射乱序执行下，每个 16 字节块总是只记录“最早触发跳转”的那个分支指令。
-          update_replaces_btb = !btb_valid_q[update_btb_idx] ||
-              (update_entry.tag != btb_tag(applied_update.pc)) ||
-              (applied_update.pc[3:2] <= update_entry.slot);
-
-          if (update_replaces_btb) begin
-            replacement_entry.tag    = btb_tag(applied_update.pc);
-            replacement_entry.slot   = applied_update.pc[3:2];
-            replacement_entry.target = applied_update.target;
-            if (applied_update.is_jalr)
-              replacement_entry.branch_type = BTB_JALR;
-            else if (applied_update.is_jal)
-              replacement_entry.branch_type = BTB_JAL;
-            else
-              replacement_entry.branch_type = BTB_COND;
-
-            btb_valid_q[update_btb_idx] <= 1'b1;
-            btb_q[update_btb_idx]       <= replacement_entry;
-          end
-        end
-
-        // 读指针移位
+        update_pipe_q <= applied_update;
+        update_pipe_btb_idx_q <= update_btb_idx;
+        update_pipe_bht_idx_q <= update_bht_idx;
+        update_pipe_tag_q <= btb_tag(applied_update.pc);
+        update_pipe_slot_q <= applied_update.pc[3:2];
+        update_pipe_entry_q <= update_entry;
+        update_pipe_btb_valid_q <= update_btb_valid;
+        update_pipe_bht_counter_q <= update_bht_counter;
+        update_pipe_bht_valid_q <= update_bht_valid;
         update_head_q <= ~update_head_q;
       end
 
@@ -250,7 +307,7 @@ module branch_predictor (
       end
 
       // FIFO 计数器控制：利用独热式/计数器更新
-      case ({update_valid_i, (update_count_q != 2'd0)})
+      case ({update_valid_i, update_dequeue})
         2'b10: update_count_q <= update_count_q + 2'd1; // 仅写入
         2'b01: update_count_q <= update_count_q - 2'd1; // 仅读出
         default: update_count_q <= update_count_q;       // 同时读写 或 无操作

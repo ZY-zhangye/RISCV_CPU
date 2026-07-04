@@ -22,8 +22,9 @@ module tb_branch_predictor;
     @(negedge clk_i);
     update_valid_i = 1'b0;
     update_i       = '0;
-    // The update is buffered for one cycle before modifying BTB/BHT state.
-    @(posedge clk_i);
+    // The update is buffered, then passes through the registered update path
+    // before modifying BTB/BHT state.
+    repeat (2) @(posedge clk_i);
     @(negedge clk_i);
   endtask
 

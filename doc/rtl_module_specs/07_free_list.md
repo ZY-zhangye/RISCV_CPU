@@ -95,3 +95,20 @@ AMT 的动态双项读取与 used-bitmap 标记必须由寄存器隔开；恢复
 - 双分配结果不同。
 - free_count 等于 bitmap popcount。
 - 重建结束后 AMT 中所有 PRD 均非空闲。
+
+## 8. 200 MHz OOC 问题记录与整改约束
+
+2026-07-04 的真实 5.000 ns OOC 综合报告显示：WNS=-1.413 ns、TNS=-10.926 ns，16 个
+失败端点。最差路径为 `selection_prd0_q_reg[1] → reservation_prd1_q_reg[1]`，数据路径
+6.387 ns，共 17 级逻辑，其中包含 6 个 CARRY4；报告状态为 synthesized/unplaced。
+
+整改要求：
+
+- `pick_group` 不得使用 `integer` 循环加法计算旋转 group index，改为显式四路固定顺序。
+- S0 寄存 PRD0 时同时寄存 one-hot exclude mask，S1 不再动态解码 PRD0 清除 bitmap bit。
+- 偶/奇候选尽量并行生成，不把 parity fallback、group select 和 bit select 串成一条长链。
+- 若结构重写后 5 ns WNS 小于 +1.0 ns，继续增加 S1 内部寄存边界；吞吐/延迟让位于时序。
+- 整改后必须重新保存 5.000 ns 与 4.000 ns OOC timing summary。5 ns 目标 WNS≥+1.0 ns，
+  4 ns 目标 WNS≥0，且关键选择路径不再包含旋转索引产生的 CARRY4。
+
+该问题关闭前，Free List 的功能测试通过不代表模块达到完成定义。

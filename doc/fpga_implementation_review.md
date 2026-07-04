@@ -111,3 +111,80 @@ buffer，不把全局反压组合传回 F0。
 - 已落地：IBuf 寄存输出、Rename map/ready 分拍、设计文档与 allocator 寄存响应契约。
 - 功能验证：对应 directed tests 必须通过；完整回归结果记录在提交说明中。
 - 尚未证明：200 MHz。最终结论等待用户侧 Vivado 综合、布局布线和报告回传。
+
+## 6. 2026-07-04 真实 5 ns OOC 报告回填
+
+报告目录：`F:\RISCV_CPU_Vivado_20260703\reports_200mhz`。以下结果来自 Vivado 2023.2、
+器件 `xc7k325tffg900-2`、5.000 ns 时钟约束下的 synthesized/unplaced OOC 报告：
+
+| 模块 | WNS |
+|---|---:|
+| branch_predictor | +0.475 ns |
+| fetch_pipeline | +1.655 ns |
+| instruction_buffer | +1.485 ns |
+| decode_stage | +2.728 ns |
+| free_list | **-1.413 ns** |
+| rat_amt | +2.529 ns |
+| rename_stage | +2.468 ns |
+
+当前仅 Free List 违反 200 MHz：TNS=-10.926 ns、16 个失败端点，最差路径从
+`selection_prd0_q_reg[1]` 到 `reservation_prd1_q_reg[1]`，数据路径 6.387 ns、17 级逻辑，
+其中有 6 个 CARRY4。关键路径验证了第二 PRD 选择仍然过深，并暴露出旋转组索引使用
+整数加法导致宽 carry chain 的综合问题。
+
+整改顺序为：显式 case 旋转优先级 → S0 寄存 one-hot exclude mask → 并行偶/奇候选 →
+必要时再增加 S1 寄存边界。Free List 重新综合需达到 5 ns WNS≥+1.0 ns，且 4 ns WNS≥0。
+
+Branch Predictor 虽通过，但 WNS 只有 +0.475 ns，继续列为 P1 观察项；其最差路径在更新
+FIFO PC 到 BTB 写使能，而不是预测查询路径。完整核是否达到 200 MHz 仍必须等待布局布线
+后的 timing summary，不能由本次 OOC 综合直接宣布达标。
+
+## 7. Free List 之外的风险清单
+
+### 7.1 P0：Branch Predictor 面积与更新路径
+
+Predictor 是当前最大且裕量最小的已通过模块。BTB/BHT 基本没有形成目标 RAM 结构，导致
+8115 FF、4162 LUT 和 2265 个 F7/F8 Mux。更新路径把 Update FIFO PC 动态索引、旧 BTB
+entry 读取、tag/slot 替换判断和 entry write-enable 串在一起。
+
+优化方向：更新端拆成 read/compare-write 多拍；BHT 改为 block-indexed 128×8-bit 行；
+查询、更新端口按同步 RAM 模板重写；增加 update queue 满握手。修改后要求 4 ns OOC
+通过，并以 RAM utilization 和 MUX 数量验证结构真正改变。
+
+### 7.2 P1：Instruction Buffer 多写布线
+
+IBuf 的最差路径由 tail 指针进入宽 entry 阵列控制，布线占 83.5%。当前 8 项容量下仍能
+通过，但全核中与 Fetch、Decode 相邻，宽 payload 很容易扩大布线压力。
+
+优化方向：仅在成组 OOC/route 失败时增加 enqueue command 寄存器，预生成 compaction、
+one-hot write enable 和局部 payload；pending command 必须计入容量。FO 输出寄存边界保留。
+
+### 7.3 P1：Fetch prediction 控制布线
+
+Fetch 的最差路径从 response FIFO 内 prediction slot 到 F2 packet 控制，布线占 83.2%。
+优化方向是在 F1 增加 prediction predecode，仅向 F2 传递 taken/target/final slot mask；不得
+把 Predictor、IROM、IBuf ready 重新串成组合控制链。
+
+### 7.4 P2：Rename/RAT 集成与恢复扇出
+
+Rename/RAT 单模块内部裕量充足，说明 map/ready 分拍有效。风险来自尚未综合的模块边界和
+全局恢复网络：Free List response、Dispatch ready、checkpoint snapshot、branch mask clear。
+保持寄存 allocator response，并对 Rename+Free List+Dispatch 做成组 OOC；恢复控制若进入
+route 关键路径，再采用分组/复制，不提前破坏正常路径。
+
+### 7.5 当前无需调整：Decode
+
+Decode WNS=+2.728 ns，最差路径仅 2 级 LUT，现有输入/输出寄存器有效。除非 ISA 扩展或
+成组 OOC 出现新路径，否则不为追求局部数字继续增加流水级。
+
+## 8. 报告使用限制
+
+上述报告均为 synthesized/unplaced OOC，hold 路径未形成最终物理验证；报告中的 route
+delay 是估算值。下一步除单模块 4 ns 压力测试外，还必须增加以下成组 OOC：
+
+- `branch_predictor + fetch_pipeline`
+- `instruction_buffer + decode_stage`
+- `rename_stage + free_list + dispatch_buffer`
+
+只有完整 `place_design/route_design` 后的 WNS/WHS、未约束路径、high-fanout 和 RAM
+utilization 报告，才能作为 200 MHz 最终结论。
