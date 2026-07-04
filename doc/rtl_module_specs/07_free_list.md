@@ -36,7 +36,9 @@ Free List 本地吸收，切断 Commit 到 Rename 的组合闭环。
 2. 每组做 16-bit first-one/second-one。
 
 优先尝试一个偶数 PRD 和一个奇数 PRD。无法跨 Bank 时仍可分配同 Bank，但设置
-bank_same 性能事件。选择结果在 allocator response 寄存后供 Rename R1 使用。
+bank_same 性能事件。选择结果必须先写入 allocator reservation/response 寄存器，再供
+Rename R1 使用；禁止 `alloc_req → bitmap priority encode → alloc_resp` 同周期组合返回。
+reservation 在 `alloc_fire` 前保持且不清 bitmap，flush/cancel 时无副作用释放。
 
 ## 4. 更新规则
 

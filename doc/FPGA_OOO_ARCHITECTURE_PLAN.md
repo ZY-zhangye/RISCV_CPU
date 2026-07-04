@@ -2,7 +2,7 @@
 
 > 目标平台：Xilinx XC7K325T-FFG900-2
 > 目标 ISA：RV32I + M + Zicsr
-> 设计目标：精确异常、至少双发射、具备三发射能力、主频不低于 150 MHz，理想目标 200 MHz 以上
+> 设计目标：精确异常、至少双发射、具备三发射能力；在 XC7K325T-FFG900-2 上完成布局布线后主频不低于 200 MHz（5.000 ns）
 > 存储条件：16 KB IROM、256 KB Data RAM，均基于 FPGA BRAM，可重新组织
 > 性能评价：以类似 CoreMark 的综合程序性能为主要依据
 
@@ -132,11 +132,12 @@
 F0   PC 生成、预测器索引
 F1   IROM、BTB、BHT 同步读取
 F2   预测结果选择、取指块对齐
-FB   Instruction Buffer
+FB   Instruction Buffer 环形存储
+FO   Instruction Buffer 寄存输出
 
 D0   双译码
-R0   RAT 查询、Lane 内依赖解析
-R1   PRD、ROB、LSQ、Checkpoint 分配
+R0   RAT 映射查询并寄存
+R1   PRD ready 查询、Lane 内依赖解析、已寄存资源响应
 DP   Dispatch Buffer
 IS   Issue Select
 RR   PRF Read / Bypass Select
@@ -151,13 +152,13 @@ CM   双提交
 普通整数指令路径：
 
 ```text
-F0 → F1 → F2 → FB → D0 → R0 → R1 → DP → IS → RR → EX → WB → CM
+F0 → F1 → F2 → FB → FO → D0 → R0 → R1 → DP → IS → RR → EX → WB → CM
 ```
 
 Load 指令路径：
 
 ```text
-F0 → F1 → F2 → FB → D0 → R0 → R1 → DP → IS → RR
+F0 → F1 → F2 → FB → FO → D0 → R0 → R1 → DP → IS → RR
 → AGU → M0 → M1 → M2 → WB → CM
 ```
 
@@ -206,6 +207,11 @@ slot_index  = PC[3:2]
 ```
 
 采用环形队列，不采用整体移位结构。
+
+环形存储到 Decode 之间必须设置双路寄存输出（FO）。FO 空闲或其 bundle 被 Decode
+整体接受时，才从 head/head+1 预取下一组；反压期间 FO 的 valid 与 payload 保持不变。
+容量统计包含 FO 中的 0～2 条指令，逻辑总容量仍为 8，不得借输出寄存器暗中扩大容量。
+该边界用于切断 `entries[head]` 选择、跨模块布线和完整译码的单周期组合路径。
 
 维护：
 
@@ -315,13 +321,13 @@ R0 完成：
 
 - 两条指令的 4 个源寄存器 RAT 查询；
 - 两个目的寄存器旧映射查询；
-- Lane0 → Lane1 的同周期 RAW 处理；
-- Lane0 → Lane1 的同周期 WAW 处理；
-- 读取物理寄存器 ready 状态；
-- 计算资源需求；
-- 将结果锁存到 R1。
+- 将 prs1/prs2/old_prd 与 uop、资源需求锁存到 R0/R1 边界。
 
 RAT 应采用寄存器阵列和组合读，不使用 BRAM。
+
+PRD ready table 不得通过 RAT 组合输出继续级联查询。ready 查询必须由已寄存的 PRD
+编号驱动，并在下一边界锁存；写回 tag bypass 只允许位于 ready 查询这一侧。这样把
+`32:1 RAT map mux → 64:1 ready mux` 拆成两个周期。
 
 ---
 
@@ -370,6 +376,8 @@ lane1.old_prd = lane0.new_prd
 
 R1 完成：
 
+- 用 R0 已寄存的 PRD 编号查询 ready table，并执行写回 tag bypass；
+- 处理 Lane0 → Lane1 的同组 RAW/WAW；
 - 最多分配 2 个新 PRD；
 - 最多分配 2 个 ROB 项；
 - 最多分配 2 个 IQ 项；
@@ -394,6 +402,10 @@ RAT Read
 ```
 
 的单周期组合路径。
+
+Allocator response 必须是寄存保持的 reservation，不得由请求在同周期穿过 Free List
+优先编码器后组合返回。请求在 response 到达前保持稳定；response 在 `alloc_fire` 前不
+消耗资源，flush 时由 `alloc_cancel` 释放。
 
 ---
 

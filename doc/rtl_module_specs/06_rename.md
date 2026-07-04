@@ -1,6 +1,7 @@
 # Rename、RAT 与 AMT 设计
 
-建议模块名：rename_stage、rat_amt。Rename 分 R0 Map Read 和 R1 Allocate 两级。
+建议模块名：rename_stage、rat_amt。Rename 的关键组合逻辑分为 R0 Map Read 和 R1
+Ready/Allocate；入口 elastic register 不计入逻辑级命名。
 
 ## 1. 端口
 
@@ -30,18 +31,20 @@ RAT 和 AMT 均为 32×6-bit 寄存器阵列。x0 始终映射 p0。
 
 ## 3. R0 时序
 
-R0 组合读取最多四个源映射和两个旧目的映射，同时读取 PRD ready table。周期末锁存：
+R0 组合读取最多四个源映射和两个旧目的映射。周期末锁存：
 
 - lane0 的 prs1/prs2/old_prd。
 - lane1 的基础 RAT 结果。
 - 两 lane 资源需求。
-- lane 内 RAW/WAW 比较结果。
+- lane 内 RAW/WAW 比较所需的架构寄存器信息。
 
-R0 不执行 Free List 优先编码，也不写 RAT。
+R0 不查询 PRD ready table，不执行 Free List 优先编码，也不写 RAT。禁止形成
+`RAT map mux → PRD ready mux` 的同周期级联路径。
 
 ## 4. R1 时序
 
-R1 从已寄存的 allocator response 获得最多两个 PRD、ROB ID、LQ/SQ ID 和最多一个
+R1 使用 R0 已寄存的 PRD 编号查询 ready table，并在该侧执行最多两路 WB tag bypass。
+R1 从已寄存并保持的 allocator response 获得最多两个 PRD、ROB ID、LQ/SQ ID 和最多一个
 checkpoint。发生 rn_fire 时原子执行：
 
 1. 生成 lane0/lane1 最终 prs、prd、old_prd。
@@ -54,6 +57,9 @@ checkpoint。发生 rn_fire 时原子执行：
 alloc_req/alloc_resp 使用前缀 `lane_valid`，并分 lane 表达 PRD/LQ/SQ/Checkpoint 需求。
 allocator 的 response 在 `alloc_fire_o` 前只保留不消耗；恢复冲刷 R1 时由
 `alloc_cancel_o` 释放保留。
+
+`alloc_req_o` 到 `alloc_resp_i` 不允许存在同周期组合返回路径。Free List 的选择结果必须
+先进入 reservation/response 寄存器；response 到达前请求 payload 必须保持稳定。
 
 ## 5. Lane 内依赖
 

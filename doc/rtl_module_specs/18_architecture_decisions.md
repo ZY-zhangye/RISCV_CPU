@@ -15,6 +15,10 @@
 | D08 | 部分 Store-to-Load Forwarding | V1 不合并，等待 Store 提交 | LSQ |
 | D09 | CSR 返回值写回时点 | 仅 head 执行，经 completion 写 PRF 后提交 | CSR、WB、Commit |
 | D10 | 正确分支 mask 清除用一拍广播还是分组清除 | 先分组/本地寄存，目标 200 MHz | IQ、ROB、LSQ、MDU |
+| D11 | Instruction Buffer 是否组合直出 | 采用双路 FO 寄存输出，总容量仍为 8 | instruction_buffer、decode |
+| D12 | RAT map 与 PRD ready 是否同拍级联 | 强制分拍；ready 只由已寄存 PRD 编号查询 | rename、rat_amt |
+| D13 | Allocator 是否允许组合响应 | 禁止；使用保持到 fire/cancel 的寄存 reservation | free_list、rename、ROB、LSQ |
+| D14 | 200 MHz 如何验收 | xc7k325tffg900-2、5.000 ns、route 后 WNS/WHS≥0、无未约束路径 | 全核 |
 
 ## 变更规则
 

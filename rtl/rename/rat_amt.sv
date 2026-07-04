@@ -18,6 +18,10 @@ module rat_amt (
     output logic [PRD_W-1:0]             lane1_prs1_o,
     output logic [PRD_W-1:0]             lane1_prs2_o,
     output logic [PRD_W-1:0]             lane1_old_prd_o,
+    input  logic [PRD_W-1:0]             ready_prs0_i,
+    input  logic [PRD_W-1:0]             ready_prs1_i,
+    input  logic [PRD_W-1:0]             ready_prs2_i,
+    input  logic [PRD_W-1:0]             ready_prs3_i,
     output logic                         lane0_src1_ready_o,
     output logic                         lane0_src2_ready_o,
     output logic                         lane1_src1_ready_o,
@@ -67,10 +71,11 @@ module rat_amt (
   assign lane1_prs2_o = rat_q[lane1_rs2_i];
   assign lane1_old_prd_o = rat_q[lane1_rd_i];
 
-  assign lane0_src1_ready_o = prd_ready_q[lane0_prs1_o];
-  assign lane0_src2_ready_o = prd_ready_q[lane0_prs2_o];
-  assign lane1_src1_ready_o = prd_ready_q[lane1_prs1_o];
-  assign lane1_src2_ready_o = prd_ready_q[lane1_prs2_o];
+  // Ready 查询地址来自上一级已寄存的 PRD，避免 RAT map Mux 与 ready Mux 同拍级联。
+  assign lane0_src1_ready_o = prd_ready_q[ready_prs0_i];
+  assign lane0_src2_ready_o = prd_ready_q[ready_prs1_i];
+  assign lane1_src1_ready_o = prd_ready_q[ready_prs2_i];
+  assign lane1_src2_ready_o = prd_ready_q[ready_prs3_i];
 
   assign active_branch_mask_o = active_branch_mask_q;
   assign restore_busy_o = restore_busy_q;

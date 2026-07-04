@@ -6,7 +6,7 @@ import core_types_pkg::*;
 // 寄存器重命名流水级 (Register Rename Stage)
 // 职责：
 // 1. 将译码阶段输入的架构寄存器索引（rs1, rs2, rd）映射为物理寄存器索引（prs1, prs2, prd）；
-// 2. 实现两级重命名流水线（R0 读映射表 RAT，R1 向 Free List/ROB/LSQ 发起资源分配请求并执行重映射更新）；
+// 2. R0 寄存 RAT 映射结果，R1 由已寄存 PRD 查询 ready 并使用已寄存的资源分配响应；
 // 3. 处理双路超标量组内的数据相关性（Intra-group Dependencies）：
 //    - RAW（写读相关）：若 Lane 1 读取 Lane 0 正在写入的 rd，则直接前传重命名结果；
 //    - WAW（写写相关）：若两路同时写入相同的 rd，修正旧目的物理寄存器（old_prd）以备正确释放；
@@ -53,6 +53,15 @@ module rename_stage (
   logic [1:0] r0_valid_q;
   decoded_uop_t r0_uop0_q;
   decoded_uop_t r0_uop1_q;
+
+  // RAT 映射结果寄存边界：切断 32:1 map Mux 到 64:1 ready Mux 的组合级联。
+  logic map_valid_q;
+  logic [PRD_W-1:0] map_lane0_prs1_q;
+  logic [PRD_W-1:0] map_lane0_prs2_q;
+  logic [PRD_W-1:0] map_lane0_old_prd_q;
+  logic [PRD_W-1:0] map_lane1_prs1_q;
+  logic [PRD_W-1:0] map_lane1_prs2_q;
+  logic [PRD_W-1:0] map_lane1_old_prd_q;
 
   // R1 流水线寄存器：锁存重命名后的微操作，等待后级 Rename Ready 并发起资源分配
   logic [1:0] r1_valid_q;
@@ -132,20 +141,20 @@ module rename_stage (
   // ==========================================================================
   // 写回旁路前传 (Writeback Bypass Network)
   // ==========================================================================
-  // 当从 RAT 读出物理寄存器时，如果该物理寄存器正巧在当前时钟周期执行写回（Ready 广播），
+  // 当已寄存的物理寄存器正巧在当前时钟周期执行写回（Ready 广播），
   // 则可以直接前传（Bypass）将其标记为 Ready，避免产生额外的时序气泡。
   assign lane0_src1_ready_now = lane0_src1_ready ||
-      (wb_ready_valid_i[0] && (wb_ready_prd0_i == lane0_prs1)) ||
-      (wb_ready_valid_i[1] && (wb_ready_prd1_i == lane0_prs1));
+      (wb_ready_valid_i[0] && (wb_ready_prd0_i == map_lane0_prs1_q)) ||
+      (wb_ready_valid_i[1] && (wb_ready_prd1_i == map_lane0_prs1_q));
   assign lane0_src2_ready_now = lane0_src2_ready ||
-      (wb_ready_valid_i[0] && (wb_ready_prd0_i == lane0_prs2)) ||
-      (wb_ready_valid_i[1] && (wb_ready_prd1_i == lane0_prs2));
+      (wb_ready_valid_i[0] && (wb_ready_prd0_i == map_lane0_prs2_q)) ||
+      (wb_ready_valid_i[1] && (wb_ready_prd1_i == map_lane0_prs2_q));
   assign lane1_src1_ready_now = lane1_src1_ready_base ||
-      (wb_ready_valid_i[0] && (wb_ready_prd0_i == lane1_prs1_base)) ||
-      (wb_ready_valid_i[1] && (wb_ready_prd1_i == lane1_prs1_base));
+      (wb_ready_valid_i[0] && (wb_ready_prd0_i == map_lane1_prs1_q)) ||
+      (wb_ready_valid_i[1] && (wb_ready_prd1_i == map_lane1_prs1_q));
   assign lane1_src2_ready_now = lane1_src2_ready_base ||
-      (wb_ready_valid_i[0] && (wb_ready_prd0_i == lane1_prs2_base)) ||
-      (wb_ready_valid_i[1] && (wb_ready_prd1_i == lane1_prs2_base));
+      (wb_ready_valid_i[0] && (wb_ready_prd0_i == map_lane1_prs2_q)) ||
+      (wb_ready_valid_i[1] && (wb_ready_prd1_i == map_lane1_prs2_q));
 
   // ==========================================================================
   // 超标量结构限制与重命名请求生成
@@ -161,7 +170,7 @@ module rename_stage (
   // 拼装向物理资源池（ROB/Free List/LSQ）发起的分配请求
   always @* begin
     alloc_req_o = '0;
-    alloc_req_o.valid = (requested_lanes != 2'b00) &&
+    alloc_req_o.valid = map_valid_q && (requested_lanes != 2'b00) &&
                         (r1_valid_q == 2'b00) && !rat_restore_busy &&
                         !recovery_i.valid;
     alloc_req_o.lane_valid = requested_lanes;
@@ -240,6 +249,10 @@ module rename_stage (
       .lane1_prs2_o(lane1_prs2_base),
       .lane1_old_prd_o(lane1_old_prd_base),
 
+      .ready_prs0_i(map_lane0_prs1_q),
+      .ready_prs1_i(map_lane0_prs2_q),
+      .ready_prs2_i(map_lane1_prs1_q),
+      .ready_prs3_i(map_lane1_prs2_q),
       .lane0_src1_ready_o(lane0_src1_ready),
       .lane0_src2_ready_o(lane0_src2_ready),
       .lane1_src1_ready_o(lane1_src1_ready_base),
@@ -277,14 +290,22 @@ module rename_stage (
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
       r0_valid_q <= 2'b00;
+      map_valid_q <= 1'b0;
       r1_valid_q <= 2'b00;
       r0_uop0_q <= '0;
       r0_uop1_q <= '0;
+      map_lane0_prs1_q <= '0;
+      map_lane0_prs2_q <= '0;
+      map_lane0_old_prd_q <= '0;
+      map_lane1_prs1_q <= '0;
+      map_lane1_prs2_q <= '0;
+      map_lane1_old_prd_q <= '0;
       r1_uop0_q <= '0;
       r1_uop1_q <= '0;
     end else if (recovery_i.valid) begin
       // 遭遇全局冲刷，清空当前重命名两级流水线的所有在途数据
       r0_valid_q <= 2'b00;
+      map_valid_q <= 1'b0;
       r1_valid_q <= 2'b00;
     end else begin
       // 1. 分支预测正确释放：更新暂存在重命名级的分支掩码
@@ -314,6 +335,7 @@ module rename_stage (
       // 若发生部分发射（partial_fire），将 lane1 平移锁入下周期的 lane0 重新开始重命名。
       if (rn_fire) begin
         r1_valid_q <= 2'b00;
+        map_valid_q <= 1'b0;
         if (partial_fire) begin
           r0_valid_q <= 2'b01;
           r0_uop0_q <= r0_uop1_q;
@@ -333,18 +355,29 @@ module rename_stage (
           r0_uop1_q <= dec_uop1_i;
       end
 
-      // 4. R1 寄存器数据写入与重映射解算 (R0 -> R1, Rename Map logic)
+      // 4. RAT 映射查询结果单独打拍。后续 ready table 只接收这些寄存 PRD 地址。
+      if (!map_valid_q && (r0_valid_q != 2'b00)) begin
+        map_valid_q <= 1'b1;
+        map_lane0_prs1_q <= lane0_prs1;
+        map_lane0_prs2_q <= lane0_prs2;
+        map_lane0_old_prd_q <= lane0_old_prd;
+        map_lane1_prs1_q <= lane1_prs1_base;
+        map_lane1_prs2_q <= lane1_prs2_base;
+        map_lane1_old_prd_q <= lane1_old_prd_base;
+      end
+
+      // 5. R1 寄存器数据写入与重映射解算
       if (r1_load) begin
         r1_valid_q <= granted_lanes;
 
         // A. Lane 0 重命名组合填充
         r1_uop0_q <= '0;
         r1_uop0_q.dec <= r0_uop0_q;
-        r1_uop0_q.prs1 <= lane0_prs1;
-        r1_uop0_q.prs2 <= lane0_prs2;
+        r1_uop0_q.prs1 <= map_lane0_prs1_q;
+        r1_uop0_q.prs2 <= map_lane0_prs2_q;
         // 分配物理目的寄存器 prd 与记录被覆盖的旧物理寄存器 old_prd
         r1_uop0_q.prd <= r0_uop0_q.write_rd ? alloc_resp_i.prd[0] : '0;
-        r1_uop0_q.old_prd <= r0_uop0_q.write_rd ? lane0_old_prd : '0;
+        r1_uop0_q.old_prd <= r0_uop0_q.write_rd ? map_lane0_old_prd_q : '0;
         r1_uop0_q.rob_id <= alloc_resp_i.rob_id[0];
         r1_uop0_q.lq_id <= alloc_resp_i.lq_id[0];
         r1_uop0_q.sq_id <= alloc_resp_i.sq_id[0];
@@ -364,10 +397,10 @@ module rename_stage (
           // 则直接将 Lane 1 的物理源寄存器绑定到分配给 Lane 0 的 prd[0] 上；否则，使用 RAT 的正常输出。
           r1_uop1_q.prs1 <= (r0_uop0_q.write_rd &&
               (r0_uop0_q.rd == r0_uop1_q.rs1) && (r0_uop1_q.rs1 != 0)) ?
-              alloc_resp_i.prd[0] : lane1_prs1_base;
+              alloc_resp_i.prd[0] : map_lane1_prs1_q;
           r1_uop1_q.prs2 <= (r0_uop0_q.write_rd &&
               (r0_uop0_q.rd == r0_uop1_q.rs2) && (r0_uop1_q.rs2 != 0)) ?
-              alloc_resp_i.prd[0] : lane1_prs2_base;
+              alloc_resp_i.prd[0] : map_lane1_prs2_q;
 
           r1_uop1_q.prd <= r0_uop1_q.write_rd ? alloc_resp_i.prd[1] : '0;
 
@@ -377,7 +410,7 @@ module rename_stage (
           r1_uop1_q.old_prd <= (r0_uop1_q.write_rd && r0_uop0_q.write_rd &&
               (r0_uop0_q.rd == r0_uop1_q.rd) && (r0_uop1_q.rd != 0)) ?
               alloc_resp_i.prd[0] :
-              (r0_uop1_q.write_rd ? lane1_old_prd_base : '0);
+              (r0_uop1_q.write_rd ? map_lane1_old_prd_q : '0);
 
           r1_uop1_q.rob_id <= alloc_resp_i.rob_id[1];
           r1_uop1_q.lq_id <= alloc_resp_i.lq_id[1];

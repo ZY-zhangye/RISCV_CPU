@@ -43,6 +43,10 @@
 
 ## 5. 独立综合目标
 
+固定目标器件为 `xc7k325tffg900-2`。完整核主时钟约束为 5.000 ns；验收以 route_design
+后的时序为准，要求 setup WNS 与 hold WHS 均不小于 0，并且不存在 unconstrained path。
+仅有 RTL 仿真、综合估算或同器件其他工程达到 200 MHz，均不能作为本核达标证据。
+
 | 模块路径 | 最低目标 |
 |---|---:|
 | RAT + lane dependency | 250 MHz |
@@ -56,6 +60,11 @@
 
 完整核目标为 200 MHz。独立综合报告必须记录器件、时钟约束、WNS、逻辑级数、LUT/FF/
 BRAM/DSP 和最差路径端点。
+
+模块 OOC 建议使用 4.0～4.5 ns 约束留出顶层布线余量。每次实现至少保存并核对：
+`report_timing_summary`、`report_utilization -hierarchical`、`report_ram_utilization` 和
+`report_high_fanout_nets`。预测器 BTB/BHT、IROM/Data RAM 是否推断为预期存储原语，必须
+以 RAM utilization 报告为准。
 
 ## 6. 关键属性
 

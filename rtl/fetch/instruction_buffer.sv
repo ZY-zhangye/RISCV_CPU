@@ -9,7 +9,7 @@ import core_types_pkg::*;
 // 2. 支持单周期最多写入 4 条经过压缩整理（Compacted）的指令（针对取指块中 valid 槽不连续的情况）；
 // 3. 支持单周期最多读出 2 条顺序指令，供下级超标量译码阶段（Decode）使用；
 // 4. 采用读写指针（Head & Tail）的形式，无需进行昂贵的整阵列移位寄存器操作；
-// 5. 包含暂存保持机制：当译码端发生反压暂停时，锁定当前输出端口的数据，允许取指端继续向后方队列写入，提高流水线利用率。
+// 5. 通过双路寄存输出切断 entry 读 Mux 到 Decode 的组合路径；反压时输出自然保持。
 
 module instruction_buffer (
     input  logic                clk_i,             // 时钟信号
@@ -37,33 +37,24 @@ module instruction_buffer (
   fetch_slot_t entries_q [0:IBUF_ENTRIES-1];       // 队列物理存储器 (8项指令槽)
   logic [2:0] head_q;                              // 读指针（指向待出队的头部项，3位自动Wrap-around模8）
   logic [2:0] tail_q;                              // 写指针（指向下一个写入位置，3位自动Wrap-around模8）
-  logic [3:0] occupancy_q;                         // 队列占用计数器 (0~8)
-
-  // 暂存锁定机制寄存器：
-  // 当译码端暂停（`decode_ready_i = 0`）而译码端口已有有效指令时，锁存当前的输出信息。
-  // 这使得在译码被阻塞的同时，前端取指单元仍能将新获取的指令安全写入读指针后面的空闲槽，
-  // 并且保证译码输出端口的数据在握手成功前不发生任何翻转。
-  logic hold_active_q;                             // 暂存保持状态机激活标志
-  logic [1:0] hold_valid_q;                        // 锁存的有效信号
-  fetch_slot_t [1:0] hold_slots_q;                 // 锁存的指令槽数据
+  logic [3:0] occupancy_q;                         // 环形存储占用数，不含输出寄存器
+  logic [1:0] output_valid_q;                       // Decode 可见的寄存输出有效位
+  fetch_slot_t [1:0] output_slots_q;                // Decode 可见的寄存输出 payload
 
   // ==========================================================================
   // 中间连线与控制信号 (Wires)
   // ==========================================================================
   fetch_slot_t head_slot0;                         // 指向 Head 的第一条指令
   fetch_slot_t head_slot1;                         // 指向 Head+1 的第二条指令
-  logic [1:0] base_decode_valid;                   // 基于队列状态计算出的译码有效信号
-  fetch_slot_t [1:0] base_decode_slots;            // 基于队列状态读出的译码指令数据
-  logic [1:0] decode_valid_int;                    // 经 Mux 切换选择后的内部译码有效信号
-  fetch_slot_t decode_slot0_int;                   // 经 Mux 切换选择后的通道 0 数据
-  fetch_slot_t decode_slot1_int;                   // 经 Mux 切换选择后的通道 1 数据
   fetch_slot_t [3:0] packet_slots;                 // 存储当前输入包拆解出的 4 个指令槽
 
   logic [2:0] enqueue_count;                       // 当前周期请求写入的有效指令数量 (0~4)
-  logic [1:0] dequeue_count;                       // 当前周期请求读出的指令数量 (0~2)
+  logic [1:0] output_count;                        // 输出寄存器当前有效数 (0~2)
+  logic [1:0] refill_count;                        // 本周期从环形存储预取到输出寄存器的数量
   logic [3:0] free_count;                          // 当前缓冲区的空闲槽数 (0~8)
   logic fetch_fire;                                // 取指端与缓冲区握手成功
   logic decode_fire;                               // 缓冲区与译码端握手成功
+  logic output_can_refill;                         // 输出为空或本周期被整体消费
 
   // ==========================================================================
   // 辅助转换函数 (Helper Functions)
@@ -124,7 +115,10 @@ module instruction_buffer (
                          fetch_packet_i.slot_valid[1] +
                          fetch_packet_i.slot_valid[2] +
                          fetch_packet_i.slot_valid[3];
-  assign free_count = IBUF_ENTRIES - occupancy_q;
+  assign output_count = output_valid_q[1] ? 2'd2 :
+                        (output_valid_q[0] ? 2'd1 : 2'd0);
+  assign occupancy_o = occupancy_q + output_count;
+  assign free_count = IBUF_ENTRIES - occupancy_o;
 
   // 缓冲区有足够空间，且无冲刷，方可接纳新的取指数据
   assign fetch_ready_o = !flush_i && (enqueue_count <= free_count);
@@ -135,52 +129,25 @@ module instruction_buffer (
   // ==========================================================================
   assign head_slot0 = entries_q[head_q];
   assign head_slot1 = entries_q[ptr_add(head_q, 1)];
-  assign decode_valid_o = decode_valid_int;
-  assign decode_slot0_o = decode_slot0_int;
-  assign decode_slot1_o = decode_slot1_int;
-
-  // 基础取指状态生成器
-  always @* begin
-    base_decode_valid = 2'b00;
-    base_decode_slots = '0;
-    if (occupancy_q != 0) begin
-      base_decode_valid[0] = 1'b1;                  // 至少有 1 条，通道 0 有效
-      base_decode_slots[0] = head_slot0;
-      if (occupancy_q >= 2) begin
-        base_decode_valid[1] = 1'b1;                // 至少有 2 条，通道 1 也有效
-        base_decode_slots[1] = head_slot1;
-      end
-    end
-
-    // 根据 hold_active_q 状态机实现指令数据输出的选择与稳定
-    if (flush_i) begin
-      decode_valid_int = 2'b00;
-      decode_slot0_int = '0;
-      decode_slot1_int = '0;
-    end else if (hold_active_q) begin
-      // 反压时，使用锁存寄存器里的值，屏蔽后端写入带来的读指针偏移影响
-      decode_valid_int = hold_valid_q;
-      decode_slot0_int = hold_slots_q[0];
-      decode_slot1_int = hold_slots_q[1];
-    end else begin
-      // 畅通时，直接输出环形 FIFO 读指针当前指向的内容
-      decode_valid_int = base_decode_valid;
-      decode_slot0_int = base_decode_slots[0];
-      decode_slot1_int = base_decode_slots[1];
-    end
-  end
+  assign decode_valid_o = flush_i ? 2'b00 : output_valid_q;
+  assign decode_slot0_o = output_slots_q[0];
+  assign decode_slot1_o = output_slots_q[1];
 
   // 指令成功被译码接收的触发信号
   assign decode_fire = decode_ready_i && (decode_valid_o != 2'b00) && !flush_i;
 
-  // 计算出队条数：如果两路都有效则为 2，否则为 1
-  always @* begin
-    dequeue_count = 2'd0;
-    if (decode_fire)
-      dequeue_count = decode_valid_o[1] ? 2'd2 : 2'd1;
-  end
+  // 只有输出为空或当前 bundle 被整体接受时才预取，禁止覆盖被 stall 的输出。
+  assign output_can_refill = (output_valid_q == 2'b00) || decode_fire;
 
-  assign occupancy_o = occupancy_q;
+  always @* begin
+    refill_count = 2'd0;
+    if (output_can_refill) begin
+      if (occupancy_q >= 2)
+        refill_count = 2'd2;
+      else if (occupancy_q == 1)
+        refill_count = 2'd1;
+    end
+  end
 
   // ==========================================================================
   // 时序更新逻辑 (Queue Operations)
@@ -192,34 +159,40 @@ module instruction_buffer (
       head_q         <= 3'd0;
       tail_q         <= 3'd0;
       occupancy_q    <= 4'd0;
-      hold_active_q  <= 1'b0;
-      hold_valid_q   <= 2'b00;
-      hold_slots_q   <= '0;
+      output_valid_q <= 2'b00;
+      output_slots_q <= '0;
     end else if (flush_i) begin
       // 发生流水线冲刷，清空缓冲区指针与锁定寄存器
       head_q         <= 3'd0;
       tail_q         <= 3'd0;
       occupancy_q    <= 4'd0;
-      hold_active_q  <= 1'b0;
-      hold_valid_q   <= 2'b00;
-      hold_slots_q   <= '0;
+      output_valid_q <= 2'b00;
+      output_slots_q <= '0;
     end else begin
-      // A. 暂存锁定状态机控制：
-      // 如果译码端口有数据输出但未就绪 (!decode_ready_i)，且当前还未锁存数据，则进入锁定状态 hold
-      if (!hold_active_q && (base_decode_valid != 2'b00) && !decode_ready_i) begin
-        hold_active_q <= 1'b1;
-        hold_valid_q  <= base_decode_valid;
-        hold_slots_q  <= base_decode_slots;
-      end else if (hold_active_q && decode_ready_i) begin
-        // 下游解除反压，恢复透明传输
-        hold_active_q <= 1'b0;
+      // A. 输出级预取：entry 读 Mux 的结果只进入本级寄存器，不直达 Decode。
+      if (output_can_refill) begin
+        case (refill_count)
+          2'd2: begin
+            output_valid_q <= 2'b11;
+            output_slots_q[0] <= head_slot0;
+            output_slots_q[1] <= head_slot1;
+          end
+          2'd1: begin
+            output_valid_q <= 2'b01;
+            output_slots_q[0] <= head_slot0;
+            output_slots_q[1] <= '0;
+          end
+          default: begin
+            output_valid_q <= 2'b00;
+            output_slots_q <= '0;
+          end
+        endcase
       end
 
-      // B. 读指针更新：成功读取指令后，向前推进 head 指针
-      if (decode_fire)
-        head_q <= ptr_add(head_q, dequeue_count);
+      if (refill_count != 0)
+        head_q <= ptr_add(head_q, refill_count);
 
-      // C. 写入数据压入队列 (支持压缩存储)：
+      // B. 写入数据压入队列 (支持压缩存储)：
       // 提取取指包中有效的槽，并将其紧凑连续地（不带任何间隙/空槽）存入 tail_q 指向的位置
       if (fetch_fire) begin
         write_offset = 0;
@@ -243,11 +216,11 @@ module instruction_buffer (
         tail_q <= ptr_add(tail_q, enqueue_count);
       end
 
-      // D. 占用条目计算
-      case ({fetch_fire, decode_fire})
+      // C. 环形存储占用计算；输出寄存器另由 output_count 计入总 occupancy。
+      case ({fetch_fire, (refill_count != 0)})
         2'b10: occupancy_q <= occupancy_q + enqueue_count; // 仅入队
-        2'b01: occupancy_q <= occupancy_q - dequeue_count; // 仅出队
-        2'b11: occupancy_q <= occupancy_q + enqueue_count - dequeue_count; // 同时入队出队
+        2'b01: occupancy_q <= occupancy_q - refill_count; // 仅预取
+        2'b11: occupancy_q <= occupancy_q + enqueue_count - refill_count;
         default: occupancy_q <= occupancy_q;
       endcase
     end
@@ -259,7 +232,7 @@ module instruction_buffer (
 `ifdef INSTRUCTION_BUFFER_ASSERTIONS
   // 断言 1：缓冲区中指令的实际存储数永远不能超过缓冲区容量 (8)
   property p_occupancy_bound;
-    @(posedge clk_i) disable iff (rst_i) occupancy_q <= IBUF_ENTRIES;
+    @(posedge clk_i) disable iff (rst_i) occupancy_o <= IBUF_ENTRIES;
   endproperty
   assert property (p_occupancy_bound);
 
