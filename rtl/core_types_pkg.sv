@@ -357,6 +357,59 @@ package core_types_pkg;
   } completion_t;
 
   // ==========================================================================
+  // Store Queue 与已提交 Store Memory Request
+  // ==========================================================================
+  typedef struct packed {
+    logic                       valid;
+    logic [ROB_ID_W-1:0]        rob_id;
+    logic                       address_valid;
+    logic [XLEN-1:0]            address;
+    logic                       data_valid;
+    logic [XLEN-1:0]            data;
+    logic [3:0]                 byte_enable;
+    logic                       exception_valid;
+    logic [3:0]                 exception_cause;
+    logic [XLEN-1:0]            exception_tval;
+    logic [CHECKPOINTS-1:0]     branch_mask;
+  } store_queue_entry_t;
+
+  typedef struct packed {
+    logic                       valid;
+    logic [ROB_ID_W-1:0]        rob_id;
+    logic [PRD_W-1:0]           prd;
+    mem_op_t                    mem_op;
+    logic                       address_valid;
+    logic [XLEN-1:0]            address;
+    logic                       completed;
+    logic                       forwarded;
+    logic                       exception_valid;
+    logic [3:0]                 exception_cause;
+    logic [XLEN-1:0]            exception_tval;
+    logic [CHECKPOINTS-1:0]     branch_mask;
+  } load_queue_entry_t;
+
+  typedef struct packed {
+    logic                       valid;
+    logic [SQ_ID_W-1:0]         sq_id;
+    logic [XLEN-1:0]            address;
+    logic [XLEN-1:0]            data;
+    logic [3:0]                 byte_enable;
+  } store_mem_req_t;
+
+  typedef struct packed {
+    logic                       valid;
+    logic [LQ_ID_W-1:0]         lq_id;
+    logic [XLEN-1:0]            address;
+  } load_mem_req_t;
+
+  typedef struct packed {
+    logic                       valid;
+    logic [LQ_ID_W-1:0]         lq_id;
+    logic [XLEN-1:0]            data;
+    logic                       error;
+  } load_mem_resp_t;
+
+  // ==========================================================================
   // 重排序缓冲条目 (Reorder Buffer Fields)
   // ==========================================================================
   // 1. 重命名阶段分配 ROB 时写入的控制配置结构

@@ -99,9 +99,20 @@ BRAM/DSP 和最差路径端点。
 | INT0 Pipeline | 单周期 ALU + 1-entry completion buffer | +1.824 ns | 冻结，进入 INT1/Branch |
 | INT1/Branch Pipeline | 简单 ALU + branch resolve + 1-entry completion buffer | +2.023 ns | 冻结，进入 Writeback |
 | Writeback Arbiter | 5 producer 2-entry skid buffers + fixed select + registered outputs | +0.287 ns | 暂时冻结，后续看成组/route |
+| LSQ Allocator | 双 LQ/SQ reservation + allocation-log rollback | +2.228 ns | 冻结，进入 Store Queue |
+| Store Queue | 8-entry direct update + 1-entry commit buffer | +2.336 ns | 冻结，进入 Load Queue |
+| Load Queue | 8-entry direct metadata + dual retire release | +2.342 ns | 冻结，进入 LSU Pipeline |
+| LSU Pipeline | AGU + parallel candidates + balanced registered reduction + forwarding/memory path | +0.756 ns | 冻结；TNS=0，关键路径 84.3% 为布线 |
+| Mul Pipeline | 4 partial-product DSPs + 2-level registered add tree + 2-entry completion FIFO | +1.511 ns | 冻结；263 LUT、341 FF、4 DSP48E1 |
+| Div Unit | 单在途 radix-4 16-iteration divider + special-case bypass + stable OUTPUT buffer | OOC 待测 | Questa 21 项回归通过，待 5 ns OOC |
+| Mul/Div Frontend | FU_MUL/FU_DIV request router + local Mul/Div wrappers + split producer outputs | OOC 待测 | Questa 22 项回归通过，待 5 ns OOC |
+| CSR File | commit-time CSR read/modify/write + exception/MRET state + counters | OOC 待测 | Questa 23 项回归通过，待 5 ns OOC |
+| Commit Unit | ROB-head ordered retire + AMT/reclaim + Store two-phase commit + exception recovery | OOC 待测 | Questa 24 项回归通过，待 5 ns OOC |
+| Recovery Controller | priority recovery select + one-shot broadcast + ack wait + redirect pulse | +3.112 ns | 冻结，进入 branch checkpoint 或 commit/CSR glue |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
-下一次继续时应从 `doc/HANDOFF_2026-07-04.md` 和 `09_dispatch_issue.md` 的 5.1 节开始。
+Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns。下一项建议进入 branch_checkpoint_file，
+补齐分支 checkpoint 保存、正确分支释放和误预测恢复句柄。
 
 ## 6. 关键属性
 
