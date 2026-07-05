@@ -188,6 +188,8 @@ module operand_read_stage (
       execute.sq_id = issue.sq_id;
       execute.store_data = src2;                  // Store 指令的写数据由源操作数 2 填充
       execute.serializing = issue.serializing;
+      execute.need_rs1 = issue.need_rs1;
+      execute.need_rs2 = issue.need_rs2;
       make_execute = execute;
     end
   endfunction

@@ -133,6 +133,19 @@ package core_types_pkg;
     logic        is_jalr;       // 是否是 JALR 指令
   } branch_update_t;
 
+  // 执行端分支解析事件。该事件只描述分支本身的实际结果，不直接驱动前端、
+  // RAT、ROB 或 IQ；后续 recovery_controller 负责按优先级广播恢复。
+  typedef struct packed {
+    logic                 valid;         // 分支解析事件有效
+    logic [ROB_ID_W-1:0]  rob_id;        // 对应 ROB ID
+    logic [CP_W-1:0]      checkpoint_id; // 分支自身 checkpoint
+    logic                 actual_taken;  // 实际方向
+    logic [31:0]          actual_target; // 实际目标；not-taken 时为顺序 PC
+    logic                 mispredict;    // 方向错误，或 taken 目标错误
+    logic [31:0]          redirect_pc;   // 恢复时应跳转到的正确 PC
+    branch_update_t       update;        // 写回分支预测器的更新信息
+  } branch_resolve_t;
+
   // ==========================================================================
   // 取指包与槽定义 (Fetch Packet & Slots)
   // ==========================================================================
@@ -320,6 +333,8 @@ package core_types_pkg;
     logic [31:0]            store_data;  // Store 指令待写入的实际数据
 
     logic                   serializing; // 序列化标志
+    logic                   need_rs1;    // 执行端操作数 1 是否来自源寄存器
+    logic                   need_rs2;    // 执行端操作数 2 是否来自源寄存器
   } execute_uop_t;
 
   // ==========================================================================

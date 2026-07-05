@@ -18,6 +18,8 @@
 | ROB | 双分配/完成/提交、wrap、异常、tail 恢复 |
 | IQ | 双入队、双 tag wakeup、分组 oldest、kill |
 | PRF | 六读双写、Bank 冲突、bypass、p0 |
+| INT0 | ALU/shift/compare、立即数选择、completion 背压、recovery kill |
+| INT1/Branch | 简单 ALU、条件分支、JAL/JALR、预测校验、非对齐异常 |
 | LSU/LSQ | 未知老 Store 阻塞、最近 Store 转发、非对齐 |
 | MDU | 全符号组合、除零、溢出、pipeline kill |
 | WB | 三结果碰撞、同 Bank 冲突、公平性、异常 |
@@ -94,6 +96,9 @@ BRAM/DSP 和最差路径端点。
 | Issue Arbiter | P0/P1/P2 三级仲裁，扩展 metadata 后复测 | +1.031 ns | 冻结 |
 | Physical Register File | 双 Bank、每 Bank 三读副本 | +2.005 ns | 冻结，继续核对 RAM inference |
 | Operand Read | 同步读对齐、WB bypass、四端口独立 holding | 4 ns 下 +1.272 ns | 冻结 |
+| INT0 Pipeline | 单周期 ALU + 1-entry completion buffer | +1.824 ns | 冻结，进入 INT1/Branch |
+| INT1/Branch Pipeline | 简单 ALU + branch resolve + 1-entry completion buffer | +2.023 ns | 冻结，进入 Writeback |
+| Writeback Arbiter | 5 producer 2-entry skid buffers + fixed select + registered outputs | +0.287 ns | 暂时冻结，后续看成组/route |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 下一次继续时应从 `doc/HANDOFF_2026-07-04.md` 和 `09_dispatch_issue.md` 的 5.1 节开始。

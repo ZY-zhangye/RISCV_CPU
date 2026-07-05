@@ -19,10 +19,34 @@
 INT0 支持 ADD/SUB、逻辑、比较、LUI/AUIPC 和完整移位。桶形移位器仅放在 INT0，
 issue_arbiter 必须把移位操作限制到该端口。
 
+### 2.1 INT0 V1 实现状态（2026-07-05）
+
+`rtl/execution/int_pipeline0.sv` 已实现 INT0 单周期整数执行流水：
+
+- 输入使用 `execute_uop_t`，并依赖 `need_rs1/need_rs2` 区分寄存器型与立即数型 ALU。
+- EX 周期完成 ALU 计算，结果写入本地 1-entry `completion_t` buffer。
+- `ex_ready_o` 只在本地 buffer 可接收时拉高；结果不会组合直通全局 WB。
+- 支持 result 端 valid-ready 背压，满 buffer 可在同周期 drain 并接收新 uop。
+- `recovery_i` 有效时暂停新接收；异常恢复清空 buffer，分支恢复按本地 branch mask kill 或清 bit。
+
+当前 V1 不生成 branch event；INT1/Branch 单独实现。
+
 ## 3. INT1/Branch 功能
 
 INT1 支持简单整数操作、比较、BEQ/BNE/BLT/BGE/BLTU/BGEU、JAL 和 JALR。
 JALR 目标最低位清零；目标地址非 4-byte 对齐时记录 instruction-address-misaligned。
+
+### 3.1 INT1/Branch V1 实现状态（2026-07-05）
+
+`rtl/execution/int_branch_pipeline1.sv` 已实现 INT1 简单整数与分支解析流水：
+
+- 支持简单 ALU：ADD/SUB、逻辑、SLT/SLTU、LUI/AUIPC、PASS1；完整移位仍限定在 INT0。
+- 支持 BEQ/BNE/BLT/BGE/BLTU/BGEU、JAL、JALR。
+- JAL/JALR completion 写回 link 值 `pc+4`；条件分支只完成 ROB，不写 PRF。
+- JALR 目标清 bit0；taken target 非 4-byte 对齐时产生 instruction-address-misaligned completion，
+  不写 PRF。
+- `branch_resolve_t` 带 `valid`，作为一拍寄存脉冲输出；全局恢复由后续 recovery_controller 处理。
+- completion 使用本地 1-entry buffer，支持 result 背压与 recovery kill。
 
 ## 4. 时序
 
@@ -49,3 +73,16 @@ branch_event 在 EX 末寄存。下一周期 recovery_controller 才广播恢复
 - JAL/JALR link 值为 pc+4。
 - mispredict 的 redirect_pc 与实际执行结果一致。
 - result stall 时 payload 稳定。
+
+## 8. 当前验证状态
+
+- `test/tb_int_pipeline0.sv` 覆盖 ADD/SUB、逻辑、SLT/SLTU、寄存器/立即数移位、
+  LUI/AUIPC、非写回 completion、result 背压保持、同周期 drain+accept、branch/exception
+  recovery kill。
+- QuestaSim：`tb_int_pipeline0` 通过，`Errors: 0, Warnings: 0`。
+- 用户 OOC：200 MHz / 5.000 ns 下 WNS = +1.824 ns。
+- `test/tb_int_branch_pipeline1.sv` 覆盖简单 INT1 ALU、条件分支方向/目标误预测、
+  JAL/JALR link 和 target、JALR 非对齐异常、branch event 单拍输出、completion 背压、
+  recovery kill。
+- QuestaSim：`tb_int_branch_pipeline1` 通过，`Errors: 0, Warnings: 0`。
+- 用户 OOC：200 MHz / 5.000 ns 下 WNS = +2.023 ns。
