@@ -109,4 +109,41 @@ lane1 必须由 Decode/R0 弹性寄存器保持并在下一次成为 lane0。序
 - `rat_amt` 当前 1960 LUT、1193 FF，`rename_stage` 为 2205 LUT、2260 FF；面积可接受，但
   checkpoint snapshot 的布局应尽量靠近 RAT banks。
 
+## 10. Resource Manager V1 实现状态（2026-07-05）
+
+`rtl/rename/rename_resource_manager.sv` 负责 Rename 与 Free List、LSQ、Branch
+Checkpoint File、ROB 之间的原子分配协调：
+
+- 三态 `IDLE/RESERVE/WAIT_FIRE` 保存请求和已返回 response 的生命周期。
+- Free List、LSQ 与 Checkpoint 各自完成注册式 reservation 后，管理器才返回完整
+  `alloc_resp_t`；ROB ready 与两路 ID 同时纳入授权条件。
+- PRD/LQ/SQ 的紧凑分配结果按 `need_*` mask 重新散布到 lane0/lane1。
+- Rename 最终 fire 或 recovery cancel 同拍广播给所有参与资源，ROB 仅在 fire 时看到
+  lane valid，避免部分资源被单独消耗。
+- response 接受后由 `alloc_commit_ready_o` 再次汇总 reservation 与 ROB ready；顶层必须
+  用它门控 Rename 到 Dispatch 的最终 ready，避免 ROB 正在 branch-clear 扫描时其他资源
+  提前 fire。
+- V1 保守等待完整 bundle，不做资源不足时的 lane0 提前授权；资源释放后请求可继续，
+  不影响正确性，后续仅在性能测试证明必要时增加 prefix grant。
+
+`test/tb_rename_resource_manager.sv` 覆盖 staggered reservation、完整 bundle 原子响应、
+compact ID lane scatter、response 后 fire/cancel、ROB 临时 busy 的最终 fire 门控、
+reservation 中途 flush，以及无子资源的 ROB-only 分配。QuestaSim 2024.1 最小测试和
+27 项当前回归均通过，
+`Errors: 0, Warnings: 0`。
+
+## 11. Rename Allocation Cluster V1（2026-07-05）
+
+`rtl/rename/rename_allocation_cluster.sv` 将 Resource Manager、Free List、LSQ Allocator
+和 Branch Checkpoint File 组合为单一原子分配边界，并根据最终 rename uop 生成 PRD/LQ/SQ
+checkpoint keep-count、父分支 mask 和 ROB restore tail。分支恢复同时启动 Free List 与
+LSQ rollback，精确异常同时启动 AMT-based Free List rebuild、LSQ flush 和 checkpoint flush。
+
+`test/tb_rename_allocation_cluster.sv` 使用真实四模块覆盖 lane1 分支同 bundle PRD 保留、
+零访存分配 checkpoint、年轻 Load/Store rollback、ROB restore tail、正确分支释放和异常
+重建。QuestaSim 2024.1 最小测试及当前 28 项回归均通过，`Errors: 0, Warnings: 0`。
+
+用户 5.000 ns OOC 综合 WNS 为 +0.846 ns。Free List reclaim FIFO 空位计算中的无尺寸
+32-bit 常量已改为显式 2-bit 运算，避免不必要的宽算术路径；修改后需执行最终回归。
+
 当前完成门槛保持不变：成组 OOC 4.000 ns WNS≥0，完整 route 后 5.000 ns WNS/WHS≥0。

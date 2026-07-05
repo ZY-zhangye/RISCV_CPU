@@ -99,7 +99,7 @@ BRAM/DSP 和最差路径端点。
 | INT0 Pipeline | 单周期 ALU + 1-entry completion buffer | +1.824 ns | 冻结，进入 INT1/Branch |
 | INT1/Branch Pipeline | 简单 ALU + branch resolve + 1-entry completion buffer | +2.023 ns | 冻结，进入 Writeback |
 | Writeback Arbiter | 5 producer 2-entry skid buffers + fixed select + registered outputs | +0.287 ns | 暂时冻结，后续看成组/route |
-| LSQ Allocator | 双 LQ/SQ reservation + allocation-log rollback | +2.228 ns | 冻结，进入 Store Queue |
+| LSQ Allocator | 双 LQ/SQ reservation + allocation-log rollback | +2.138 ns | 零分配 checkpoint 修正后 Questa 28 项回归通过，冻结 |
 | Store Queue | 8-entry direct update + 1-entry commit buffer | +2.336 ns | 冻结，进入 Load Queue |
 | Load Queue | 8-entry direct metadata + dual retire release | +2.342 ns | 冻结，进入 LSU Pipeline |
 | LSU Pipeline | AGU + parallel candidates + balanced registered reduction + forwarding/memory path | +0.756 ns | 冻结；TNS=0，关键路径 84.3% 为布线 |
@@ -109,10 +109,15 @@ BRAM/DSP 和最差路径端点。
 | CSR File | commit-time CSR read/modify/write + exception/MRET state + counters | OOC 待测 | Questa 23 项回归通过，待 5 ns OOC |
 | Commit Unit | ROB-head ordered retire + AMT/reclaim + Store two-phase commit + exception recovery | OOC 待测 | Questa 24 项回归通过，待 5 ns OOC |
 | Recovery Controller | priority recovery select + one-shot broadcast + ack wait + redirect pulse | +3.112 ns | 冻结，进入 branch checkpoint 或 commit/CSR glue |
+| Branch Checkpoint File | 4-slot registered reservation + ROB tail/ancestry lifetime tracking | +2.600 ns | Questa 26 项回归通过，冻结 |
+| Rename Resource Manager | atomic Free List/LSQ/Checkpoint/ROB reservation coordinator | +2.387 ns | Questa 27 项回归通过，冻结 |
+| Rename Allocation Cluster | Resource Manager + Free List + LSQ Allocator + Checkpoint File | +0.846 ns | Questa 28 项回归通过，冻结 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
-Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns。下一项建议进入 branch_checkpoint_file，
-补齐分支 checkpoint 保存、正确分支释放和误预测恢复句柄。
+Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint
+File WNS 为 +2.600 ns；Rename Resource Manager WNS 为 +2.387 ns。当前修正 LSQ
+Allocator 的零访存分配 checkpoint 后 WNS 为 +2.138 ns。下一项进入 Rename Allocation
+Cluster；真实四模块 directed test 和 28 项回归已通过，5 ns OOC WNS 为 +0.846 ns。
 
 ## 6. 关键属性
 

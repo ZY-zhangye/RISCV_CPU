@@ -210,6 +210,45 @@ module tb_lsq_allocator;
         sq_free_count_o != 4'd8 || busy_o || alloc_valid_o)
       $fatal(1, "exception flush failed");
 
+    // An integer branch allocates no LSQ entry but must still checkpoint the
+    // current tails so younger memory operations can be rolled back.
+    request_reservation(2'd1, 2'd1);
+    fire_reservation(1'b0, '0, '0, '0);
+    @(negedge clk_i);
+    checkpoint_save_i = 1'b1;
+    checkpoint_id_i = 2'd1;
+    checkpoint_keep_lq_count_i = 2'd0;
+    checkpoint_keep_sq_count_i = 2'd0;
+    @(posedge clk_i); #1;
+    checkpoint_save_i = 1'b0;
+
+    request_reservation(2'd1, 2'd1);
+    fire_reservation(1'b0, '0, '0, '0);
+    if (lq_free_count_o != 4'd6 || sq_free_count_o != 4'd6)
+      $fatal(1, "zero-allocation checkpoint setup mismatch");
+
+    @(negedge clk_i);
+    branch_restore_i = 1'b1;
+    branch_restore_id_i = 2'd1;
+    @(posedge clk_i); #1;
+    branch_restore_i = 1'b0;
+    cycles = 0;
+    while (!branch_restore_done_o) begin
+      @(posedge clk_i); #1;
+      cycles = cycles + 1;
+      if (cycles > 4)
+        $fatal(1, "zero-allocation checkpoint rollback timeout");
+    end
+    if (lq_free_count_o != 4'd7 || sq_free_count_o != 4'd7)
+      $fatal(1, "zero-allocation checkpoint did not preserve old entries");
+
+    @(negedge clk_i);
+    exception_flush_i = 1'b1;
+    @(posedge clk_i); #1;
+    exception_flush_i = 1'b0;
+    if (lq_free_count_o != 4'd8 || sq_free_count_o != 4'd8)
+      $fatal(1, "post-checkpoint cleanup failed");
+
     // Clearing a checkpoint makes a later restore a no-op completion.
     @(negedge clk_i);
     checkpoint_clear_i = 1'b1;

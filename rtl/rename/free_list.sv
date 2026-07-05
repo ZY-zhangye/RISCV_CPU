@@ -384,7 +384,7 @@ module free_list (
   // 可接受外部 Commit 释放物理寄存器的就绪判定：
   // 必须满足当前 FIFO 内部剩余空槽足够容纳本周期的回收个数。
   assign reclaim_ready_o = !busy_o && !branch_restore_i && !rebuild_start_i &&
-      (reclaim_input_count <= (2 - reclaim_count_q + reclaim_drain));
+      (reclaim_input_count <= (2'd2 - reclaim_count_q + {1'b0, reclaim_drain}));
   assign reclaim_accept = (reclaim_input_count != 0) && reclaim_ready_o;
 
   // ==========================================================================

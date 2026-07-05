@@ -246,6 +246,17 @@ module lsq_allocator (
         if (checkpoint_clear_i)
           checkpoint_valid_q[checkpoint_clear_id_i] <= 1'b0;
 
+        // A branch checkpoint is required even when the branch bundle allocates
+        // no LQ/SQ entry. Keep counts are nonzero only when allocation fire in
+        // this cycle places older entries before the branch in the same bundle.
+        if (checkpoint_save_i) begin
+          checkpoint_valid_q[checkpoint_id_i] <= 1'b1;
+          checkpoint_lq_tail_q[checkpoint_id_i] <=
+              lq_log_tail_q + checkpoint_keep_lq_count_i;
+          checkpoint_sq_tail_q[checkpoint_id_i] <=
+              sq_log_tail_q + checkpoint_keep_sq_count_i;
+        end
+
         if (alloc_cancel_i && reservation_valid_q) begin
           reservation_valid_q <= 1'b0;
           reservation_lq_count_q <= '0;
@@ -277,13 +288,6 @@ module lsq_allocator (
           lq_log_tail_q <= lq_log_tail_q + reservation_lq_count_q;
           sq_log_tail_q <= sq_log_tail_q + reservation_sq_count_q;
 
-          if (checkpoint_save_i) begin
-            checkpoint_valid_q[checkpoint_id_i] <= 1'b1;
-            checkpoint_lq_tail_q[checkpoint_id_i] <=
-                lq_log_tail_q + checkpoint_keep_lq_count_i;
-            checkpoint_sq_tail_q[checkpoint_id_i] <=
-                sq_log_tail_q + checkpoint_keep_sq_count_i;
-          end
         end else if (!reservation_valid_q &&
                      ((alloc_lq_count_i != 2'd0) ||
                       (alloc_sq_count_i != 2'd0)) &&
@@ -317,11 +321,17 @@ module lsq_allocator (
           else $error("lsq_allocator duplicated SQ ID");
       end
 
-      if (checkpoint_save_i && alloc_fire_i && reservation_valid_q) begin
-        assert (checkpoint_keep_lq_count_i <= reservation_lq_count_q)
-          else $error("checkpoint keeps more LQ allocations than reserved");
-        assert (checkpoint_keep_sq_count_i <= reservation_sq_count_q)
-          else $error("checkpoint keeps more SQ allocations than reserved");
+      if (checkpoint_save_i) begin
+        assert (((checkpoint_keep_lq_count_i == 2'd0) &&
+                 (checkpoint_keep_sq_count_i == 2'd0)) ||
+                (alloc_fire_i && reservation_valid_q))
+          else $error("nonzero checkpoint keep count without allocation fire");
+        if (alloc_fire_i && reservation_valid_q) begin
+          assert (checkpoint_keep_lq_count_i <= reservation_lq_count_q)
+            else $error("checkpoint keeps more LQ allocations than reserved");
+          assert (checkpoint_keep_sq_count_i <= reservation_sq_count_q)
+            else $error("checkpoint keeps more SQ allocations than reserved");
+        end
       end
     end
   end
