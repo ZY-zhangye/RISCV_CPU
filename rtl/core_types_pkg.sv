@@ -49,6 +49,14 @@ package core_types_pkg;
     FU_CSR    = 3'd6    // CSR 寄存器读写单元
   } fu_t;
 
+  // Registered issue-slot destination selected by the global issue arbiter.
+  typedef enum logic [1:0] {
+    ISSUE_INT0 = 2'd0,
+    ISSUE_INT1 = 2'd1,
+    ISSUE_LSU  = 2'd2,
+    ISSUE_MDU  = 2'd3
+  } issue_port_t;
+
   // ALU 操作码枚举
   typedef enum logic [3:0] {
     ALU_ADD,  ALU_SUB,  ALU_SLL,  ALU_SRL,
@@ -241,6 +249,9 @@ package core_types_pkg;
     logic             src1_ready;       // 源操作数 1 就绪状态 (1: 已就绪，可发射)
     logic             src2_ready;       // 源操作数 2 就绪状态 (1: 已就绪，可发射)
     logic [31:0]      imm;              // 立即数
+    logic [31:0]      pc;               // 指令 PC
+    logic             pred_taken;       // 前端预测方向
+    logic [31:0]      pred_target;      // 前端预测目标
 
     // 执行功能具体指令
     fu_t              fu_type;
@@ -260,6 +271,7 @@ package core_types_pkg;
     // 访存通道 ID
     logic [LQ_ID_W-1:0]  lq_id;
     logic [SQ_ID_W-1:0]  sq_id;
+    logic [CP_W-1:0]     checkpoint_id; // 分支自身恢复检查点
 
     // 控制及掩码
     logic [CHECKPOINTS-1:0] branch_mask; // 投机分支掩码，用于在发生误预测时被快速 flush
@@ -285,6 +297,9 @@ package core_types_pkg;
     logic [31:0]          src2;         // 从 PRF 读出或旁路前传得到的 rs2 实际值
     logic [31:0]          imm;          // 立即数值
     logic [31:0]          pc;           // 本指令 PC (分支单元计算 PC+imm 使用)
+    logic                 pred_taken;   // 前端预测方向
+    logic [31:0]          pred_target;  // 前端预测目标
+    logic [CP_W-1:0]      checkpoint_id;// 分支自身恢复检查点
 
     fu_t                  fu_type;      // 执行单元类型
     alu_op_t              alu_op;

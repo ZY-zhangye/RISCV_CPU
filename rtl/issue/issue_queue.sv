@@ -1,62 +1,90 @@
 import core_types_pkg::*;
 
-// Parameterized fixed-slot issue queue.
-// Storage is split into field arrays to keep dynamic slot writes simple for
-// both FPGA synthesis and lightweight simulators.
+// issue_queue.sv
+// 参数化固定槽位发射队列 (Parameterized Fixed-Slot Issue Queue)
+// 职责：
+// 1. 暂存待发射的微操作，维护各个指令操作数的就绪状态（Ready Bits）；
+// 2. 支持双路入队（Double Push）：从分派缓冲区接收最多 2 条 uop，写入队列中的空闲槽位；
+// 3. 支持双路写回唤醒（Double Wakeup）：周期 N 写回的 PRD tag 与队列中所有未就绪操作数进行比较，
+//    在周期末更新 ready bit。新唤醒的 uop 最早在周期 N+1 参与 Select 仲裁，打断单周期组合环路；
+// 4. 双级流水发射选择（Two-Stage Pipelined Selection）：
+//    - 队列容量划分为 `GROUPS` 个组（如 12 项划分为 3 个组，每组 4 项），每组独立发射最多 1 条指令；
+//    - Stage S0（第一级）：将各组内的 slots 两两配对（Pair），选出每对中 ready 且最老的 winner，将其锁存入 `pair_valid_q` 等寄存器；
+//    - Stage S1（第二级）：从每组的各对 winner 中选出最老的 winner 锁存入全局候选 `candidate_valid_q`；
+//    - 候选人保持锁死（Candidate Holding）：一旦锁存，该候选人必须一直保持在输出端，直到收到全局仲裁器的 `issue_grant_i` 授权，
+//      这允许全局仲裁器（Issue Arbiter）跨周期计算而不会因为候选人变化导致冲突；
+// 5. 分支误预测局部清除：根据误预测分支的 checkpoint_id，一拍清除所有年轻无效项，并剔除幸存项的 branch_mask 位；
+// 6. 异常清除：发生精确异常时，一拍直接清空整个发射队列。
+
 module issue_queue #(
-    parameter int ENTRIES = 12,
-    parameter int GROUPS  = 3
+    parameter int ENTRIES = 12,             // 发射队列槽位总数
+    parameter int GROUPS  = 3              // 发射队列的分组数 (每个组独立选出一个发射候选)
 ) (
-    input  logic                    clk_i,
-    input  logic                    rst_i,
+    input  logic                    clk_i,             // 时钟信号
+    input  logic                    rst_i,             // 复位信号 (高电平有效)
 
-    input  logic [1:0]              push_valid_i,
-    output logic                    push_ready_o,
-    input  issue_uop_t              push_uop0_i,
-    input  issue_uop_t              push_uop1_i,
+    // 分派级 (Dispatch Buffer) 输入接口
+    input  logic [1:0]              push_valid_i,      // 输入 uop 有效位
+    output logic                    push_ready_o,      // 发射队列未满，允许写入 (反压)
+    input  issue_uop_t              push_uop0_i,       // 入队 uop0 payload
+    input  issue_uop_t              push_uop1_i,       // 入队 uop1 payload
 
-    input  logic [1:0]              wb_valid_i,
-    input  logic [1:0][PRD_W-1:0]   wb_prd_i,
+    // 写回唤醒 (Wakeup) 输入端口
+    input  logic [1:0]              wb_valid_i,        // 两路写回总线有效位
+    input  logic [1:0][PRD_W-1:0]   wb_prd_i,          // 两路写回物理寄存器号 (唤醒 Tag)
 
-    output logic [GROUPS-1:0]       candidate_valid_o,
-    output issue_uop_t              candidate_uop0_o,
-    output issue_uop_t              candidate_uop1_o,
-    output issue_uop_t              candidate_uop2_o,
-    output logic [$clog2(ENTRIES)-1:0] candidate_slot0_o,
-    output logic [$clog2(ENTRIES)-1:0] candidate_slot1_o,
-    output logic [$clog2(ENTRIES)-1:0] candidate_slot2_o,
+    // 全局发射候选 (Candidates) 输出端口
+    output logic [GROUPS-1:0]       candidate_valid_o, // 发射候选有效指示
+    output issue_uop_t              candidate_uop0_o,  // 组 0 候选 uop
+    output issue_uop_t              candidate_uop1_o,  // 组 1 候选 uop
+    output issue_uop_t              candidate_uop2_o,  // 组 2 候选 uop
+    output logic [$clog2(ENTRIES)-1:0] candidate_slot0_o, // 组 0 候选槽位号
+    output logic [$clog2(ENTRIES)-1:0] candidate_slot1_o, // 组 1 候选槽位号
+    output logic [$clog2(ENTRIES)-1:0] candidate_slot2_o, // 组 2 候选槽位号
 
-    input  logic [GROUPS-1:0]       issue_grant_i,
-    input  recovery_t               recovery_i,
+    // 全局仲裁 (Arbiter) 授权及控制输入
+    input  logic [GROUPS-1:0]       issue_grant_i,     // 仲裁授权信号 (对应各组)
+    input  recovery_t               recovery_i,        // 恢复控制信号 (分支误预测或精确异常)
 
-    output logic                    empty_o,
-    output logic                    full_o,
-    output logic [$clog2(ENTRIES+1)-1:0] occupancy_o
+    // 发射队列状态输出
+    output logic                    empty_o,           // 发射队列空指示
+    output logic                    full_o,            // 发射队列满指示
+    output logic [$clog2(ENTRIES+1)-1:0] occupancy_o   // 当前发射队列占用条数
 );
 
   localparam int SLOT_W = $clog2(ENTRIES);
   localparam int COUNT_W = $clog2(ENTRIES + 1);
-  localparam int GROUP_SIZE = ENTRIES / GROUPS;
-  localparam int PAIRS_PER_GROUP = (GROUP_SIZE + 1) / 2;
-  localparam int PAIR_COUNT = GROUPS * PAIRS_PER_GROUP;
+  localparam int GROUP_SIZE = ENTRIES / GROUPS;          // 每组拥有的槽位数 (如 12/3 = 4项)
+  localparam int PAIRS_PER_GROUP = (GROUP_SIZE + 1) / 2; // 每组划分为配对对数 (如 4/2 = 2对)
+  localparam int PAIR_COUNT = GROUPS * PAIRS_PER_GROUP;  // 全局总配对数 (如 3*2 = 6对)
 
-  logic [ENTRIES-1:0] valid_q;
-  logic [ENTRIES-1:0] src1_ready_q;
-  logic [ENTRIES-1:0] src2_ready_q;
-  logic [ENTRIES-1:0] need_rs1_q;
-  logic [ENTRIES-1:0] need_rs2_q;
-  logic [ROB_ID_W-1:0] rob_id_q [0:ENTRIES-1];
-  logic [PRD_W-1:0] prs1_q [0:ENTRIES-1];
-  logic [PRD_W-1:0] prs2_q [0:ENTRIES-1];
-  logic [CHECKPOINTS-1:0] branch_mask_q [0:ENTRIES-1];
-  issue_uop_t payload_q [0:ENTRIES-1];
+  // ==========================================================================
+  // 发射队列存储单元 (Storage split into arrays for FPGA synthesis)
+  // ==========================================================================
+  logic [ENTRIES-1:0] valid_q;                           // 槽位占用有效标志位
+  logic [ENTRIES-1:0] src1_ready_q;                      // 源操作数 1 就绪标志
+  logic [ENTRIES-1:0] src2_ready_q;                      // 源操作数 2 就绪标志
+  logic [ENTRIES-1:0] need_rs1_q;                        // 指令是否需要源寄存器 1
+  logic [ENTRIES-1:0] need_rs2_q;                        // 指令是否需要源寄存器 2
+  logic [ROB_ID_W-1:0] rob_id_q [0:ENTRIES-1];           // 重排序缓存 ID (用于判定年龄)
+  logic [PRD_W-1:0] prs1_q [0:ENTRIES-1];                // 物理源寄存器 1 号
+  logic [PRD_W-1:0] prs2_q [0:ENTRIES-1];                // 物理源寄存器 2 号
+  logic [CHECKPOINTS-1:0] branch_mask_q [0:ENTRIES-1];   // 分支投机掩码
+  issue_uop_t payload_q [0:ENTRIES-1];                   // 微操作完整 payload 寄存器数组
 
-  logic [COUNT_W-1:0] count_q;
+  // 内部寄存器及流水线寄存器
+  logic [COUNT_W-1:0] count_q;                           // 队列占用计数器
+
+  // Stage S0 寄存器：锁存各对（Pair）的局部胜出者
   logic [PAIR_COUNT-1:0] pair_valid_q;
   logic [SLOT_W-1:0] pair_slot_q [0:PAIR_COUNT-1];
   logic [ROB_ID_W-1:0] pair_rob_id_q [0:PAIR_COUNT-1];
+
+  // Stage S1 寄存器：锁存每组的发射候选人
   logic [GROUPS-1:0] candidate_valid_q;
   logic [SLOT_W-1:0] candidate_slot_q [0:GROUPS-1];
+
+  // 延迟清除 (Deferred Clear) 寄存器：记录上周期已被 Grant 的槽位，在本周期更新有效图
   logic [GROUPS-1:0] clear_valid_q;
   logic [SLOT_W-1:0] clear_slot_q [0:GROUPS-1];
 
@@ -64,11 +92,16 @@ module issue_queue #(
   logic [COUNT_W-1:0] free_count;
   logic push_fire;
 
+  // ==========================================================================
+  // 辅助函数 (Helper Functions)
+  // ==========================================================================
+  // 统计本周期入队的指令数量
   function automatic logic [1:0] valid_count(input logic [1:0] valid);
     valid_count = (valid == 2'b11) ? 2'd2 :
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
   endfunction
 
+  // 年龄判定函数：使用 ROB ID 的环回差值，判断指令 A 是否比 B 更老 (更老则拥有更高发射优先级)
   function automatic logic is_older(
       input logic [ROB_ID_W-1:0] a,
       input logic [ROB_ID_W-1:0] b
@@ -80,6 +113,7 @@ module issue_queue #(
     end
   endfunction
 
+  // 操作数唤醒判断：若原本已就绪、或者不需要此操作数、或者写回总线上正好广播了该 PRD，则就绪
   function automatic logic wake_src(
       input logic             ready,
       input logic             need_src,
@@ -92,6 +126,7 @@ module issue_queue #(
     end
   endfunction
 
+  // 拼接输出候选微操作数据包
   function automatic issue_uop_t candidate_from_slot(
       input logic [SLOT_W-1:0] slot
   );
@@ -105,14 +140,21 @@ module issue_queue #(
     end
   endfunction
 
+  // ==========================================================================
+  // 入队与流控组合逻辑
+  // ==========================================================================
   assign push_count = valid_count(push_valid_i);
   assign free_count = ENTRIES[COUNT_W-1:0] - count_q;
+  // 必须满足前置有效（前缀有效原则：不能是 2'b10），且空余槽位大于等于请求数
   assign push_ready_o = !recovery_i.valid && (push_valid_i != 2'b10) &&
                         (push_count <= free_count);
   assign push_fire = push_ready_o && (push_valid_i != 2'b00);
+
   assign empty_o = (count_q == '0);
   assign full_o = (count_q == ENTRIES[COUNT_W-1:0]);
   assign occupancy_o = count_q;
+
+  // 发射候选直连输出
   assign candidate_valid_o = candidate_valid_q;
   assign candidate_uop0_o = candidate_valid_q[0] ?
                              candidate_from_slot(candidate_slot_q[0]) : '0;
@@ -124,6 +166,9 @@ module issue_queue #(
   assign candidate_slot1_o = (GROUPS > 1) ? candidate_slot_q[1] : '0;
   assign candidate_slot2_o = (GROUPS > 2) ? candidate_slot_q[2] : '0;
 
+  // ==========================================================================
+  // 发射队列主时序块 (Sequential Queue State & Selection Logic)
+  // ==========================================================================
   always_ff @(posedge clk_i) begin : issue_queue_state
     integer idx;
     integer group_idx;
@@ -180,12 +225,17 @@ module issue_queue #(
         branch_mask_next[idx] = branch_mask_q[idx];
       count_next = count_q;
 
+      // ----------------------------------------------------------------------
+      // 1. 全局恢复与冲刷判定 (Recovery & Flush logic)
+      // ----------------------------------------------------------------------
       if (recovery_i.valid) begin
         if (recovery_i.cause == REC_EXCEPT) begin
+          // 精确异常触发，直接一拍拉空发射队列
           valid_next = '0;
           count_next = '0;
           clear_valid_q <= '0;
         end else if (recovery_i.cause == REC_BRANCH) begin
+          // 分支误预测回滚：计算掩码，清除所有处于该分支掩码之下的年轻指令，并扣减数量
           clear_mask = ~(logic'(1'b1) << recovery_i.checkpoint_id);
           count_next = '0;
           clear_valid_q <= '0;
@@ -193,22 +243,32 @@ module issue_queue #(
             if (valid_next[idx] && branch_mask_next[idx][recovery_i.checkpoint_id]) begin
               valid_next[idx] = 1'b0;
             end else if (valid_next[idx]) begin
+              // 保留的幸存指令，剔除对应的分支有效位
               branch_mask_next[idx] = branch_mask_next[idx] & clear_mask;
               count_next = count_next + 1'b1;
             end
           end
         end
-      end else begin
+      end
+
+      // ----------------------------------------------------------------------
+      // 2. 正常运行下的队列更新与唤醒 (Enqueue, Wakeup & Deferred Clear)
+      // ----------------------------------------------------------------------
+      else begin
+        // A. 延迟清除：将上周期确定被 Grant 授权的指令从有效图中清除
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           if (clear_valid_q[group_idx] && valid_next[clear_slot_q[group_idx]]) begin
             valid_next[clear_slot_q[group_idx]] = 1'b0;
             count_next = count_next - 1'b1;
           end
         end
+        // 记录本周期被授权的项，留待下周期执行有效位擦除
         clear_valid_q <= issue_grant_i & candidate_valid_q;
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1)
           clear_slot_q[group_idx] <= candidate_slot_q[group_idx];
 
+        // B. 写回就绪唤醒逻辑 (Wakeup)
+        // 遍历所有占用状态槽位，与写回总线 tag 进行比较，唤醒处于等待该操作数的指令
         for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
           if (valid_next[idx]) begin
             src1_ready_next[idx] = wake_src(src1_ready_next[idx],
@@ -220,16 +280,16 @@ module issue_queue #(
           end
         end
 
+        // C. 指令入队逻辑 (Enqueue)
         if (push_fire) begin
           found0 = 1'b0;
           found1 = 1'b0;
           push_slot0 = '0;
           push_slot1 = '0;
+
+          // 查找空位：只观察周期初始的 valid_q 位图。
+          // 上方因为延迟清除刚刚被释放的槽位本周期不予复用，这切断了“清除槽->空槽搜索->数据使能”的超长时序路径。
           for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
-            // Allocation deliberately observes only the cycle-start valid map.
-            // A slot freed by deferred clear in this cycle is not reused until
-            // the following cycle.  This cuts clear_slot -> free-search ->
-            // payload CE timing paths.
             if (!found0 && !valid_q[idx]) begin
               found0 = 1'b1;
               push_slot0 = idx[SLOT_W-1:0];
@@ -239,6 +299,7 @@ module issue_queue #(
             end
           end
 
+          // 锁入第 0 路 uop
           valid_next[push_slot0] = push_valid_i[0];
           payload_q[push_slot0] <= push_uop0_i;
           rob_id_q[push_slot0] <= push_uop0_i.rob_id;
@@ -248,6 +309,7 @@ module issue_queue #(
           need_rs2_q[push_slot0] <= push_uop0_i.need_rs2;
           branch_mask_q[push_slot0] <= push_uop0_i.branch_mask;
           branch_mask_next[push_slot0] = push_uop0_i.branch_mask;
+          // 新入队 uop 可能会与本周期正在写回的 tag 发生写回旁路唤醒比较
           src1_ready_next[push_slot0] = wake_src(push_uop0_i.src1_ready,
                                                  push_uop0_i.need_rs1,
                                                  push_uop0_i.prs1);
@@ -255,6 +317,7 @@ module issue_queue #(
                                                  push_uop0_i.need_rs2,
                                                  push_uop0_i.prs2);
 
+          // 锁入第 1 路 uop
           if (push_valid_i[1]) begin
             valid_next[push_slot1] = 1'b1;
             payload_q[push_slot1] <= push_uop1_i;
@@ -276,6 +339,9 @@ module issue_queue #(
         end
       end
 
+      // ----------------------------------------------------------------------
+      // 3. 流水化发射选拔时序 (Pipelined Selection Stage S0 & S1)
+      // ----------------------------------------------------------------------
       if (recovery_i.valid) begin
         candidate_valid_q <= '0;
         pair_valid_q <= '0;
@@ -287,10 +353,10 @@ module issue_queue #(
           candidate_slot_q[group_idx] <= '0;
         end
       end else begin
-        // Stage S1: select the oldest registered pair winner in each group.
-        // The grant cycle bubbles the visible candidate for that group.  S0
-        // below already excludes the granted slot, so the next surviving
-        // candidate can appear when the deferred clear is applied.
+        // --- Stage S1: 组候选选拔与保持逻辑 (Select group candidates from S0 winners) ---
+        // 从 S0 寄存的配对胜出者（pair winner）中，选择年龄最老（oldest）的一个作为本组候选人。
+        // 该候选人在没有被 global arbiter 真正 grant 时，其 valid 状态会被锁定（Hold），
+        // 从而提供给全局仲裁一个完全稳定的信号源，利于跨周期仲裁。
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           selected = 1'b0;
           selected_slot = '0;
@@ -304,24 +370,29 @@ module issue_queue #(
               selected_rob_id = pair_rob_id_q[pair_linear_idx];
             end
           end
-          if (issue_grant_i[group_idx] && candidate_valid_q[group_idx])
+
+          if (issue_grant_i[group_idx] && candidate_valid_q[group_idx]) begin
+            // 获得授权：清空候选标志，允许下个候选人浮现
             candidate_valid_q[group_idx] <= 1'b0;
-          else
+            candidate_slot_q[group_idx] <= '0;
+          end else if (!candidate_valid_q[group_idx]) begin
+            // 空闲状态：装载最新选出的候选人并锁定输出
             candidate_valid_q[group_idx] <= selected;
-          candidate_slot_q[group_idx] <= selected_slot;
+            candidate_slot_q[group_idx] <= selected_slot;
+          end
         end
 
-        // Stage S0: reduce each 2-entry pair to one local winner.  This keeps
-        // the storage/ready wakeup path out of the final group candidate mux.
-        // Exclude the visible grant and the deferred-clear slot so stale
-        // entries cannot be reintroduced into S1 while physical valid bits are
-        // being updated.
+        // --- Stage S0: 配对局部选拔逻辑 (Pairs reduction) ---
+        // 将组内所有槽位两两配对（如每组 4 项分成 2 对），并在每对内选出 ready 且最老的 winner。
+        // 这一打拍过程避免了直接遍历整组 4 项对源操作数 ready 位进行庞杂多路选择的组合路径开销。
+        // 选择时排除当前正被 grant 或上周期已被 grant 但仍在清有效位过程中的 slot 标志。
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           for (pair_idx = 0; pair_idx < PAIRS_PER_GROUP; pair_idx = pair_idx + 1) begin
             selected = 1'b0;
             selected_slot = '0;
             selected_rob_id = '0;
             pair_linear_idx = group_idx * PAIRS_PER_GROUP + pair_idx;
+
             for (pair_local_idx = 0; pair_local_idx < 2; pair_local_idx = pair_local_idx + 1) begin
               local_idx = pair_idx * 2 + pair_local_idx;
               if (local_idx < GROUP_SIZE) begin
@@ -334,6 +405,7 @@ module issue_queue #(
                                (clear_slot_q[group_idx] == slot_idx[SLOT_W-1:0])) &&
                              (!need_rs1_q[slot_idx] || src1_ready_q[slot_idx]) &&
                              (!need_rs2_q[slot_idx] || src2_ready_q[slot_idx]);
+
                 if (slot_ready && (!selected ||
                     is_older(rob_id_q[slot_idx], selected_rob_id))) begin
                   selected = 1'b1;
@@ -342,6 +414,7 @@ module issue_queue #(
                 end
               end
             end
+
             pair_valid_q[pair_linear_idx] <= selected;
             pair_slot_q[pair_linear_idx] <= selected_slot;
             pair_rob_id_q[pair_linear_idx] <= selected_rob_id;
@@ -349,6 +422,7 @@ module issue_queue #(
         end
       end
 
+      // 时钟沿写入状态向量
       valid_q <= valid_next;
       src1_ready_q <= src1_ready_next;
       src2_ready_q <= src2_ready_next;

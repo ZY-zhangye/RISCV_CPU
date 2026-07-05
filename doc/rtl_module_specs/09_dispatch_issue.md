@@ -84,10 +84,11 @@ wakeup 或 push 后 candidate 可见延迟增加约 1 拍；grant 后当前 grou
 
 仲裁结果必须寄存后再驱动 PRF Read。未授权 candidate 保留在 IQ。
 
-### 5.1 下一步实现计划
+### 5.1 当前 RTL 实现状态
 
-下一模块应实现 `rtl/issue/issue_arbiter.sv`，并新增 `test/tb_issue_arbiter.sv`。
-实现时序优先级高于单周期发射激进度：
+截至 2026-07-05，`rtl/issue/issue_arbiter.sv` 与
+`test/tb_issue_arbiter.sv` 已完成 V1 RTL 和 directed test。实现时序优先级高于
+单周期发射激进度：
 
 - 输入只接收各 IQ 已寄存 candidate，不直接连接 IQ 内部 ready/select 组合逻辑。
 - 仲裁输出必须寄存后再进入 PRF Read / operand_read。
@@ -101,6 +102,40 @@ V1 规则：
 - LSU 最多 1 条；MDU 最多 1 条。
 - PRF bank 读源计数每 bank 每周期不超过 3，只统计 `need_rs1/need_rs2`。
 - 执行端 not ready、LSQ 未许可或 MDU 不可接受时，对应 candidate 不授权。
+
+初版单拍仲裁在补齐 OOC 输入/输出延迟约束后 WNS 为 -5.254 ns，最差路径为
+`int_candidate_valid_i[1] -> mdu_issue_grant_o`，包含 18 级 LUT。当前实现据此拆成两级：
+
+1. P0 使用约束优先的固定优先级，先安置只能进入 INT1 的 Branch 和只能进入 INT0 的
+   Shift，再填充普通 INT，并各预选一个 LSU、MDU proposal；proposal 及 Bank 读数寄存。
+2. P1 只对最多四个已寄存 proposal 执行全局三发射和偶/奇 Bank 读数限制，三个 issue
+   slot 及执行端口标签在末级寄存。
+
+Issue Queue 同步改为 valid/ready 保持语义：未获得 grant 的 visible candidate 保持不变，
+使多拍仲裁不会清除错误 slot。P1 在产生延迟 grant 前再次检查来源 group valid、执行端
+ready 和 LSQ/MDU 许可；recovery 同周期抑制 grant，并清空 proposal 与 issue 输出。
+
+两级版本首次 OOC WNS 为 -3.372 ns；最差路径仍在 P1，报告中出现 4 个 `CARRY4`。
+根因是组合循环使用 32-bit `integer` 作为 proposal/issue 计数器，Vivado 将计数、比较和
+动态 issue-slot 索引展开成长 carry 链。当前已将 proposal count 收窄为 3 bit、issue
+count 收窄为 2 bit。收窄后 OOC WNS 改善到 -1.268 ns，最差路径降为 10 级逻辑，但
+P1 的早期 proposal 取舍仍直接影响最终 MDU grant 并扇出到完整 issue payload。
+
+当前进一步加入 selected-mask 寄存层，形成三段式结构：P0 预选 proposal，P1 只计算并
+寄存 4-bit Bank/宽度 selected mask，P2 独立复核每个 selected proposal 的 ROB-ID、
+source valid、endpoint ready 与 LSQ/MDU 许可，再并行生成 grant 并打包寄存 issue
+slot。ROB-ID 身份复核可阻止深流水中的 stale proposal 误 grant 同 group 的新候选。
+三段式功能回归通过。最终 5.000 ns OOC WNS 为 +1.821 ns、TNS 为 0，最差数据路径
+3.153 ns（7 级逻辑）；资源为 2111 LUT、1371 FF。当前实现冻结，后续仅在集群或完整
+核 route 暴露问题时再调整。
+
+实现 Operand Read 前补齐了 `issue_uop_t` 中原先丢失的 `pc`、`pred_taken`、
+`pred_target` 和 `checkpoint_id`。字段扩展后重新执行 5.000 ns OOC，最终 WNS 为
++1.031 ns、TNS 为 0；资源为 2897 LUT、2102 FF。时序余量仍超过 +1 ns，继续冻结。
+
+QuestaSim directed test 已覆盖三段寄存边界、Branch/Shift 端口约束、全局三发射上限、
+执行端 ready、LSQ/MDU 许可、PRF Bank 限额、未就绪源防御检查、stale proposal
+抑制和 recovery 清空。
 
 ## 6. Kill 与恢复
 

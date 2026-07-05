@@ -48,7 +48,7 @@ module tb_issue_queue;
     issue_uop_t uop;
     uop = '0;
     uop.rob_id = rob_id;
-    uop.prd = 6'd40 + rob_id[5:0];
+    uop.prd = 6'd40 + {1'b0, rob_id};
     uop.prs1 = prs1;
     uop.prs2 = prs2;
     uop.need_rs1 = 1'b1;
@@ -124,6 +124,14 @@ module tb_issue_queue;
     if (!candidate_valid_o[0] || candidate_uop0_o.rob_id != 5'd7)
       $fatal(1, "oldest ready candidate selection mismatch valid=%b rob=%0d occ=%0d",
              candidate_valid_o, candidate_uop0_o.rob_id, occupancy_o);
+
+    // A visible candidate is a held valid/ready handshake item.  A newly
+    // selected older entry must not replace it before the arbiter grants it;
+    // this permits a pipelined global arbitration stage.
+    push_one(make_uop(5'd6, 6'd9, 6'd10, 1'b1, 1'b1, 4'b0010));
+    repeat (2) @(negedge clk_i);
+    if (!candidate_valid_o[0] || candidate_uop0_o.rob_id != 5'd7)
+      $fatal(1, "ungranted candidate was not held stable");
 
     // Branch recovery kills entries that depend on the resolved checkpoint.
     @(negedge clk_i);

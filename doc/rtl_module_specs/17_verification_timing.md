@@ -90,7 +90,10 @@ BRAM/DSP 和最差路径端点。
 | Branch Predictor | update 路径已拆两拍 | +0.628 ns | 冻结，暂不做 BHT row 化 |
 | ROB | V1 RTL 与 directed test 完成 | +1.36 ns | 可进入后续集成 |
 | Dispatch Buffer | V1 RTL 与 directed test 完成 | +1.712 ns | 可进入后续集成 |
-| Issue Queue | select 已拆 S0/S1 两级 | +1.167 ns | 冻结，下一步实现 issue_arbiter |
+| Issue Queue | select 已拆 S0/S1 两级 | +1.167 ns | 冻结 |
+| Issue Arbiter | P0/P1/P2 三级仲裁，扩展 metadata 后复测 | +1.031 ns | 冻结 |
+| Physical Register File | 双 Bank、每 Bank 三读副本 | +2.005 ns | 冻结，继续核对 RAM inference |
+| Operand Read | 同步读对齐、WB bypass、四端口独立 holding | 4 ns 下 +1.272 ns | 冻结 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 下一次继续时应从 `doc/HANDOFF_2026-07-04.md` 和 `09_dispatch_issue.md` 的 5.1 节开始。

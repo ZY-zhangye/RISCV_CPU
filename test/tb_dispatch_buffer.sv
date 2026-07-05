@@ -46,6 +46,9 @@ module tb_dispatch_buffer;
     uop.dec.need_rs1 = 1'b1;
     uop.dec.need_rs2 = 1'b1;
     uop.dec.imm = 32'h1000 + rob_id;
+    uop.dec.pc = 32'h8000_0000 + {25'd0, rob_id, 2'b00};
+    uop.dec.pred_taken = (fu == FU_BRANCH);
+    uop.dec.pred_target = uop.dec.pc + 32'h40;
     uop.dec.mem_op = (fu == FU_LSU) ? MEM_LW : MEM_LB;
     uop.prd = prd;
     uop.prs1 = prd + 6'd1;
@@ -54,6 +57,7 @@ module tb_dispatch_buffer;
     uop.rob_id = rob_id;
     uop.lq_id = rob_id[LQ_ID_W-1:0];
     uop.sq_id = rob_id[SQ_ID_W-1:0];
+    uop.checkpoint_id = rob_id[CP_W-1:0];
     uop.branch_mask = branch_mask;
     uop.src1_ready = 1'b1;
     uop.src2_ready = 1'b0;
@@ -101,7 +105,11 @@ module tb_dispatch_buffer;
       $fatal(1, "occupancy after push mismatch: %0d", occupancy_o);
     if (int_push_valid_o != 2'b11 ||
         int_push_uop0_o.rob_id != 5'd0 ||
-        int_push_uop1_o.rob_id != 5'd1)
+        int_push_uop1_o.rob_id != 5'd1 ||
+        int_push_uop1_o.pc != 32'h8000_0004 ||
+        !int_push_uop1_o.pred_taken ||
+        int_push_uop1_o.pred_target != 32'h8000_0044 ||
+        int_push_uop1_o.checkpoint_id != 2'd1)
       $fatal(1, "integer dispatch mismatch");
     @(negedge clk_i);
     if (occupancy_o != 3'd0 || !empty_o)

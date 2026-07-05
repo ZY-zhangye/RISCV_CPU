@@ -56,7 +56,39 @@ Free List 不会在旧写回仍可能到达时重分配 PRD。
 执行端 backpressure 时 RR 采用每端口 1-entry skid/holding register。一个端口阻塞不能
 无条件阻塞其他端口；全局 issue_arbiter 应只授权 ready 端口。
 
-## 6. 断言
+## 6. 当前 RTL 实现状态
+
+截至 2026-07-05，`rtl/prf/physical_regfile.sv` 与
+`test/tb_physical_regfile.sv` 已完成 V1 RTL 和 directed test：
+
+- 64 项 PRF 按 PRD bit 0 分成偶/奇两个 32-entry Bank。
+- 每个 Bank 使用三份显式单读副本；请求按 Bank 内出现顺序路由到 copy0/1/2。
+- 读地址与 lane-to-copy 路由同步锁存，输出为一拍同步读结果。
+- 每 Bank 只选择一个最终 WB，并向三个副本广播；同 Bank 双 WB 属于接口违例。
+- ready bitmap 复位全 1；WB 置位，allocation clear 清零且同 PRD 时 clear 优先。
+- 数据阵列不施加全阵列复位，以保留 FPGA RAM 推断；p0 读恒为 0、ready 恒为 1。
+
+QuestaSim 2024.1 编译为 0 errors / 0 warnings，directed test 已覆盖六读、双异 Bank WB、
+全部六个副本、交错 Bank 路由、p0/invalid 读、ready 更新优先级和 lane1-only WB。
+5.000 ns OOC 最终 WNS 为 +2.005 ns、TNS 为 0；资源为 998 LUT（其中 144 LUT as
+Memory）和 282 FF。当前 PRF 实现冻结，RAM inference 仍应在后续集成报告中持续核对。
+
+`rtl/prf/operand_read_stage.sv` 与 `test/tb_operand_read_stage.sv` 也已完成 V1：
+
+- 三个已寄存 issue slot 按 `issue_port_t` 路由到 INT0、INT1、LSU、MDU。
+- issue metadata 与 PRF 一拍同步读返回对齐，最终 WB 提供双路 tag/data bypass。
+- `pc/pred_taken/pred_target/checkpoint_id` 已补入 issue/execute uop 并由 Dispatch 透传。
+- 每个执行端具有独立 metadata 与 response holding；阻塞时在本地保存 PRF 数据，其他
+  端口仍可继续推进，不依赖共享 PRF copy 输出保持。
+- Store 的 `src2` 同时形成 `store_data`；无源操作与 p0 源返回 0。
+- Branch recovery 按 branch mask kill metadata/response，Exception recovery 全清。
+
+QuestaSim 2024.1 已重编译并运行 Dispatch Buffer、Issue Queue、Issue Arbiter、PRF、
+Operand Read 五项相关回归：0 errors / 0 warnings，全部 directed test 通过。
+Operand Read 在 4.000 ns（250 MHz）OOC 下最终 WNS 为 +1.272 ns、TNS 为 0；资源为
+1771 LUT、1888 FF。当前实现冻结，下一步进入 Integer Execute Pipeline。
+
+## 7. 断言
 
 - p0 始终为 0 且 ready。
 - 同 Bank 不出现两个 wb_valid。
