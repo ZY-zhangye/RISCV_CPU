@@ -121,6 +121,10 @@ BRAM/DSP 和最差路径端点。
 | Backend MDU Cluster | Backend LSU + MDU IQ + Mul/Div frontend + MUL/DIV writeback | -0.204 ns | 原 ready 回灌路径已消失；剩余为 Issue Arbiter 内部 route 主导路径，RTL 冻结等待后端实现吸收 |
 | Frontend Backend Cluster | Fetch + BP + IBUF + Decode + Backend MDU Cluster | -0.196 ns | Top paths 仍为后端 Issue Arbiter 内部 route 主导路径；前端边界无新增关键路径，RTL 冻结等待实现吸收 |
 | Core Top | frontend_backend_cluster wrapper + typed memory boundary + irq pins | Questa 通过 | `tb_core_top` 与 `tb_frontend_backend_cluster` 通过，OOC 待 SoC wrapper 前统一测 |
+| SoC Addr Router | typed load/store 到 RAM/MMIO 固定地址路由 | +1.828 ns | `tb_soc_addr_router` 通过，OOC 时序健康并冻结；进入 instruction memory wrapper |
+| SoC IMem | 128-bit instruction block memory wrapper | +2.380 ns | `tb_soc_imem` 通过，OOC 时序健康并冻结；进入 data RAM wrapper |
+| SoC Data RAM | typed data RAM wrapper | +0.955 ns | 首次 OOC WNS 为正，但推断为 distributed RAM；已加 `ram_style="block"` 与显式 byte-lane write enable，`tb_soc_data_ram` 复测通过，等待 BRAM 推断复综合 |
+| SoC Top | core_top + IMem + addr router + Data RAM + MMIO bus | Questa 通过 | `tb_soc_top` 覆盖 IMem 初始化、core 取指、INT/MUL/DIV 写回和顶层预留线；load/store 全系统 smoke 后续补 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint

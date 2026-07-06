@@ -2,6 +2,15 @@
 
 建议模块名：data_memory_banks。
 
+当前 SoC V1 wrapper 为 `rtl/soc/soc_data_ram.sv`。该模块直接对接
+`soc_addr_router` 的 typed RAM 端口：`load_mem_req_t`、`load_mem_resp_t` 和
+`store_mem_req_t`。V1 先实现为 32-bit word RAM，load 请求打一拍返回并带 response
+holding，store 按 `byte_enable` 更新已对齐 word。首次 5 ns OOC WNS 为 `+0.955 ns`，
+但 Vivado 报告显示推断为 distributed RAM，不满足 256 KiB 主存资源目标；当前已在
+memory array 增加 `ram_style="block"`，并把写路径改为显式 byte-lane write enable，
+等待复综合确认 RAMB 推断。`tb_soc_data_ram` 已覆盖初始化写入、load response 反压保持、
+byte store、并行 load/store、窗口外 load error 和初始化写 error。
+
 ## 1. 组织
 
 总容量 256 KB，按 32-bit word 低位交错为四个 Bank：
