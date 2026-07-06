@@ -88,17 +88,23 @@ module int_pipeline0 (
 
   function automatic completion_t make_completion(input execute_uop_t uop);
     completion_t completion;
+    logic [XLEN-1:0] csr_operand;
     begin
+      csr_operand = ((uop.csr_op == CSR_RWI) ||
+                     (uop.csr_op == CSR_RSI) ||
+                     (uop.csr_op == CSR_RCI)) ?
+                    {{(XLEN-5){1'b0}}, uop.csr_zimm} : uop.src1;
+
       completion = '0;
       completion.valid = 1'b1;
       completion.prd = uop.prd;
       completion.rob_id = uop.rob_id;
-      completion.data = alu_result(uop);
+      completion.data = (uop.fu_type == FU_CSR) ? csr_operand : alu_result(uop);
       completion.exception_valid = 1'b0;
       completion.exception_cause = '0;
       completion.exception_tval = '0;
       completion.producer = PROD_INT0;
-      completion.write_prf = uop.write_rd;
+      completion.write_prf = uop.write_rd && (uop.fu_type != FU_CSR);
       completion.is_store = 1'b0;
       make_completion = completion;
     end
@@ -170,8 +176,9 @@ module int_pipeline0 (
     if (!rst_i && ex_valid_i && ex_ready_o) begin
       assert (ex_uop_i.valid)
         else $error("int_pipeline0 accepted an invalid execute uop");
-      assert (ex_uop_i.fu_type == FU_INT)
-        else $error("int_pipeline0 accepted a non-INT uop");
+      assert ((ex_uop_i.fu_type == FU_INT) ||
+              (ex_uop_i.fu_type == FU_CSR))
+        else $error("int_pipeline0 accepted an unsupported uop");
       assert (ex_uop_i.alu_op != ALU_SLL ||
               ex_uop_i.need_rs2 || (ex_uop_i.imm[31:5] == '0))
         else $error("int_pipeline0 SLL immediate has non-zero high shamt bits");

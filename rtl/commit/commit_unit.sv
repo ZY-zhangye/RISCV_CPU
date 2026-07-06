@@ -24,6 +24,7 @@ module commit_unit (
 
     output logic [1:0]              reclaim_valid_o,
     output logic [1:0][PRD_W-1:0]   reclaim_prd_o,
+    input  logic                    reclaim_ready_i,
 
     output logic                    store_commit_valid_o,
     output logic [SQ_ID_W-1:0]      store_commit_sq_id_o,
@@ -50,6 +51,8 @@ module commit_unit (
   logic lane0_serializing;
   logic lane0_can_retire;
   logic lane1_can_retire;
+  logic normal_retire_fire;
+  logic [1:0] normal_reclaim_valid;
   logic store_capture;
   logic store_done_retire;
 
@@ -75,6 +78,12 @@ module commit_unit (
                             !rob_head1_i.entry.exception_valid &&
                             !rob_head1_i.entry.is_store &&
                             !rob_head1_i.entry.serializing;
+  assign normal_reclaim_valid[0] = lane0_can_retire &&
+      rob_head0_i.entry.write_rd && (rob_head0_i.entry.arch_rd != 5'd0);
+  assign normal_reclaim_valid[1] = lane1_can_retire &&
+      rob_head1_i.entry.write_rd && (rob_head1_i.entry.arch_rd != 5'd0);
+  assign normal_retire_fire = lane0_can_retire &&
+      ((normal_reclaim_valid == 2'b00) || reclaim_ready_i);
 
   always_comb begin : commit_outputs
     commit_map0_o = '0;
@@ -100,6 +109,11 @@ module commit_unit (
       retire_count_o = 2'd1;
       instret_count_o = 2'd1;
     end else if (lane0_can_retire) begin
+      reclaim_valid_o = normal_reclaim_valid;
+      reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
+      reclaim_prd_o[1] = rob_head1_i.entry.old_prd;
+
+      if (normal_retire_fire) begin
       retire_count_o = lane1_can_retire ? 2'd2 : 2'd1;
       instret_count_o = retire_count_o;
 
@@ -107,8 +121,6 @@ module commit_unit (
         commit_map0_o.valid = 1'b1;
         commit_map0_o.arch_rd = rob_head0_i.entry.arch_rd;
         commit_map0_o.prd = rob_head0_i.entry.new_prd;
-        reclaim_valid_o[0] = 1'b1;
-        reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
       end
 
       if (lane1_can_retire && rob_head1_i.entry.write_rd &&
@@ -116,8 +128,7 @@ module commit_unit (
         commit_map1_o.valid = 1'b1;
         commit_map1_o.arch_rd = rob_head1_i.entry.arch_rd;
         commit_map1_o.prd = rob_head1_i.entry.new_prd;
-        reclaim_valid_o[1] = 1'b1;
-        reclaim_prd_o[1] = rob_head1_i.entry.old_prd;
+      end
       end
     end
   end
@@ -142,6 +153,11 @@ module commit_unit (
         assert (lane0_can_retire && lane1_can_retire)
           else $error("commit_unit emitted invalid dual retire");
       end
+
+      if ((reclaim_valid_o != 2'b00) && !reclaim_ready_i)
+        assert ((retire_count_o == 0) && !commit_map0_o.valid &&
+                !commit_map1_o.valid)
+          else $error("commit_unit retired while reclaim was backpressured");
 
       if (csr_exception_valid_o) begin
         assert (retire_count_o == 2'd0)

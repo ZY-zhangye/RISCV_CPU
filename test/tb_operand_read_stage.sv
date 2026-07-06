@@ -20,6 +20,7 @@ module tb_operand_read_stage;
   logic [1:0] wb_valid_i = '0;
   logic [1:0][PRD_W-1:0] wb_prd_i = '0;
   logic [1:0][XLEN-1:0] wb_data_i = '0;
+  logic commit_ready_unused;
   logic [1:0] alloc_clear_valid = '0;
   logic [1:0][PRD_W-1:0] alloc_clear_prd = '0;
   logic [PHYS_REGS-1:0] ready_bits;
@@ -51,6 +52,10 @@ module tb_operand_read_stage;
       .wb_valid_i,
       .wb_prd_i,
       .wb_data_i,
+      .commit_valid_i(1'b0),
+      .commit_prd_i('0),
+      .commit_data_i('0),
+      .commit_ready_o(commit_ready_unused),
       .alloc_clear_valid_i(alloc_clear_valid),
       .alloc_clear_prd_i(alloc_clear_prd),
       .ready_bits_o(ready_bits)

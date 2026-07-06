@@ -98,7 +98,8 @@ wakeup 或 push 后 candidate 可见延迟增加约 1 拍；grant 后当前 grou
 V1 规则：
 
 - 全局总发射数不超过 3。
-- INT 最多 2 条，INT0/INT1 各一条；Branch 只能进入 INT1。
+- INT 最多 2 条，INT0/INT1 各一条；Branch 只能进入 INT1，CSR operand prepare 只能
+  进入 INT0。
 - LSU 最多 1 条；MDU 最多 1 条。
 - PRF bank 读源计数每 bank 每周期不超过 3，只统计 `need_rs1/need_rs2`。
 - 执行端 not ready、LSQ 未许可或 MDU 不可接受时，对应 candidate 不授权。
@@ -134,8 +135,51 @@ slot。ROB-ID 身份复核可阻止深流水中的 stale proposal 误 grant 同 
 +1.031 ns、TNS 为 0；资源为 2897 LUT、2102 FF。时序余量仍超过 +1 ns，继续冻结。
 
 QuestaSim directed test 已覆盖三段寄存边界、Branch/Shift 端口约束、全局三发射上限、
-执行端 ready、LSQ/MDU 许可、PRF Bank 限额、未就绪源防御检查、stale proposal
-抑制和 recovery 清空。
+执行端 ready、LSQ/MDU 许可、PRF Bank 限额、未就绪源防御检查、CSR 固定 INT0、
+stale proposal 抑制和 recovery 清空。CSR 接入后当前 31 项回归通过。
+
+### 5.2 Backend INT 集成时序修订（2026-07-06）
+
+`backend_int_cluster` 初次 OOC WNS 为 -0.975 ns，最差路径从 INT Issue Queue 的
+`rob_id_q` 出发，经 candidate/proposal、issue arbiter final grant，再回灌到 IQ `pair_*`
+寄存器，route 占约 84%。当前修订将 IQ S0 pair 选择从当前周期 `issue_grant_i` 解耦：
+S0 只排除上一拍 deferred clear 的 slot，S1 过滤 pending clear slot，visible candidate
+在 clear 窗口屏蔽已 grant group。Issue Arbiter P0 同步跳过同周期已 grant group，避免
+被 grant 的 candidate 重新进入 proposal pipeline。
+
+该修订保持 IQ 的 delayed clear 语义，同时切断 IQ->arbiter->IQ 的组合写回路径。相关
+`tb_issue_queue`、`tb_issue_arbiter`、`tb_backend_int_cluster` 以及全量 33 项 Questa
+regression 均通过。
+
+第二次 OOC 复测 WNS 为 -0.639 ns，loops 为 0，最差路径已转移到 IQ candidate
+payload 到 Issue Arbiter P0 `proposal_uop_q` 的跨模块布线，route 占约 86%。当前在
+Issue Arbiter 前端加入 C0 candidate snapshot：输入 candidate valid/uop、MEM allowed
+和 MDU accept 先寄存一拍，P0 从该快照生成 proposal；P2 finalize 仍使用 IQ 实时
+candidate ROB-ID 复核后才 grant，保持 stale proposal 抑制语义。
+
+该修订把 issue arbitration 增加为 C0/P0/P1/P2 四个寄存边界，用一拍延迟换取 IQ
+payload 到 Arbiter proposal 的稳定时序切分。`tb_issue_arbiter` 已按新增 C0 stage
+更新 delayed grant 预期；目标测试和全量 33 项 Questa regression 通过，等待
+`backend_int_cluster` 复综合。
+
+第三次 OOC 复测 WNS 为 -0.990 ns，loops 仍为 0。报告显示路径从 IQ live
+candidate 经 P2 revalidate/grant 组合链回到 P0 `proposal_uop_q`，根因是 C0 snapshot
+后 P0 仍用当前 `issue_grant_o` 跳过同周期已 grant group。当前已删除 P0 对当前
+INT/MEM/MDU grant 的依赖，C0/P0 只看快照候选；重复 snapshot 由 P2 的实时
+ROB-ID/source-valid 复核抑制。目标测试和全量 33 项 Questa regression 通过，等待
+下一轮 `backend_int_cluster` 复综合。
+
+第四次 OOC 复测 WNS 为 -0.037 ns、TNS 为 -0.037 ns，仅 1 个失败端点，loops 为 0。
+残余路径从 Issue Arbiter registered issue output 经 Operand Read ready 反馈到 P0
+`proposal_uop_q`。当前将 P0 使用的 INT/LSU/MDU ready 也纳入 C0 snapshot，P0 用
+ready snapshot 做结构预选；P2 finalize 仍用实时 ready/allow 复核后才 grant。该修订
+用一拍保守 ready 视图切断 `issue output -> operand_read ready -> P0 proposal` 反馈。
+目标测试和全量 33 项 Questa regression 通过。
+
+第五次 OOC 复测 WNS 为 +0.110 ns、TNS 为 0，失败端点 0，loops 为 0。
+最慢路径已不再经过 IQ/Issue Arbiter feedback，而是转移到 commit/recovery 与 PRF
+读数据寄存边界；说明 Issue 侧 timing cut 已达到本轮集成目标。Backend INT Cluster
+当前冻结，后续仅在更大集群或完整 route 暴露新路径时再调整。
 
 ## 6. Kill 与恢复
 

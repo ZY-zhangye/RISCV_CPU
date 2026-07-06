@@ -15,6 +15,7 @@ module tb_commit_unit;
   commit_map_t commit_map1_o;
   logic [1:0] reclaim_valid_o;
   logic [1:0][PRD_W-1:0] reclaim_prd_o;
+  logic reclaim_ready_i = 1'b1;
 
   logic store_commit_valid_o;
   logic [SQ_ID_W-1:0] store_commit_sq_id_o;
@@ -64,6 +65,7 @@ module tb_commit_unit;
       store_commit_ready_i = 1'b0;
       store_commit_done_i = 1'b0;
       csr_exception_vector_i = 32'h8000_0100;
+      reclaim_ready_i = 1'b1;
     end
   endtask
 
@@ -98,6 +100,14 @@ module tb_commit_unit;
         reclaim_valid_o != 2'b11 || reclaim_prd_o[0] != 6'd10 ||
         reclaim_prd_o[1] != 6'd11)
       $fatal(1, "dual retire map/reclaim mismatch");
+
+    // Reclaim request remains visible, but architectural commit waits for ready.
+    reclaim_ready_i = 1'b0;
+    #1;
+    if (retire_count_o != 0 || commit_map0_o.valid || commit_map1_o.valid ||
+        reclaim_valid_o != 2'b11)
+      $fatal(1, "reclaim backpressure did not hold dual retirement");
+    reclaim_ready_i = 1'b1;
 
     // Serializing lane0 retires alone even when lane1 is ready.
     rob_head0_i.entry.serializing = 1'b1;

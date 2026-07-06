@@ -31,6 +31,13 @@ module physical_regfile (
     input  wire logic [1:0][PRD_W-1:0]   wb_prd_i,          // 两路写回目的物理寄存器号
     input  wire logic [1:0][XLEN-1:0]    wb_data_i,         // 两路写回数据
 
+    // CSR 在提交点写回旧值。ready 仅在普通 WB 端口空闲时拉高，
+    // 保证提交写不会覆盖已被全局写回仲裁器接受的结果。
+    input  logic                         commit_valid_i,
+    input  logic [PRD_W-1:0]             commit_prd_i,
+    input  logic [XLEN-1:0]              commit_data_i,
+    output logic                         commit_ready_o,
+
     // 新物理寄存器清零就绪状态接口 (Rename 分配物理寄存器时触发)
     input  logic [1:0]                   alloc_clear_valid_i, // 分配清 ready 有效位
     input  wire logic [1:0][PRD_W-1:0]   alloc_clear_prd_i,   // 分配的新目的物理寄存器号
@@ -83,6 +90,7 @@ module physical_regfile (
   logic [PHYS_REGS-1:0] ready_q;
 
   assign ready_bits_o = ready_q;
+  assign commit_ready_o = (wb_valid_i == 2'b00);
 
   // ==========================================================================
   // 读路由组合块 (Read Routing Combinational Block)
@@ -167,8 +175,14 @@ module physical_regfile (
     bank0_write_data = '0;
     bank1_write_data = '0;
 
-    // --- Bank 0 写入路由 ---
-    if (wb_valid_i[0] && (wb_prd_i[0] != '0) && !wb_prd_i[0][0]) begin
+    // 提交写仅在 commit_ready_o 时产生，随后普通双 WB 按 Bank 路由。
+    if (commit_valid_i && commit_ready_o && (commit_prd_i != '0) &&
+        !commit_prd_i[0]) begin
+      bank0_write_valid = 1'b1;
+      bank0_write_addr = commit_prd_i[PRD_W-1:1];
+      bank0_write_data = commit_data_i;
+    end else if (wb_valid_i[0] && (wb_prd_i[0] != '0) &&
+                 !wb_prd_i[0][0]) begin
       bank0_write_valid = 1'b1;
       bank0_write_addr = wb_prd_i[0][PRD_W-1:1];
       bank0_write_data = wb_data_i[0];
@@ -179,8 +193,13 @@ module physical_regfile (
       bank0_write_data = wb_data_i[1];
     end
 
-    // --- Bank 1 写入路由 ---
-    if (wb_valid_i[0] && (wb_prd_i[0] != '0) && wb_prd_i[0][0]) begin
+    if (commit_valid_i && commit_ready_o && (commit_prd_i != '0) &&
+        commit_prd_i[0]) begin
+      bank1_write_valid = 1'b1;
+      bank1_write_addr = commit_prd_i[PRD_W-1:1];
+      bank1_write_data = commit_data_i;
+    end else if (wb_valid_i[0] && (wb_prd_i[0] != '0) &&
+                 wb_prd_i[0][0]) begin
       bank1_write_valid = 1'b1;
       bank1_write_addr = wb_prd_i[0][PRD_W-1:1];
       bank1_write_data = wb_data_i[0];
@@ -304,6 +323,11 @@ module physical_regfile (
                 (wb_prd_i[0] != '0) && (wb_prd_i[1] != '0) &&
                 (wb_prd_i[0][0] == wb_prd_i[1][0])))
         else $error("physical_regfile received two writes to one Bank");
+
+      assert (!(commit_valid_i && !commit_ready_o))
+        else $error("physical_regfile commit write ignored while not ready");
+      assert (!(commit_valid_i && (commit_prd_i == '0)))
+        else $error("physical_regfile commit write to p0");
 
       // 断言：不允许对 p0 物理寄存器执行数据写入
       assert (!(wb_valid_i[0] && (wb_prd_i[0] == '0)))

@@ -11,6 +11,10 @@ module tb_physical_regfile;
   logic [1:0] wb_valid_i = '0;
   logic [1:0][PRD_W-1:0] wb_prd_i = '0;
   logic [1:0][XLEN-1:0] wb_data_i = '0;
+  logic commit_valid_i = 1'b0;
+  logic [PRD_W-1:0] commit_prd_i = '0;
+  logic [XLEN-1:0] commit_data_i = '0;
+  logic commit_ready_o;
   logic [1:0] alloc_clear_valid_i = '0;
   logic [1:0][PRD_W-1:0] alloc_clear_prd_i = '0;
   logic [PHYS_REGS-1:0] ready_bits_o;
@@ -26,6 +30,9 @@ module tb_physical_regfile;
       wb_valid_i = '0;
       wb_prd_i = '0;
       wb_data_i = '0;
+      commit_valid_i = 1'b0;
+      commit_prd_i = '0;
+      commit_data_i = '0;
       alloc_clear_valid_i = '0;
       alloc_clear_prd_i = '0;
     end
@@ -182,6 +189,36 @@ module tb_physical_regfile;
     #1;
     if (read_data_o !== '0 || !ready_bits_o[0])
       $fatal(1, "final PRF idle/p0 state mismatch");
+
+    // CSR commit has a dedicated handshake and updates data/ready atomically.
+    @(negedge clk_i);
+    commit_valid_i = 1'b1;
+    commit_prd_i = 6'd24;
+    commit_data_i = 32'hc001_c0de;
+    if (!commit_ready_o)
+      $fatal(1, "idle PRF did not accept CSR commit write");
+    @(posedge clk_i); #1;
+    commit_valid_i = 1'b0;
+    if (!ready_bits_o[24])
+      $fatal(1, "CSR commit write did not set ready");
+    @(negedge clk_i);
+    read_valid_i = 6'b00_0001;
+    read_prd_i[0] = 6'd24;
+    @(posedge clk_i); #1;
+    if (read_data_o[0] !== 32'hc001_c0de)
+      $fatal(1, "CSR commit write data mismatch");
+
+    // Any normal WB reserves the shared physical write resources.
+    @(negedge clk_i);
+    clear_controls();
+    wb_valid_i = 2'b01;
+    wb_prd_i[0] = 6'd26;
+    wb_data_i[0] = 32'h1234_5678;
+    #1;
+    if (commit_ready_o)
+      $fatal(1, "CSR commit ready ignored active normal WB");
+    @(posedge clk_i); #1;
+    clear_controls();
 
     $display("PASS: physical_regfile directed tests");
     $finish;

@@ -66,12 +66,15 @@ Free List 不会在旧写回仍可能到达时重分配 PRD。
 - 读地址与 lane-to-copy 路由同步锁存，输出为一拍同步读结果。
 - 每 Bank 只选择一个最终 WB，并向三个副本广播；同 Bank 双 WB 属于接口违例。
 - ready bitmap 复位全 1；WB 置位，allocation clear 清零且同 PRD 时 clear 优先。
+- CSR 旧值通过独立 commit write/ready 端口在退休点写入；普通 WB 活跃时保守反压
+  CSR 提交，避免任一 Bank 写结果被覆盖。
 - 数据阵列不施加全阵列复位，以保留 FPGA RAM 推断；p0 读恒为 0、ready 恒为 1。
 
 QuestaSim 2024.1 编译为 0 errors / 0 warnings，directed test 已覆盖六读、双异 Bank WB、
 全部六个副本、交错 Bank 路由、p0/invalid 读、ready 更新优先级和 lane1-only WB。
-5.000 ns OOC 最终 WNS 为 +2.005 ns、TNS 为 0；资源为 998 LUT（其中 144 LUT as
-Memory）和 282 FF。当前 PRF 实现冻结，RAM inference 仍应在后续集成报告中持续核对。
+原始 5.000 ns OOC WNS 为 +2.005 ns、TNS 为 0；新增 commit write 端口后的
+`commit_csr_prf_cluster` 5.000 ns OOC WNS 为 +1.013 ns，时序健康并冻结。RAM
+inference 仍应在完整后端集成报告中持续核对。
 
 `rtl/prf/operand_read_stage.sv` 与 `test/tb_operand_read_stage.sv` 也已完成 V1：
 

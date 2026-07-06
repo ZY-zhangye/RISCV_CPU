@@ -56,6 +56,23 @@ module issue_arbiter (
   issue_uop_t int_candidate [0:2];
   issue_uop_t mem_candidate [0:1];
 
+  // C0 input snapshot.  The backend-level critical path was dominated by
+  // routed IQ candidate payload wires feeding the P0 proposal registers.
+  // Snapshot the candidate boundary first; P2 still revalidates against the
+  // live IQ outputs before issuing a grant.
+  logic [2:0] int_candidate_valid_q;
+  issue_uop_t int_candidate_q [0:2];
+  logic [1:0] mem_candidate_valid_q;
+  issue_uop_t mem_candidate_q [0:1];
+  logic [1:0] mem_issue_allowed_q;
+  logic mdu_candidate_valid_q;
+  issue_uop_t mdu_candidate_uop_q;
+  logic mdu_accept_q;
+  logic int0_ready_q;
+  logic int1_ready_q;
+  logic lsu_ready_q;
+  logic mdu_ready_q;
+
   // P0 流水线暂存寄存器线
   logic [PROPOSALS-1:0] proposal_valid_d;
   logic [PROPOSALS-1:0] proposal_valid_q;
@@ -119,6 +136,12 @@ module issue_arbiter (
   function automatic logic is_branch(input issue_uop_t uop);
     begin
       is_branch = (uop.fu_type == FU_BRANCH);
+    end
+  endfunction
+
+  function automatic logic is_csr(input issue_uop_t uop);
+    begin
+      is_csr = (uop.fu_type == FU_CSR);
     end
   endfunction
 
@@ -241,57 +264,79 @@ module issue_arbiter (
     if (!rst_i && !recovery_i.valid) begin
       // A. 分支跳转指令挑选：只允许分配到 INT1 通道
       for (idx = 0; idx < 3; idx = idx + 1) begin
-        if (!int1_used && int_candidate_valid_i[idx] &&
-            is_branch(int_candidate[idx]) &&
-            operands_ready(int_candidate[idx]) && int1_ready_i) begin
+        if (!int1_used && int_candidate_valid_q[idx] &&
+            is_branch(int_candidate_q[idx]) &&
+            operands_ready(int_candidate_q[idx]) && int1_ready_q) begin
           proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate[idx];
+          proposal_uop_d[proposal_count] = int_candidate_q[idx];
           proposal_port_d[proposal_count] = ISSUE_INT1;
           proposal_int_group_d[proposal_count][idx] = 1'b1;
           proposal_even_reads_d[proposal_count] =
-              even_read_count(int_candidate[idx]);
+              even_read_count(int_candidate_q[idx]);
           proposal_odd_reads_d[proposal_count] =
-              odd_read_count(int_candidate[idx]);
+              odd_read_count(int_candidate_q[idx]);
           int_selected[idx] = 1'b1;
           int1_used = 1'b1;
           proposal_count = proposal_count + 3'd1;
         end
       end
 
-      // B. 移位指令挑选：只允许分配到 INT0 通道
+      // B. CSR 操作数准备固定走 INT0，不占用 INT1/Branch 通道。
       for (idx = 0; idx < 3; idx = idx + 1) begin
         if (!int0_used && !int_selected[idx] &&
-            int_candidate_valid_i[idx] && is_shift(int_candidate[idx]) &&
-            operands_ready(int_candidate[idx]) && int0_ready_i) begin
+            int_candidate_valid_q[idx] &&
+            is_csr(int_candidate_q[idx]) &&
+            operands_ready(int_candidate_q[idx]) && int0_ready_q) begin
           proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate[idx];
+          proposal_uop_d[proposal_count] = int_candidate_q[idx];
           proposal_port_d[proposal_count] = ISSUE_INT0;
           proposal_int_group_d[proposal_count][idx] = 1'b1;
           proposal_even_reads_d[proposal_count] =
-              even_read_count(int_candidate[idx]);
+              even_read_count(int_candidate_q[idx]);
           proposal_odd_reads_d[proposal_count] =
-              odd_read_count(int_candidate[idx]);
+              odd_read_count(int_candidate_q[idx]);
           int_selected[idx] = 1'b1;
           int0_used = 1'b1;
           proposal_count = proposal_count + 3'd1;
         end
       end
 
-      // C. 普通整型指令挑选：可分配到 INT0 或 INT1
+      // C. 移位指令挑选：只允许分配到 INT0 通道
       for (idx = 0; idx < 3; idx = idx + 1) begin
-        if (!int_selected[idx] && int_candidate_valid_i[idx] &&
-            !is_branch(int_candidate[idx]) && !is_shift(int_candidate[idx]) &&
-            operands_ready(int_candidate[idx]) &&
-            ((!int0_used && int0_ready_i) ||
-             (!int1_used && int1_ready_i))) begin
+        if (!int0_used && !int_selected[idx] &&
+            int_candidate_valid_q[idx] &&
+            is_shift(int_candidate_q[idx]) &&
+            operands_ready(int_candidate_q[idx]) && int0_ready_q) begin
           proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate[idx];
+          proposal_uop_d[proposal_count] = int_candidate_q[idx];
+          proposal_port_d[proposal_count] = ISSUE_INT0;
           proposal_int_group_d[proposal_count][idx] = 1'b1;
           proposal_even_reads_d[proposal_count] =
-              even_read_count(int_candidate[idx]);
+              even_read_count(int_candidate_q[idx]);
           proposal_odd_reads_d[proposal_count] =
-              odd_read_count(int_candidate[idx]);
-          if (!int0_used && int0_ready_i) begin
+              odd_read_count(int_candidate_q[idx]);
+          int_selected[idx] = 1'b1;
+          int0_used = 1'b1;
+          proposal_count = proposal_count + 3'd1;
+        end
+      end
+
+      // D. 普通整型指令挑选：可分配到 INT0 或 INT1
+      for (idx = 0; idx < 3; idx = idx + 1) begin
+        if (!int_selected[idx] && int_candidate_valid_q[idx] &&
+            !is_branch(int_candidate_q[idx]) && !is_csr(int_candidate_q[idx]) &&
+            !is_shift(int_candidate_q[idx]) &&
+            operands_ready(int_candidate_q[idx]) &&
+            ((!int0_used && int0_ready_q) ||
+             (!int1_used && int1_ready_q))) begin
+          proposal_valid_d[proposal_count] = 1'b1;
+          proposal_uop_d[proposal_count] = int_candidate_q[idx];
+          proposal_int_group_d[proposal_count][idx] = 1'b1;
+          proposal_even_reads_d[proposal_count] =
+              even_read_count(int_candidate_q[idx]);
+          proposal_odd_reads_d[proposal_count] =
+              odd_read_count(int_candidate_q[idx]);
+          if (!int0_used && int0_ready_q) begin
             proposal_port_d[proposal_count] = ISSUE_INT0;
             int0_used = 1'b1;
           end else begin
@@ -303,35 +348,36 @@ module issue_arbiter (
         end
       end
 
-      // D. 访存指令挑选：分配到 LSU
+      // E. 访存指令挑选：分配到 LSU
       for (idx = 0; idx < 2; idx = idx + 1) begin
-        if (!mem_selected && mem_candidate_valid_i[idx] &&
-            mem_issue_allowed_i[idx] && operands_ready(mem_candidate[idx]) &&
-            lsu_ready_i) begin
+        if (!mem_selected && mem_candidate_valid_q[idx] &&
+            mem_issue_allowed_q[idx] && operands_ready(mem_candidate_q[idx]) &&
+            lsu_ready_q) begin
           proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = mem_candidate[idx];
+          proposal_uop_d[proposal_count] = mem_candidate_q[idx];
           proposal_port_d[proposal_count] = ISSUE_LSU;
           proposal_mem_group_d[proposal_count][idx] = 1'b1;
           proposal_even_reads_d[proposal_count] =
-              even_read_count(mem_candidate[idx]);
+              even_read_count(mem_candidate_q[idx]);
           proposal_odd_reads_d[proposal_count] =
-              odd_read_count(mem_candidate[idx]);
+              odd_read_count(mem_candidate_q[idx]);
           mem_selected = 1'b1;
           proposal_count = proposal_count + 3'd1;
         end
       end
 
-      // E. MDU 乘除法指令挑选
-      if (mdu_candidate_valid_i && mdu_accept_i && mdu_ready_i &&
-          operands_ready(mdu_candidate_uop_i)) begin
+      // F. MDU 乘除法指令挑选
+      if (mdu_candidate_valid_q &&
+          mdu_accept_q && mdu_ready_q &&
+          operands_ready(mdu_candidate_uop_q)) begin
         proposal_valid_d[proposal_count] = 1'b1;
-        proposal_uop_d[proposal_count] = mdu_candidate_uop_i;
+        proposal_uop_d[proposal_count] = mdu_candidate_uop_q;
         proposal_port_d[proposal_count] = ISSUE_MDU;
         proposal_mdu_group_d[proposal_count] = 1'b1;
         proposal_even_reads_d[proposal_count] =
-            even_read_count(mdu_candidate_uop_i);
+            even_read_count(mdu_candidate_uop_q);
         proposal_odd_reads_d[proposal_count] =
-            odd_read_count(mdu_candidate_uop_i);
+            odd_read_count(mdu_candidate_uop_q);
       end
     end
   end
@@ -467,6 +513,45 @@ module issue_arbiter (
       issue_port_d[0] = selected_port(slot0_index);
       issue_port_d[1] = selected_port(slot1_index);
       issue_port_d[2] = selected_port(slot2_index);
+    end
+  end
+
+  // ==========================================================================
+  // C0 候选输入寄存器打拍 (Candidate Input Snapshot)
+  // ==========================================================================
+  always_ff @(posedge clk_i) begin : candidate_input_registers
+    if (rst_i || recovery_i.valid) begin
+      int_candidate_valid_q <= '0;
+      mem_candidate_valid_q <= '0;
+      mem_issue_allowed_q <= '0;
+      mdu_candidate_valid_q <= 1'b0;
+      mdu_accept_q <= 1'b0;
+      int0_ready_q <= 1'b0;
+      int1_ready_q <= 1'b0;
+      lsu_ready_q <= 1'b0;
+      mdu_ready_q <= 1'b0;
+      int_candidate_q[0] <= '0;
+      int_candidate_q[1] <= '0;
+      int_candidate_q[2] <= '0;
+      mem_candidate_q[0] <= '0;
+      mem_candidate_q[1] <= '0;
+      mdu_candidate_uop_q <= '0;
+    end else begin
+      int_candidate_valid_q <= int_candidate_valid_i;
+      int_candidate_q[0] <= int_candidate_uop0_i;
+      int_candidate_q[1] <= int_candidate_uop1_i;
+      int_candidate_q[2] <= int_candidate_uop2_i;
+      mem_candidate_valid_q <= mem_candidate_valid_i;
+      mem_candidate_q[0] <= mem_candidate_uop0_i;
+      mem_candidate_q[1] <= mem_candidate_uop1_i;
+      mem_issue_allowed_q <= mem_issue_allowed_i;
+      mdu_candidate_valid_q <= mdu_candidate_valid_i;
+      mdu_candidate_uop_q <= mdu_candidate_uop_i;
+      mdu_accept_q <= mdu_accept_i;
+      int0_ready_q <= int0_ready_i;
+      int1_ready_q <= int1_ready_i;
+      lsu_ready_q <= lsu_ready_i;
+      mdu_ready_q <= mdu_ready_i;
     end
   end
 

@@ -21,6 +21,7 @@ module tb_csr_file;
   logic rst_i = 1'b1;
 
   logic csr_valid_i = 1'b0;
+  logic csr_commit_i = 1'b0;
   logic csr_ready_o;
   csr_op_t csr_op_i = CSR_RW;
   logic [11:0] csr_addr_i = '0;
@@ -72,6 +73,7 @@ module tb_csr_file;
   task automatic clear_inputs;
     begin
       csr_valid_i = 1'b0;
+      csr_commit_i = 1'b0;
       csr_op_i = CSR_RW;
       csr_addr_i = '0;
       csr_rs1_value_i = '0;
@@ -97,6 +99,7 @@ module tb_csr_file;
     begin
       @(negedge clk_i);
       csr_valid_i = 1'b1;
+      csr_commit_i = 1'b1;
       csr_op_i = op;
       csr_addr_i = addr;
       csr_rs1_value_i = rs1_value;
@@ -108,6 +111,7 @@ module tb_csr_file;
                addr, csr_rdata_o, expected_old, csr_illegal_o, expected_illegal);
       @(posedge clk_i); #1;
       csr_valid_i = 1'b0;
+      csr_commit_i = 1'b0;
       csr_addr_i = '0;
       csr_rs1_value_i = '0;
       csr_zimm_i = '0;

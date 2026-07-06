@@ -155,7 +155,7 @@ module issue_queue #(
   assign occupancy_o = count_q;
 
   // 发射候选直连输出
-  assign candidate_valid_o = candidate_valid_q;
+  assign candidate_valid_o = candidate_valid_q & ~clear_valid_q;
   assign candidate_uop0_o = candidate_valid_q[0] ?
                              candidate_from_slot(candidate_slot_q[0]) : '0;
   assign candidate_uop1_o = ((GROUPS > 1) && candidate_valid_q[1]) ?
@@ -363,7 +363,10 @@ module issue_queue #(
           selected_rob_id = '0;
           for (pair_idx = 0; pair_idx < PAIRS_PER_GROUP; pair_idx = pair_idx + 1) begin
             pair_linear_idx = group_idx * PAIRS_PER_GROUP + pair_idx;
-            if (pair_valid_q[pair_linear_idx] && (!selected ||
+            if (pair_valid_q[pair_linear_idx] &&
+                !(clear_valid_q[group_idx] &&
+                  (clear_slot_q[group_idx] == pair_slot_q[pair_linear_idx])) &&
+                (!selected ||
                 is_older(pair_rob_id_q[pair_linear_idx], selected_rob_id))) begin
               selected = 1'b1;
               selected_slot = pair_slot_q[pair_linear_idx];
@@ -385,7 +388,8 @@ module issue_queue #(
         // --- Stage S0: 配对局部选拔逻辑 (Pairs reduction) ---
         // 将组内所有槽位两两配对（如每组 4 项分成 2 对），并在每对内选出 ready 且最老的 winner。
         // 这一打拍过程避免了直接遍历整组 4 项对源操作数 ready 位进行庞杂多路选择的组合路径开销。
-        // 选择时排除当前正被 grant 或上周期已被 grant 但仍在清有效位过程中的 slot 标志。
+        // 选择时只排除上周期已被 grant 但仍在清有效位过程中的 slot 标志。
+        // 当前 grant 只清 S1 candidate，不反馈进 S0 pair 选择，避免 IQ->arbiter->IQ 的组合时序回路。
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           for (pair_idx = 0; pair_idx < PAIRS_PER_GROUP; pair_idx = pair_idx + 1) begin
             selected = 1'b0;
@@ -398,9 +402,6 @@ module issue_queue #(
               if (local_idx < GROUP_SIZE) begin
                 slot_idx = group_idx * GROUP_SIZE + local_idx;
                 slot_ready = valid_q[slot_idx] &&
-                             !(issue_grant_i[group_idx] &&
-                               candidate_valid_q[group_idx] &&
-                               (candidate_slot_q[group_idx] == slot_idx[SLOT_W-1:0])) &&
                              !(clear_valid_q[group_idx] &&
                                (clear_slot_q[group_idx] == slot_idx[SLOT_W-1:0])) &&
                              (!need_rs1_q[slot_idx] || src1_ready_q[slot_idx]) &&

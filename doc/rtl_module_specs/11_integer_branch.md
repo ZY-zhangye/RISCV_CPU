@@ -28,6 +28,8 @@ issue_arbiter 必须把移位操作限制到该端口。
 - `ex_ready_o` 只在本地 buffer 可接收时拉高；结果不会组合直通全局 WB。
 - 支持 result 端 valid-ready 背压，满 buffer 可在同周期 drain 并接收新 uop。
 - `recovery_i` 有效时暂停新接收；异常恢复清空 buffer，分支恢复按本地 branch mask kill 或清 bit。
+- CSR prepare 复用 INT0 completion 通道：寄存器型 CSR 捕获 rs1，立即数型
+  `CSR_RWI/RSI/RCI` 捕获 5-bit zimm 零扩展；CSR prepare 只完成 ROB，不写 PRF。
 
 当前 V1 不生成 branch event；INT1/Branch 单独实现。
 
@@ -78,7 +80,7 @@ branch_event 在 EX 末寄存。下一周期 recovery_controller 才广播恢复
 
 - `test/tb_int_pipeline0.sv` 覆盖 ADD/SUB、逻辑、SLT/SLTU、寄存器/立即数移位、
   LUI/AUIPC、非写回 completion、result 背压保持、同周期 drain+accept、branch/exception
-  recovery kill。
+  recovery kill，以及 CSR rs1/zimm 捕获且不提前写 PRF。
 - QuestaSim：`tb_int_pipeline0` 通过，`Errors: 0, Warnings: 0`。
 - 用户 OOC：200 MHz / 5.000 ns 下 WNS = +1.824 ns。
 - `test/tb_int_branch_pipeline1.sv` 覆盖简单 INT1 ALU、条件分支方向/目标误预测、

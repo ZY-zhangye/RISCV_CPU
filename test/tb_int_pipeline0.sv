@@ -200,6 +200,25 @@ module tb_int_pipeline0;
     expect_result(5'd6, 6'd14, 32'haaaa_5555, 1'b1);
     drain_result();
 
+    // CSR preparation captures rs1 in completion.data but never writes PRF.
+    uop_a = make_uop(5'd10, 6'd41, ALU_ADD, 32'h1357_9bdf,
+                     32'hffff_ffff, 32'h1111_1111,
+                     1'b1, 1'b0, 1'b1, '0);
+    uop_a.fu_type = FU_CSR;
+    issue_one(uop_a);
+    expect_result(5'd10, 6'd41, 32'h1357_9bdf, 1'b0);
+    drain_result();
+
+    uop_a = make_uop(5'd11, 6'd42, ALU_ADD, 32'hffff_ffff,
+                     32'h0000_0000, 32'h0000_0000,
+                     1'b0, 1'b0, 1'b1, '0);
+    uop_a.fu_type = FU_CSR;
+    uop_a.csr_op = CSR_RWI;
+    uop_a.csr_zimm = 5'd8;
+    issue_one(uop_a);
+    expect_result(5'd11, 6'd42, 32'h0000_0008, 1'b0);
+    drain_result();
+
     // Branch recovery kills buffered younger results.
     uop_a = make_uop(5'd7, 6'd15, ALU_ADD, 32'd1, 32'd2, '0,
                      1'b1, 1'b1, 1'b1, 4'b0100);

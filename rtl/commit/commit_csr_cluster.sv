@@ -20,6 +20,7 @@ module commit_csr_cluster #(
     output commit_map_t                  commit_map1_o,
     output logic [1:0]                   reclaim_valid_o,
     output logic [1:0][PRD_W-1:0]        reclaim_prd_o,
+    input  logic                         reclaim_ready_i,
 
     output logic                         store_commit_valid_o,
     output logic [SQ_ID_W-1:0]           store_commit_sq_id_o,
@@ -29,6 +30,8 @@ module commit_csr_cluster #(
     output logic                         csr_wb_valid_o,
     output logic [PRD_W-1:0]             csr_wb_prd_o,
     output logic [XLEN-1:0]              csr_wb_data_o,
+    input  logic                         csr_wb_ready_i,
+    input  logic                         recovery_busy_i,
 
     output recovery_t                    recovery_o,
     output logic [1:0]                   instret_count_o,
@@ -66,6 +69,7 @@ module commit_csr_cluster #(
   logic ebreak_command;
   logic fence_command;
   logic special_retire;
+  logic special_reclaim_request;
   logic special_exception;
   logic [3:0] special_exception_cause;
   logic [XLEN-1:0] special_exception_tval;
@@ -81,8 +85,17 @@ module commit_csr_cluster #(
   logic [3:0] csr_exception_cause;
   logic [XLEN-1:0] csr_exception_tval;
   logic [XLEN-1:0] unused_mie;
+  logic [1:0] retire_count_counter_q;
 
-  assign head0_ready = rob_head_valid_i[0] && rob_head0_i.valid &&
+  always_ff @(posedge clk_i) begin
+    if (rst_i)
+      retire_count_counter_q <= '0;
+    else
+      retire_count_counter_q <= retire_count_o;
+  end
+
+  assign head0_ready = !recovery_busy_i && rob_head_valid_i[0] &&
+                       rob_head0_i.valid &&
                        rob_head0_i.complete;
   assign csr_command = head0_ready && rob_head0_i.entry.is_csr;
   assign mret_command = head0_ready && rob_head0_i.entry.is_mret;
@@ -91,7 +104,8 @@ module commit_csr_cluster #(
   assign fence_command = head0_ready && rob_head0_i.entry.is_fence;
   assign head0_special = csr_command || mret_command || ecall_command ||
                          ebreak_command || fence_command;
-  assign base_head_valid = head0_special ? 2'b00 : rob_head_valid_i;
+  assign base_head_valid = recovery_busy_i ? 2'b00 :
+                           (head0_special ? 2'b00 : rob_head_valid_i);
 
   assign special_exception = (csr_command && csr_illegal) ||
                              ecall_command || ebreak_command;
@@ -99,7 +113,12 @@ module commit_csr_cluster #(
                                    (ebreak_command ? EXC_BREAKPOINT : EXC_ECALL_M);
   assign special_exception_tval = (csr_command && csr_illegal) ?
                                   rob_head0_i.entry.inst : '0;
-  assign special_retire = (csr_command && csr_ready && !csr_illegal) ||
+  assign special_reclaim_request = csr_command && csr_ready && !csr_illegal &&
+      rob_head0_i.entry.write_rd && (rob_head0_i.entry.arch_rd != 0);
+  assign special_retire =
+                          (csr_command && csr_ready && !csr_illegal &&
+                           (!special_reclaim_request ||
+                            (csr_wb_ready_i && reclaim_ready_i))) ||
                           mret_command || fence_command;
 
   assign csr_exception_valid = base_exception_valid || special_exception;
@@ -132,13 +151,16 @@ module commit_csr_cluster #(
       reclaim_prd_o = '0;
       recovery_o = '0;
 
+      if (special_reclaim_request) begin
+        reclaim_valid_o[0] = 1'b1;
+        reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
+      end
+
       if (special_retire && rob_head0_i.entry.write_rd &&
           (rob_head0_i.entry.arch_rd != 0)) begin
         commit_map0_o.valid = 1'b1;
         commit_map0_o.arch_rd = rob_head0_i.entry.arch_rd;
         commit_map0_o.prd = rob_head0_i.entry.new_prd;
-        reclaim_valid_o[0] = 1'b1;
-        reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
       end
 
       if (csr_command && special_retire && rob_head0_i.entry.write_rd) begin
@@ -170,6 +192,7 @@ module commit_csr_cluster #(
       .commit_map1_o(base_commit_map1),
       .reclaim_valid_o(base_reclaim_valid),
       .reclaim_prd_o(base_reclaim_prd),
+      .reclaim_ready_i,
       .store_commit_valid_o,
       .store_commit_sq_id_o,
       .store_commit_ready_i,
@@ -191,6 +214,7 @@ module commit_csr_cluster #(
       .clk_i,
       .rst_i,
       .csr_valid_i(csr_command),
+      .csr_commit_i(csr_command && special_retire),
       .csr_ready_o(csr_ready),
       .csr_op_i(rob_head0_i.entry.csr_op),
       .csr_addr_i(rob_head0_i.entry.csr_addr),
@@ -206,8 +230,8 @@ module commit_csr_cluster #(
       .exception_vector_o(exception_vector),
       .mret_valid_i(mret_command),
       .mret_vector_o(mret_vector),
-      .retire_valid_i(retire_count_o != 0),
-      .retire_count_i(retire_count_o),
+      .retire_valid_i(retire_count_counter_q != 0),
+      .retire_count_i(retire_count_counter_q),
       .mstatus_o,
       .mie_o(unused_mie),
       .mtvec_o,

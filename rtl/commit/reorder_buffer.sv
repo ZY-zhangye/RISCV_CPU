@@ -67,6 +67,7 @@ module reorder_buffer (
 
   // 指针及深度计数器
   logic [ROB_ROW_W-1:0] head_row_q;                      // 头行指针 (指向即将退休的行)
+  logic head_bank_q;                                      // 头行内当前可见的最老 bank
   logic [ROB_ROW_W-1:0] tail_row_q;                      // 尾行指针 (指向新分配写入的行)
   logic [ROB_ROW_W:0] used_rows_q;                       // 当前已占用 Row 数量 (0 ~ 16)
   logic [5:0] occupancy_q;                               // 当前在途 uop 占用总数
@@ -90,6 +91,7 @@ module reorder_buffer (
 
   logic alloc_fire;
   logic retire_row_fire;
+  logic retire_lane0_fire;
   logic [1:0] head_row_count;
 
   // ==========================================================================
@@ -151,6 +153,9 @@ module reorder_buffer (
   assign retire_row_fire = !scan_busy_q && (used_rows_q != '0) &&
                            (retire_count_i != 2'd0) &&
                            (retire_count_i >= head_row_count);
+  assign retire_lane0_fire = !scan_busy_q && (used_rows_q != '0) &&
+                             !head_bank_q && (retire_count_i == 2'd1) &&
+                             head_entry0_q.valid && head_entry1_q.valid;
 
   assign alloc_rob_id0_o = make_rob_id(tail_row_q, 1'b0);
   assign alloc_rob_id1_o = make_rob_id(tail_row_q, 1'b1);
@@ -198,6 +203,7 @@ module reorder_buffer (
       for (entry_index = 0; entry_index < ROB_ENTRIES; entry_index = entry_index + 1)
         entry_q[entry_index] <= '0;
       head_row_q <= '0;
+      head_bank_q <= 1'b0;
       tail_row_q <= '0;
       used_rows_q <= '0;
       occupancy_q <= '0;
@@ -225,6 +231,7 @@ module reorder_buffer (
         valid_q <= '0;
         complete_q <= '0;
         head_row_q <= '0;
+        head_bank_q <= 1'b0;
         tail_row_q <= '0;
         used_rows_q <= '0;
         occupancy_q <= '0;
@@ -334,8 +341,13 @@ module reorder_buffer (
 
         // 扫描行遇到当前的头行时，同步更新输出寄存器
         if (scan_row_q == head_row_q) begin
-          head_entry0_q <= scan_entry0;
-          head_entry1_q <= scan_entry1;
+          if (head_bank_q) begin
+            head_entry0_q <= scan_entry1;
+            head_entry1_q <= '0;
+          end else begin
+            head_entry0_q <= scan_entry0;
+            head_entry1_q <= scan_entry1;
+          end
         end
 
         // 4. 扫描完成收尾
@@ -371,11 +383,16 @@ module reorder_buffer (
         // 1. 写回通道 0 完成记录 (直接寻址更新)
         if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
           complete_q[complete0_i.rob_id] <= 1'b1;
-          if (complete0_i.exception_valid) begin
+          if (entry_q[complete0_i.rob_id].is_csr ||
+              complete0_i.exception_valid) begin
             alloc_tmp = entry_q[complete0_i.rob_id];
-            alloc_tmp.exception_valid = 1'b1;
-            alloc_tmp.exception_cause = complete0_i.exception_cause;
-            alloc_tmp.exception_tval = complete0_i.exception_tval;
+            if (entry_q[complete0_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete0_i.data;
+            if (complete0_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete0_i.exception_cause;
+              alloc_tmp.exception_tval = complete0_i.exception_tval;
+            end
             entry_q[complete0_i.rob_id] <= alloc_tmp;
           end
         end
@@ -383,11 +400,16 @@ module reorder_buffer (
         // 2. 写回通道 1 完成记录 (直接寻址更新)
         if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
           complete_q[complete1_i.rob_id] <= 1'b1;
-          if (complete1_i.exception_valid) begin
+          if (entry_q[complete1_i.rob_id].is_csr ||
+              complete1_i.exception_valid) begin
             alloc_tmp = entry_q[complete1_i.rob_id];
-            alloc_tmp.exception_valid = 1'b1;
-            alloc_tmp.exception_cause = complete1_i.exception_cause;
-            alloc_tmp.exception_tval = complete1_i.exception_tval;
+            if (entry_q[complete1_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete1_i.data;
+            if (complete1_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete1_i.exception_cause;
+              alloc_tmp.exception_tval = complete1_i.exception_tval;
+            end
             entry_q[complete1_i.rob_id] <= alloc_tmp;
           end
         end
@@ -403,8 +425,15 @@ module reorder_buffer (
 
           head_row_next = next_row(head_row_q);
           head_row_q <= head_row_next;
+          head_bank_q <= 1'b0;
           used_rows_next = used_rows_next - 1'b1;
           occupancy_next = occupancy_next - {4'd0, head_row_count};
+        end else if (retire_lane0_fire) begin
+          head_id0 = make_rob_id(head_row_q, 1'b0);
+          valid_q[head_id0] <= 1'b0;
+          complete_q[head_id0] <= 1'b0;
+          head_bank_q <= 1'b1;
+          occupancy_next = occupancy_next - 6'd1;
         end
 
         // 4. 指令分配入队 (Alloc)
@@ -426,15 +455,34 @@ module reorder_buffer (
         used_rows_q <= used_rows_next;
         occupancy_q <= occupancy_next;
 
-        // 5. 解算下一周期的头指针输出寄存器 (Pipelining head_entry)
-        head_id0 = make_rob_id(head_row_next, 1'b0);
-        head_id1 = make_rob_id(head_row_next, 1'b1);
+        // 5. Head payload 只按已寄存的 head_row_q 读取。退休拍清空可见
+        // head，下一拍再从新 head_row_q refill，以切断
+        // head payload -> commit -> retire -> wide payload mux 的长组合路径。
+        head_id0 = make_rob_id(head_row_q, head_bank_q);
+        head_id1 = make_rob_id(head_row_q, 1'b1);
         head0_next.valid = valid_q[head_id0];
         head0_next.complete = complete_q[head_id0];
         head0_next.entry = entry_q[head_id0];
-        head1_next.valid = valid_q[head_id1];
-        head1_next.complete = complete_q[head_id1];
-        head1_next.entry = entry_q[head_id1];
+        if (!head_bank_q) begin
+          head1_next.valid = valid_q[head_id1];
+          head1_next.complete = complete_q[head_id1];
+          head1_next.entry = entry_q[head_id1];
+        end else begin
+          head1_next = '0;
+        end
+
+        if (retire_row_fire) begin
+          head0_next.valid = 1'b0;
+          head0_next.complete = 1'b0;
+          head1_next.valid = 1'b0;
+          head1_next.complete = 1'b0;
+        end else if (retire_lane0_fire) begin
+          head_id1 = make_rob_id(head_row_q, 1'b1);
+          head0_next.valid = valid_q[head_id1];
+          head0_next.complete = complete_q[head_id1];
+          head0_next.entry = entry_q[head_id1];
+          head1_next = '0;
+        end
 
         // 旁路直通：若原本为空，本周期发生分配，则下一周期的 head_entry 直接由 alloc 数据填充
         if ((used_rows_q == '0) && alloc_fire && !retire_row_fire) begin
@@ -447,9 +495,12 @@ module reorder_buffer (
         end
 
         // 旁路直通：若本周期正在完成（Writeback）的指令就是下一周期的 head，则直接旁路更新就绪标志
-        if (complete0_i.valid && (rob_id_row(complete0_i.rob_id) == head_row_next)) begin
+        if (!retire_row_fire && complete0_i.valid &&
+            (rob_id_row(complete0_i.rob_id) == head_row_q)) begin
           if (!rob_id_bank(complete0_i.rob_id)) begin
             head0_next.complete = 1'b1;
+            if (head0_next.entry.is_csr)
+              head0_next.entry.csr_operand = complete0_i.data;
             if (complete0_i.exception_valid) begin
               head0_next.entry.exception_valid = 1'b1;
               head0_next.entry.exception_cause = complete0_i.exception_cause;
@@ -457,6 +508,8 @@ module reorder_buffer (
             end
           end else begin
             head1_next.complete = 1'b1;
+            if (head1_next.entry.is_csr)
+              head1_next.entry.csr_operand = complete0_i.data;
             if (complete0_i.exception_valid) begin
               head1_next.entry.exception_valid = 1'b1;
               head1_next.entry.exception_cause = complete0_i.exception_cause;
@@ -465,9 +518,12 @@ module reorder_buffer (
           end
         end
 
-        if (complete1_i.valid && (rob_id_row(complete1_i.rob_id) == head_row_next)) begin
+        if (!retire_row_fire && complete1_i.valid &&
+            (rob_id_row(complete1_i.rob_id) == head_row_q)) begin
           if (!rob_id_bank(complete1_i.rob_id)) begin
             head0_next.complete = 1'b1;
+            if (head0_next.entry.is_csr)
+              head0_next.entry.csr_operand = complete1_i.data;
             if (complete1_i.exception_valid) begin
               head0_next.entry.exception_valid = 1'b1;
               head0_next.entry.exception_cause = complete1_i.exception_cause;
@@ -475,6 +531,8 @@ module reorder_buffer (
             end
           end else begin
             head1_next.complete = 1'b1;
+            if (head1_next.entry.is_csr)
+              head1_next.entry.csr_operand = complete1_i.data;
             if (complete1_i.exception_valid) begin
               head1_next.entry.exception_valid = 1'b1;
               head1_next.entry.exception_cause = complete1_i.exception_cause;
@@ -484,8 +542,10 @@ module reorder_buffer (
         end
 
         if ((used_rows_next == '0) && !alloc_fire) begin
-          head_entry0_q <= '0;
-          head_entry1_q <= '0;
+          head_entry0_q.valid <= 1'b0;
+          head_entry0_q.complete <= 1'b0;
+          head_entry1_q.valid <= 1'b0;
+          head_entry1_q.complete <= 1'b0;
         end else begin
           head_entry0_q <= head0_next;
           head_entry1_q <= head1_next;

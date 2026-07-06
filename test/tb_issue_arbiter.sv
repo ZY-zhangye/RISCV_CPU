@@ -94,12 +94,20 @@ module tb_issue_arbiter;
       input logic [ROB_ID_W-1:0] expected_rob2
   );
     begin
-      // P0 captures proposals.  The selected-mask stage remains isolated from
+      // C0 snapshots candidates.  The proposal stage remains isolated from
       // both grants and externally visible issue slots on this edge.
       #1;
       if (int_issue_grant_o != 3'b000 || mem_issue_grant_o != 2'b00 ||
           mdu_issue_grant_o || issue_valid_o != 3'b000)
-        $fatal(1, "proposal stage was not isolated from outputs");
+        $fatal(1, "candidate snapshot stage was not isolated from outputs");
+      @(posedge clk_i);
+      #1;
+      if (int_issue_grant_o != 3'b000 || mem_issue_grant_o != 2'b00 ||
+          mdu_issue_grant_o || issue_valid_o != 3'b000)
+        $fatal(1, "candidate snapshot bypassed proposal stage");
+
+      // P0 captures proposals from the snapshot.  The selected-mask stage
+      // remains isolated from externally visible grants.
       @(posedge clk_i);
       #1;
       if (int_issue_grant_o != 3'b000 || mem_issue_grant_o != 2'b00 ||
@@ -169,6 +177,18 @@ module tb_issue_arbiter;
     check_transaction(3'b110, 2'b00, 1'b0, 3'b011,
                       ISSUE_INT1, ISSUE_INT0, ISSUE_INT0,
                       5'd11, 5'd12, '0);
+
+    // CSR operand preparation is pinned to INT0 while an independent branch
+    // may use INT1 in the same cycle.
+    @(negedge clk_i);
+    int_candidate_valid_i = 3'b011;
+    int_candidate_uop0_i = make_uop(5'd20, FU_CSR, ALU_PASS1,
+                                    6'd9, 6'd0, 1'b1, 1'b0);
+    int_candidate_uop1_i = make_uop(5'd21, FU_BRANCH, ALU_ADD,
+                                    6'd3, 6'd4, 1'b1, 1'b1);
+    check_transaction(3'b011, 2'b00, 1'b0, 3'b011,
+                      ISSUE_INT1, ISSUE_INT0, ISSUE_INT0,
+                      5'd21, 5'd20, '0);
 
     // INT + LSU + MDU may fill all three global issue slots.
     @(negedge clk_i);
@@ -267,6 +287,10 @@ module tb_issue_arbiter;
     int_candidate_valid_i = 3'b001;
     int_candidate_uop0_i = make_uop(5'd19, FU_INT, ALU_ADD,
                                     6'd1, 6'd2, 1'b1, 1'b1);
+    @(posedge clk_i);
+    #1;
+    if (int_issue_grant_o != 3'b000)
+      $fatal(1, "candidate snapshot bypassed proposal stage before recovery test");
     @(posedge clk_i);
     #1;
     if (int_issue_grant_o != 3'b000)

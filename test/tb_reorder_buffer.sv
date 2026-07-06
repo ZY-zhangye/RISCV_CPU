@@ -232,6 +232,22 @@ module tb_reorder_buffer;
     if (alloc_rob_id0_o != 0 || alloc_rob_id1_o != 1)
       $fatal(1, "exception flush did not reset ROB tail IDs");
 
+    // CSR completion data is captured into the ROB entry and does not need a
+    // speculative PRF write.
+    alloc_entry0_i = make_entry(32'h5800, 5'd5, 6'd40, 6'd5, '0);
+    alloc_entry0_i.is_csr = 1'b1;
+    allocate_bundle(2'b01, alloc_entry0_i, '0, id0, id1);
+    @(negedge clk_i);
+    complete0_i = make_completion(id0, 1'b0);
+    complete0_i.data = 32'h2468_ace0;
+    complete0_i.write_prf = 1'b0;
+    @(negedge clk_i);
+    complete0_i = '0;
+    if (!head_entry0_o.complete ||
+        head_entry0_o.entry.csr_operand != 32'h2468_ace0)
+      $fatal(1, "CSR operand was not captured by ROB completion");
+    retire_row(2'd1);
+
     for (idx = 0; idx < 16; idx = idx + 1) begin
       allocate_bundle(2'b01,
                       make_entry(32'h6000 + idx * 4, 5'd9, 6'd41, 6'd9, 4'b0),

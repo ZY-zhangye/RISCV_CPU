@@ -16,6 +16,7 @@ module csr_file #(
     input  logic              rst_i,
 
     input  logic              csr_valid_i,
+    input  logic              csr_commit_i,
     output logic              csr_ready_o,
     input  csr_op_t           csr_op_i,
     input  logic [11:0]       csr_addr_i,
@@ -145,8 +146,8 @@ module csr_file #(
 
   assign csr_write_intent =
       ((csr_op_i == CSR_RW) || (csr_op_i == CSR_RWI) || (csr_operand != '0));
-  assign csr_write_enable =
-      csr_valid_i && csr_known && !csr_read_only && csr_write_intent;
+  assign csr_write_enable = csr_valid_i && csr_commit_i && csr_known &&
+                            !csr_read_only && csr_write_intent;
   assign csr_rdata_o = read_csr(csr_addr_i);
   assign csr_illegal_o =
       csr_valid_i && (!csr_known || (csr_read_only && csr_write_intent));

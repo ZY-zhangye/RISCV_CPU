@@ -96,7 +96,7 @@ BRAM/DSP 和最差路径端点。
 | Issue Arbiter | P0/P1/P2 三级仲裁，扩展 metadata 后复测 | +1.031 ns | 冻结 |
 | Physical Register File | 双 Bank、每 Bank 三读副本 | +2.005 ns | 冻结，继续核对 RAM inference |
 | Operand Read | 同步读对齐、WB bypass、四端口独立 holding | 4 ns 下 +1.272 ns | 冻结 |
-| INT0 Pipeline | 单周期 ALU + 1-entry completion buffer | +1.824 ns | 冻结，进入 INT1/Branch |
+| INT0 Pipeline | 单周期 ALU + 1-entry completion buffer；CSR prepare 支持 rs1/zimm | +1.824 ns | Questa 覆盖 CSR immediate prepare，冻结 |
 | INT1/Branch Pipeline | 简单 ALU + branch resolve + 1-entry completion buffer | +2.023 ns | 冻结，进入 Writeback |
 | Writeback Arbiter | 5 producer 2-entry skid buffers + fixed select + registered outputs | +0.287 ns | 暂时冻结，后续看成组/route |
 | LSQ Allocator | 双 LQ/SQ reservation + allocation-log rollback | +2.138 ns | 零分配 checkpoint 修正后 Questa 28 项回归通过，冻结 |
@@ -114,6 +114,9 @@ BRAM/DSP 和最差路径端点。
 | Rename Allocation Cluster | Resource Manager + Free List + LSQ Allocator + Checkpoint File | +0.846 ns | Questa 28 项回归通过，冻结 |
 | Rename + ROB Cluster | Rename + Allocation Cluster + ROB + sticky recovery acks | +0.559 ns | TNS 0、loop 0，Questa 30 项回归通过，冻结 |
 | Commit + CSR Cluster | ordinary/Store commit + CSR/MRET/ECALL/FENCE head execution | +1.202 ns | Questa 30 项回归通过，冻结 |
+| Commit + CSR + PRF Cluster | CSR operand commit write + PRF ready 缓冲握手 | +1.013 ns | Questa 31 项回归通过，时序健康并冻结 |
+| Commit + Recovery Cluster | Rename/ROB + Commit/CSR/PRF + recovery ack/redirect | +0.121 ns | TNS 0、loop 0，Questa 32 项通过，冻结 |
+| Backend INT Cluster | Commit/Recovery + Dispatch/IQ/Issue/RR/INT0/INT1/WB | +0.110 ns | TNS 0、loop 0，Questa 33 项通过，时序健康并冻结 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint
@@ -123,9 +126,42 @@ Cluster；真实四模块 directed test 和 28 项回归已通过，5 ns OOC WNS
 ROB 精确异常 flush 修订后 5 ns OOC WNS 为 +0.903 ns。Rename + ROB Cluster 已闭合
 P2 分配、ROB entry 构造和恢复 ack 边界；初次 OOC WNS -0.281 ns、TNS -31.185 ns，
 并发现 2 个 ready/valid 组合环。去环后 OOC WNS +0.559 ns、TNS 0、loop 0。
-Commit + CSR Cluster 已完成 ROB-head 系统指令语义并通过 Questa 30 项回归；5 ns OOC
-WNS 为 +1.202 ns，当前冻结。下一项接入 CSR operand prepare、ROB operand capture 和
-提交侧 PRF 写口。
+Commit + CSR Cluster 的 5 ns OOC WNS 为 +1.202 ns。CSR operand prepare 已完成
+Issue→INT0→ROB capture，并通过 `commit_csr_prf_cluster` 闭合提交侧 PRF 写口；当前
+Questa 31 项回归通过，5 ns OOC WNS +1.013 ns，时序健康并冻结。下一步进入完整
+Commit/Recovery 集群。
+完整 `commit_recovery_cluster` 已闭合 commit map/reclaim、PRF ready clear、四路恢复 ack
+和最终 redirect；首次 OOC WNS -2.104 ns，最差路径为 retire 控制返回 ROB 宽 head
+payload mux。加入一拍 head refill 后 Questa 32 项回归通过，当前等待 5 ns OOC 复测。
+首次复测 WNS -1.516 ns，新路径落在 payload `/R`；现已改为只清 head valid/complete，
+取消失效 payload 清零，等待第二次复测。
+第二次复测 WNS -1.210 ns，终点转移到 occupancy/minstret，确认共因是组合 retire
+决策。已使用两阶段提交和寄存 retire_count/minstret 增量从结构上断开。第三次复测
+WNS -1.015 ns，残余路径转为 commit recovery/checkpoint clear 回灌 ROB tail reset，
+以及 CSR writeback 组合驱动 PRF ready；现已寄存 commit recovery 请求并增加 CSR PRF
+写缓冲。第四次复测 WNS -0.599 ns、TNS -62.066 ns，最差路径转为 commit map
+同拍驱动 RAT/AMT CE；现已把 commit map、reclaim 和 retire_count 合并为注册提交
+事务。第五次复测 WNS +0.121 ns、TNS 0，但 check_timing 报告 2 个 combinational
+loops；现已去除 pending reclaim valid 对 reclaim_ready 的组合门控，等待第六次复测
+确认 loops=0。第六次复测 WNS +0.121 ns、TNS 0、失败端点 0、loops 0，最慢路径回到
+普通 dispatch/ROB alloc CE；Commit + Recovery Cluster 冻结。
+首个后端整数集成边界 `backend_int_cluster` 已完成：当前开放 INT/Branch/CSR loop，
+LSU/MDU 分派路径保持反压。修正分支 resolve 早于 ROB completion 导致的误预测恢复
+抢占问题，backend 边界会等匹配 ROB completion 可见后再向 recovery controller 发送
+branch event；同时修正 INT0 对 CSR immediate prepare 的 zimm operand 选择。Questa
+2024.1 全量 33 项 directed regression 通过，下一步等待 5 ns OOC 综合。
+Backend INT Cluster 初次 OOC WNS -0.975 ns，最差路径为 INT IQ candidate/ROB-ID 通过
+issue arbiter grant 回灌 IQ S0 pair 寄存器。当前已将 IQ S0 从当前 grant 中解耦，只用
+上一拍 deferred clear/pending clear 做选择过滤；visible candidate 在 clear 窗口屏蔽，
+arbiter P0 也跳过同周期已 grant group。该修改使两条同 row ROB 指令可分拍完成，进而
+补齐 ROB 半行 head 语义：bank0 单独 retire 后 bank1 作为下一拍 head lane0；普通
+reclaim 事务 fire 后额外保持一拍 busy，等待 Free List reclaim FIFO drain 到 free_count。
+修复后 Questa 33 项 regression 通过，等待 OOC 复测。
+后续复测继续暴露 IQ candidate payload 到 Issue Arbiter P0、P2 grant 回灌 P0、以及
+issue output 经 Operand Read ready 回到 P0 proposal 的三类反馈路径；当前已通过
+C0 candidate snapshot、删除 P0 对当前 grant 的依赖、以及将 P0 ready 视图也纳入
+C0 snapshot 完成切断。最终 5.000 ns OOC WNS +0.110 ns、TNS 0、失败端点 0、
+loops 0，最慢路径转到 recovery/PRF read-data 边界；Backend INT Cluster 冻结。
 
 ## 6. 关键属性
 

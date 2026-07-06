@@ -15,6 +15,7 @@ module tb_commit_csr_cluster;
   commit_map_t commit_map1_o;
   logic [1:0] reclaim_valid_o;
   logic [1:0][PRD_W-1:0] reclaim_prd_o;
+  logic reclaim_ready_i = 1'b1;
   logic store_commit_valid_o;
   logic [SQ_ID_W-1:0] store_commit_sq_id_o;
   logic store_commit_ready_i = 1'b0;
@@ -22,6 +23,8 @@ module tb_commit_csr_cluster;
   logic csr_wb_valid_o;
   logic [PRD_W-1:0] csr_wb_prd_o;
   logic [XLEN-1:0] csr_wb_data_o;
+  logic csr_wb_ready_i = 1'b1;
+  logic recovery_busy_i = 1'b0;
   recovery_t recovery_o;
   logic [1:0] instret_count_o;
   logic store_pending_o;
@@ -105,6 +108,12 @@ module tb_commit_csr_cluster;
     if (retire_count_o != 2 || !commit_map0_o.valid ||
         !commit_map1_o.valid || reclaim_valid_o != 2'b11)
       $fatal(1, "ordinary dual commit path changed");
+    recovery_busy_i = 1'b1;
+    #1;
+    if (retire_count_o != 0 || commit_map0_o.valid ||
+        commit_map1_o.valid || reclaim_valid_o != 0)
+      $fatal(1, "ordinary commit was not blocked during recovery");
+    recovery_busy_i = 1'b0;
     @(posedge clk_i); #1;
     clear_heads();
 
@@ -123,6 +132,33 @@ module tb_commit_csr_cluster;
     clear_heads();
     if (!mstatus_o[3])
       $fatal(1, "legal CSR did not update mstatus");
+
+    // PRF backpressure holds both the CSR mutation and ROB retirement until
+    // the commit write can be accepted atomically.
+    @(negedge clk_i);
+    csr_wb_ready_i = 1'b0;
+    reclaim_ready_i = 1'b0;
+    rob_head_valid_i = 2'b01;
+    rob_head0_i = make_csr(CSR_RS, 12'h300, 32'h0000_0000, 5'd7,
+                           32'h8000_0180, 32'h3003_9073);
+    #1;
+    if (retire_count_o != 0 || csr_wb_valid_o || !mstatus_o[3] ||
+        reclaim_valid_o != 2'b01)
+      $fatal(1, "CSR commit did not hold under PRF backpressure");
+    @(posedge clk_i); #1;
+    if (!mstatus_o[3])
+      $fatal(1, "stalled CSR modified state before retirement");
+    @(negedge clk_i);
+    csr_wb_ready_i = 1'b1;
+    reclaim_ready_i = 1'b1;
+    #1;
+    if (retire_count_o != 1 || !csr_wb_valid_o ||
+        csr_wb_data_o != 32'h0000_0008)
+      $fatal(1, "stalled CSR did not resume atomically");
+    @(posedge clk_i); #1;
+    clear_heads();
+    if (!mstatus_o[3])
+      $fatal(1, "zero-mask CSR read unexpectedly modified mstatus");
 
     // Unknown CSR becomes a precise illegal-instruction exception.
     @(negedge clk_i);

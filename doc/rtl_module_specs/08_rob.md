@@ -82,8 +82,26 @@ payload 不可见，可避免为宽数据阵列引入额外复位扇出。
 
 `test/tb_reorder_buffer.sv` 已覆盖双/单分配、完成与异常完成、整 row 退休、branch mask
 clear、tail restore、满容量，以及精确异常在 branch scan 中途抢占并清空全部 ROB 状态。
-QuestaSim 2024.1 最小测试和当前 29 项回归均通过，`Errors: 0, Warnings: 0`。
+CSR completion 还会按 rob_id 保存 `completion.data` 为 `csr_operand`，并对当前 head
+执行同拍前递，使提交端无需额外等待一拍。QuestaSim 2024.1 最小测试和当前 31 项回归
+均通过，`Errors: 0, Warnings: 0`。
 新增 exception flush 后用户 5 ns OOC WNS 为 +0.903 ns，当前冻结。
 Rename+ROB 初次成组 OOC WNS 为 -0.281 ns，并报告 2 个组合环；已移除 ROB
 `alloc_ready_o -> alloc_valid_i -> alloc_ready_o` 反馈。去环后 Questa 29 项回归通过，
 OOC 复测 WNS 为 +0.559 ns、TNS 为 0，combinational loops 为 0，当前冻结。
+
+完整 Commit/Recovery 首次 OOC 暴露 `head payload -> commit/reclaim -> retire_count ->
+next head payload mux` 的跨模块长路径，WNS -2.104 ns，18 级逻辑且 82.6% 为布线。
+ROB 已改为退休拍推进 head 并清空可见 head，下一拍按已寄存的新 `head_row_q` refill
+payload。该一拍 row 切换气泡切断 retire_count 到宽 payload mux 的组合反馈；Questa
+32 项回归通过，等待集群 OOC 复测。
+
+第一次复测 WNS 改善到 -1.516 ns、TNS -2089.456 ns，原 D 路径已消失；新最差路径
+落在 head payload 的同步复位脚 `/R`，13 级逻辑且 route 占 86.0%。进一步取消退休/
+空 ROB 时对 payload 的清零，只清 `valid/complete`，失效 payload 保持不可见，从而移除
+高扇出 payload reset 网络。Questa 32 项回归继续通过，等待第二次复测。
+
+第二次复测 WNS 为 -1.210 ns，路径终点转移到 `occupancy_q`，证明局部 head mux/reset
+虽已移除，但组合 Commit 决策仍直接返回 ROB counter。完整集群现加入两阶段提交：副作用
+握手成功时锁存退休事务，下一拍仅用寄存后的 retire_count 推进 ROB，从结构上切断
+head metadata 经 Commit/reclaim 返回 ROB 状态的路径。
