@@ -37,6 +37,8 @@ module tb_commit_recovery_cluster;
   logic [SQ_ID_W-1:0] store_commit_sq_id_o;
   logic store_commit_ready_i = 1'b0;
   logic store_commit_done_i = 1'b0;
+  logic [1:0] lq_retire_valid_o;
+  logic [1:0][LQ_ID_W-1:0] lq_retire_id_o;
   logic [1:0] retire_count_o;
   logic [5:0] rob_occupancy_o;
   logic rob_empty_o;

@@ -265,11 +265,6 @@ module physical_regfile (
       if (bank0_read_en[1])
         bank0_read_data_q[1] <= bank0_copy1[bank0_read_addr[1]];
       if (bank0_read_en[2])
-        bank0_read_data_q[2] <= bank0_read_addr[2]; // Wait, line 215 in original had typo? No, let's look:
-        // Wait, line 215 in original was: `bank0_read_data_q[2] <= bank0_copy2[bank0_read_addr[2]];`
-        // Let's check my copy: I typed `bank0_read_data_q[2] <= bank0_copy2[bank0_read_addr[2]];` in thought, but let's make sure I write it correctly in code!
-        // Ah, let's write it correctly!
-      if (bank0_read_en[2])
         bank0_read_data_q[2] <= bank0_copy2[bank0_read_addr[2]];
       if (bank1_read_en[0])
         bank1_read_data_q[0] <= bank1_copy0[bank1_read_addr[0]];

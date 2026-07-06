@@ -95,6 +95,10 @@ module rename_rob_cluster (
     is_store = (uop.dec.fu_type == FU_LSU) && (uop.dec.mem_op >= MEM_SB);
   endfunction
 
+  function automatic logic is_load(input renamed_uop_t uop);
+    is_load = (uop.dec.fu_type == FU_LSU) && (uop.dec.mem_op <= MEM_LHU);
+  endfunction
+
   function automatic rob_alloc_t make_rob_entry(input renamed_uop_t uop);
     rob_alloc_t entry;
     begin
@@ -103,6 +107,8 @@ module rename_rob_cluster (
       entry.new_prd = uop.prd;
       entry.old_prd = uop.old_prd;
       entry.write_rd = uop.dec.write_rd;
+      entry.is_load = is_load(uop);
+      entry.lq_id = uop.lq_id;
       entry.is_store = is_store(uop);
       entry.sq_id = uop.sq_id;
       entry.is_branch = (uop.dec.fu_type == FU_BRANCH);

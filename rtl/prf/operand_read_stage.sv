@@ -248,24 +248,18 @@ module operand_read_stage (
   // 发送给 PRF 的同步读请求逻辑 (PRF synchronous reads generation)
   // ==========================================================================
   // 发射 Slot N (0/1/2) 规定绑定使用 PRF 的通道 2N 和 2N+1。
-  // 发送读使能条件：Slot 有效、目标端口就绪接收、未遭遇全局恢复、且该指令明确需要此物理寄存器。
+  // 发送读使能条件只依赖已寄存 issue slot 与源操作数需求。当前执行端 ready
+  // 与 recovery flush 会在本级 holding register 中处理；PRF 多做一次无害读比把
+  // 全局 recovery/ready 扇出接入分布式 RAM 读地址/使能路径更利于集成时序。
   always_comb begin : prf_request
     integer slot;
-    logic target_ready;
     prf_read_valid_o = '0;
     prf_read_prd_o = '0;
     for (slot = 0; slot < 3; slot = slot + 1) begin
-      case (slot_port[slot])
-        ISSUE_INT0: target_ready = meta_ready[ISSUE_INT0];
-        ISSUE_INT1: target_ready = meta_ready[ISSUE_INT1];
-        ISSUE_LSU:  target_ready = meta_ready[ISSUE_LSU];
-        default:    target_ready = meta_ready[ISSUE_MDU];
-      endcase
-
-      prf_read_valid_o[slot * 2] = slot_valid[slot] && target_ready &&
-          !recovery_i.valid && slot_uop[slot].need_rs1;
-      prf_read_valid_o[slot * 2 + 1] = slot_valid[slot] && target_ready &&
-          !recovery_i.valid && slot_uop[slot].need_rs2;
+      prf_read_valid_o[slot * 2] = slot_valid[slot] &&
+          slot_uop[slot].need_rs1;
+      prf_read_valid_o[slot * 2 + 1] = slot_valid[slot] &&
+          slot_uop[slot].need_rs2;
 
       prf_read_prd_o[slot * 2] = slot_uop[slot].prs1;
       prf_read_prd_o[slot * 2 + 1] = slot_uop[slot].prs2;

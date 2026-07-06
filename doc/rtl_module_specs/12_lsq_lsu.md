@@ -163,3 +163,50 @@ Store Commit Buffer 的项必为已确认 ROB head，不会被分支恢复杀死
 - 用户 LSU Pipeline OOC 复测：200 MHz / 5.000 ns 下 WNS = +0.756 ns、TNS = 0；
   资源为 721 LUT、574 FF。最差路径为 L2 balanced reduction，数据路径 4.218 ns，
   其中布线占 84.3%。当前实现冻结，交由布局布线阶段继续优化。
+
+### 11.1 Backend LSU Cluster 集成状态（2026-07-06）
+
+`rtl/backend/backend_lsu_cluster.sv` 已在冻结的 `backend_int_cluster` 基础上打开
+Memory IQ、Load Queue、Store Queue、LSU Pipeline 和 Writeback Arbiter 的 LSU producer。
+MDU dispatch 仍固定反压，避免 LSU 与 MDU 两个新边界同时进入 OOC 后难以归因。
+
+本轮新增的跨模块契约：
+
+- Dispatch Buffer 的 MEM push 由 Memory IQ 已寄存 occupancy 推导 ready，避免
+  push_valid 到 push_ready 的组合回环。
+- Issue Arbiter 使用现有 C0 candidate/ready snapshot；MEM candidate 经 P2 实时
+  ROB-ID/source-valid/LSU-ready 复核后 grant。
+- `rob_alloc_t` 保存 `is_load/lq_id`，`commit_recovery_cluster` 在已握手的注册提交事务
+  fire 时输出 LQ retire release，Load Queue 只根据该 release 释放 entry。
+- Store 仍使用两阶段提交：ROB head Store 只授权 SQ commit buffer，Data RAM 接收后
+  SQ release 再反馈 LSQ allocator。
+
+`test/tb_backend_lsu_cluster.sv` 覆盖 Load 经 Memory IQ/LSU/Data RAM response/
+Writeback/ROB commit/LQ release 闭环，以及 Store 经 LSU AGU/SQ update/ROB head
+commit/SQ memory request/release 闭环。
+
+首次 Vivado 5 ns OOC 综合：WNS `-0.905 ns`、TNS `-1316.459 ns`、失败端点 `3575`、
+loops `0`。最差路径从 `dispatch_buffer` uop 寄存器出发，经长布线和 enqueue/branch-mask
+控制打到 Issue Queue CE，说明瓶颈在 cluster 集成边界的 dispatch-to-IQ fanout，而非
+LSU pipeline、LQ/SQ 或 Data RAM response 数据通路。
+
+当前优化：`backend_lsu_cluster` 在 Dispatch Buffer 与 INT/MEM Issue Queue 之间加入
+一级 skid/register 边界，分别注册 INT/MEM push valid 与 payload；IQ push 只消费该
+寄存边界，dispatch ready 由 skid accept 条件生成以保持原 backpressure 语义。
+QuestaSim 2024.1：`tb_backend_lsu_cluster`、`tb_commit_recovery_cluster`、
+`tb_backend_int_cluster` 均通过；等待 Vivado 复测。
+
+第一次 timing cut 后复测：WNS `-0.505 ns`、TNS `-90.623 ns`、失败端点 `351`、
+loops `0`。Dispatch-to-IQ 问题已显著收敛，新的最差路径转到
+`recovery.valid` 经 writeback/INT0/operand-read ready 链影响 PRF read request，最终
+落到 PRF bank0 read-data 寄存器。当前第二轮优化将 `operand_read_stage` 的 PRF
+read valid 从 execution ready/recovery 组合链中解耦，只由 issue slot valid 与源操作数
+需求生成；recovery 仍在 holding register 和执行端本地完成 flush。同步删除
+`physical_regfile` 中一处重复 `bank0_read_data_q[2]` 赋值。Questa 目标测试均通过，
+等待 Vivado 复测。
+
+第二轮 timing cut 后复测：WNS `-0.203 ns`、TNS `-32.310 ns`、失败端点 `159`、
+loops `0`。最差路径转为 `issue_arbiter` 内部 C0 candidate 到 P0 proposal 分类/读计数
+寄存器路径，逻辑 7 级、布线约 87%。该路径属于已冻结共享 Issue Arbiter 内部结构，
+继续切分会增加发射延迟或扰动 Backend INT Cluster 已收敛状态；当前冻结 LSU cluster
+RTL，等待 FPGA 后端实现阶段吸收。

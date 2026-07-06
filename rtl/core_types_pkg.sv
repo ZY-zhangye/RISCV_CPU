@@ -419,6 +419,8 @@ package core_types_pkg;
     logic [PRD_W-1:0] old_prd;           // 被覆盖的旧物理寄存器 (Retire 时回收)
     logic        write_rd;              // 是否需要写入寄存器
 
+    logic        is_load;               // 是否为 Load 指令
+    logic [LQ_ID_W-1:0] lq_id;          // 对应的 Load 队列索引 (用于 Retire 释放)
     logic        is_store;              // 是否为 Store 指令
     logic [SQ_ID_W-1:0] sq_id;          // 对应的 Store 队列索引 (用于 Commit 阶段触发 Cache 真正写入)
     logic        is_branch;             // 是否为分支跳转指令

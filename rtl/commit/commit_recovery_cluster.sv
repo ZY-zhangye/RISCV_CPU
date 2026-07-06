@@ -48,6 +48,8 @@ module commit_recovery_cluster #(
     output logic [SQ_ID_W-1:0]           store_commit_sq_id_o,
     input  logic                         store_commit_ready_i,
     input  logic                         store_commit_done_i,
+    output logic [1:0]                   lq_retire_valid_o,
+    output logic [1:0][LQ_ID_W-1:0]      lq_retire_id_o,
 
     output logic [1:0]                   retire_count_o,
     output logic [5:0]                   rob_occupancy_o,
@@ -92,6 +94,8 @@ module commit_recovery_cluster #(
   logic store_pending;
   logic [1:0] retire_count_raw;
   logic [1:0] retire_count_q;
+  logic [1:0] lq_retire_valid_q;
+  logic [1:0][LQ_ID_W-1:0] lq_retire_id_q;
   logic commit_txn_pending_q;
   logic commit_txn_fire;
   logic reclaim_drain_pending_q;
@@ -114,6 +118,8 @@ module commit_recovery_cluster #(
   assign commit_txn_fire = commit_txn_pending_q &&
       ((reclaim_valid_q == 2'b00) || reclaim_ready);
   assign retire_count_o = commit_txn_fire ? retire_count_q : 2'd0;
+  assign lq_retire_valid_o = commit_txn_fire ? lq_retire_valid_q : 2'b00;
+  assign lq_retire_id_o = lq_retire_id_q;
   assign commit_map0_commit = commit_txn_fire ? commit_map0_q : '0;
   assign commit_map1_commit = commit_txn_fire ? commit_map1_q : '0;
   assign reclaim_valid_offer = commit_txn_pending_q ? reclaim_valid_q : '0;
@@ -134,6 +140,8 @@ module commit_recovery_cluster #(
       commit_map1_q <= '0;
       reclaim_valid_q <= '0;
       reclaim_prd_q <= '0;
+      lq_retire_valid_q <= '0;
+      lq_retire_id_q <= '0;
       commit_txn_pending_q <= 1'b0;
       reclaim_drain_pending_q <= 1'b0;
     end else begin
@@ -146,6 +154,8 @@ module commit_recovery_cluster #(
           commit_map1_q <= '0;
           reclaim_valid_q <= '0;
           reclaim_prd_q <= '0;
+          lq_retire_valid_q <= '0;
+          lq_retire_id_q <= '0;
           commit_txn_pending_q <= 1'b0;
         end
       end else if (retire_count_raw != 0) begin
@@ -154,6 +164,13 @@ module commit_recovery_cluster #(
         commit_map1_q <= commit_map1_raw;
         reclaim_valid_q <= reclaim_valid_raw;
         reclaim_prd_q <= reclaim_prd_raw;
+        lq_retire_valid_q[0] <= rob_head0.valid &&
+                                rob_head0.entry.is_load;
+        lq_retire_valid_q[1] <= (retire_count_raw == 2'd2) &&
+                                rob_head1.valid &&
+                                rob_head1.entry.is_load;
+        lq_retire_id_q[0] <= rob_head0.entry.lq_id;
+        lq_retire_id_q[1] <= rob_head1.entry.lq_id;
         commit_txn_pending_q <= 1'b1;
       end
     end

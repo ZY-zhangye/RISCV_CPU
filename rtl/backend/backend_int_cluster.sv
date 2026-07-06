@@ -179,6 +179,8 @@ module backend_int_cluster #(
       .store_commit_sq_id_o,
       .store_commit_ready_i,
       .store_commit_done_i,
+      .lq_retire_valid_o(),
+      .lq_retire_id_o(),
       .retire_count_o,
       .rob_occupancy_o,
       .rob_empty_o,
