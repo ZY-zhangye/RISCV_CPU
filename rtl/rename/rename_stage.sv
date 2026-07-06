@@ -41,6 +41,7 @@ module rename_stage (
     input  logic [1:0]                   wb_ready_valid_i,  // 写回总线 ready 广播有效位
     input  logic [PRD_W-1:0]             wb_ready_prd0_i,   // 写回 prd0
     input  logic [PRD_W-1:0]             wb_ready_prd1_i,   // 写回 prd1
+    output logic [PRD_W-1:0]             amt_map_o [0:ARCH_REGS-1],
 
     // 分支释放与投机恢复控制
     input  logic                         checkpoint_clear_i,     // 分支预测正确，清空对应检查点信号
@@ -277,6 +278,7 @@ module rename_stage (
       .checkpoint_clear_id_i,
 
       .active_branch_mask_o(active_branch_mask),
+      .amt_map_o,
       .recovery_i,
       .restore_busy_o(rat_restore_busy),
       .recovery_done_o(rat_recovery_done)

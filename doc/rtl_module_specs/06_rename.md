@@ -146,4 +146,20 @@ LSQ rollback，精确异常同时启动 AMT-based Free List rebuild、LSQ flush 
 用户 5.000 ns OOC 综合 WNS 为 +0.846 ns。Free List reclaim FIFO 空位计算中的无尺寸
 32-bit 常量已改为显式 2-bit 运算，避免不必要的宽算术路径；修改后需执行最终回归。
 
+## 12. Rename + ROB Cluster（2026-07-06）
+
+`rtl/rename/rename_rob_cluster.sv` 组合 Rename Stage、Allocation Cluster 与 ROB：
+
+- `alloc_commit_ready` 与 Dispatch ready 共同门控最终 rename/ROB 原子 fire。
+- renamed uop 在 fire 周期构造 `rob_alloc_t`，ROB ID 来自同一 reservation response。
+- RAT/AMT 暴露只读 AMT map，直接供 Free List 精确异常重建使用。
+- branch checkpoint 的 ROB tail 直接连接 ROB restore；异常 recovery 同拍清空 ROB。
+- RAT、Free List、LSQ、ROB 的不同周期 done 脉冲被锁存为 4-bit sticky ack，供
+  Recovery Controller 等待，不要求各模块完成脉冲同周期重合。
+
+`test/tb_rename_rob_cluster.sv` 覆盖双路 Decode→Rename→ROB 分配、ROB entry 构造、
+completion/retire、lane1 branch checkpoint、年轻 ROB row 回滚，以及 branch/exception
+恢复的四路异步 done 汇合。QuestaSim 2024.1 最小测试和当前 29 项回归均通过，
+`Errors: 0, Warnings: 0`。
+
 当前完成门槛保持不变：成组 OOC 4.000 ns WNS≥0，完整 route 后 5.000 ns WNS/WHS≥0。

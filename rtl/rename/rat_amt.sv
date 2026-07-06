@@ -58,6 +58,7 @@ module rat_amt (
     input  logic                         checkpoint_clear_i,    // 分支预测正确，释放对应的检查点
     input  logic [CP_W-1:0]              checkpoint_clear_id_i, // 释放的检查点 ID
     output logic [CHECKPOINTS-1:0]        active_branch_mask_o,  // 输出当前激活的投机分支掩码
+    output logic [PRD_W-1:0]              amt_map_o [0:ARCH_REGS-1],
 
     // 恢复控制接口 (分支误预测或精确异常)
     input  recovery_t                    recovery_i,            // 恢复控制包
@@ -103,6 +104,12 @@ module rat_amt (
   assign active_branch_mask_o = active_branch_mask_q;
   assign restore_busy_o = restore_busy_q;
   assign recovery_done_o = recovery_done_q;
+
+  generate
+    for (genvar map_index = 0; map_index < ARCH_REGS; map_index = map_index + 1) begin : gen_amt_map
+      assign amt_map_o[map_index] = amt_q[map_index];
+    end
+  endgenerate
 
   // ==========================================================================
   // 映射状态更新与异常恢复时序逻辑 (State Update & Recovery Logic)

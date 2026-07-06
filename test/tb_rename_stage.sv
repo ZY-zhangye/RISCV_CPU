@@ -22,6 +22,7 @@ module tb_rename_stage;
   logic [1:0] wb_ready_valid_i = 2'b00;
   logic [PRD_W-1:0] wb_ready_prd0_i = '0;
   logic [PRD_W-1:0] wb_ready_prd1_i = '0;
+  logic [PRD_W-1:0] amt_map_o [0:ARCH_REGS-1];
   logic checkpoint_clear_i = 1'b0;
   logic [CP_W-1:0] checkpoint_clear_id_i = '0;
   recovery_t recovery_i = '0;

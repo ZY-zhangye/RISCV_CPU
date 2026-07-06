@@ -58,6 +58,25 @@ recovery/serialize 状态逐级生效。
 - `mret_valid_i` 恢复 `MIE/MPIE/MPP` 并输出 `mepc` 作为返回 PC。
 - `mcycle` 每周期递增，`minstret` 按 retire_count 累加；CSR 写计数器时写入优先。
 
+### 3.2 Commit + CSR Cluster（2026-07-06）
+
+`rtl/commit/commit_csr_cluster.sv` 在 ROB head 执行序列化系统指令：
+
+- 普通双提交、Store 两阶段提交和已有异常继续复用 `commit_unit`。
+- 合法 CSR 在提交点原子更新 CSR，旧值通过独立 `csr_wb_valid/prd/data` 写入目标 PRD，
+  同周期更新 AMT 并回收 old PRD。
+- 未知/只读非法 CSR 转 illegal-instruction 精确异常，`mtval` 保存原始指令。
+- MRET 单独退休、恢复 mstatus 并向 recovery 输出 mepc；ECALL/EBREAK 不退休并进入异常。
+- FENCE 作为无 CSR 副作用的单独序列化指令退休。
+
+ROB entry 已扩展保存 CSR op/address/zimm、prepared operand、原始指令和特殊系统指令标志。
+上游 CSR operand prepare/ROB capture 在下一模块接入。
+
+`test/tb_commit_csr_cluster.sv` 覆盖普通双提交、合法 CSRRW 旧值写回与 AMT/reclaim、
+非法 CSR 精确异常、MRET、ECALL 和 FENCE。QuestaSim 2024.1 最小测试和当前 30 项回归
+均通过，`Errors: 0, Warnings: 0`。用户 5.000 ns OOC 综合 WNS 为 +1.202 ns，时序健康，
+当前冻结。
+
 ## 4. 精确异常
 
 head 异常处理顺序：

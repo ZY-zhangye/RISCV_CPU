@@ -426,6 +426,17 @@ package core_types_pkg;
     logic [CHECKPOINTS-1:0] branch_mask; // 指令所处的投机分支掩码
     logic        serializing;           // 流水线串行化控制标志
 
+    logic        is_csr;                // 真正的 Zicsr 读改写指令
+    csr_op_t     csr_op;
+    logic [11:0] csr_addr;
+    logic [ 4:0] csr_zimm;
+    logic [31:0] csr_operand;           // 执行准备阶段捕获的 rs1 值
+    logic        is_ecall;
+    logic        is_ebreak;
+    logic        is_mret;
+    logic        is_fence;
+    logic [31:0] inst;
+
     logic        exception_valid;       // 重命名或译码阶段发现的异常
     logic [ 3:0] exception_cause;
     logic [31:0] exception_tval;

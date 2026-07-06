@@ -19,6 +19,9 @@ module tb_reorder_buffer;
   rob_entry_t head_entry1_o;
   logic [1:0] retire_count_i = 2'd0;
 
+  logic exception_flush_i = 1'b0;
+  logic exception_flush_done_o;
+
   logic branch_clear_valid_i = 1'b0;
   logic [CP_W-1:0] branch_clear_id_i = '0;
   logic branch_clear_done_o;
@@ -210,7 +213,26 @@ module tb_reorder_buffer;
       $fatal(1, "restore did not keep only the checkpoint row occ=%0d head=%b",
              occupancy_o, head_valid_o);
 
-    for (idx = 0; idx < 15; idx = idx + 1) begin
+    // Exception flush preempts an active branch-clear scan and resets all ROB
+    // pointers/counters without requiring payload-array clearing.
+    @(negedge clk_i);
+    branch_clear_valid_i = 1'b1;
+    branch_clear_id_i = 2'd1;
+    @(posedge clk_i); #1;
+    branch_clear_valid_i = 1'b0;
+    if (!busy_o)
+      $fatal(1, "exception preemption setup did not start branch scan");
+    @(negedge clk_i);
+    exception_flush_i = 1'b1;
+    @(posedge clk_i); #1;
+    exception_flush_i = 1'b0;
+    if (!exception_flush_done_o || busy_o || !empty_o ||
+        occupancy_o != 0 || head_valid_o != 2'b00)
+      $fatal(1, "exception flush did not reset ROB state");
+    if (alloc_rob_id0_o != 0 || alloc_rob_id1_o != 1)
+      $fatal(1, "exception flush did not reset ROB tail IDs");
+
+    for (idx = 0; idx < 16; idx = idx + 1) begin
       allocate_bundle(2'b01,
                       make_entry(32'h6000 + idx * 4, 5'd9, 6'd41, 6'd9, 4'b0),
                       '0, id0, id1);

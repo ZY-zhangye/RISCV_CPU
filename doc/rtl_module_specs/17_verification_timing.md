@@ -90,7 +90,7 @@ BRAM/DSP 和最差路径端点。
 |---|---|---:|---|
 | Free List | 已完成时序重构 | +0.827 ns | 冻结，后续只在成组/route 暴露问题时再改 |
 | Branch Predictor | update 路径已拆两拍 | +0.628 ns | 冻结，暂不做 BHT row 化 |
-| ROB | V1 RTL 与 directed test 完成 | +1.36 ns | 可进入后续集成 |
+| ROB | 增加精确异常 flush/done，支持抢占 branch scan | +0.903 ns | Questa 29 项回归通过，冻结 |
 | Dispatch Buffer | V1 RTL 与 directed test 完成 | +1.712 ns | 可进入后续集成 |
 | Issue Queue | select 已拆 S0/S1 两级 | +1.167 ns | 冻结 |
 | Issue Arbiter | P0/P1/P2 三级仲裁，扩展 metadata 后复测 | +1.031 ns | 冻结 |
@@ -112,12 +112,20 @@ BRAM/DSP 和最差路径端点。
 | Branch Checkpoint File | 4-slot registered reservation + ROB tail/ancestry lifetime tracking | +2.600 ns | Questa 26 项回归通过，冻结 |
 | Rename Resource Manager | atomic Free List/LSQ/Checkpoint/ROB reservation coordinator | +2.387 ns | Questa 27 项回归通过，冻结 |
 | Rename Allocation Cluster | Resource Manager + Free List + LSQ Allocator + Checkpoint File | +0.846 ns | Questa 28 项回归通过，冻结 |
+| Rename + ROB Cluster | Rename + Allocation Cluster + ROB + sticky recovery acks | +0.559 ns | TNS 0、loop 0，Questa 30 项回归通过，冻结 |
+| Commit + CSR Cluster | ordinary/Store commit + CSR/MRET/ECALL/FENCE head execution | +1.202 ns | Questa 30 项回归通过，冻结 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint
 File WNS 为 +2.600 ns；Rename Resource Manager WNS 为 +2.387 ns。当前修正 LSQ
 Allocator 的零访存分配 checkpoint 后 WNS 为 +2.138 ns。下一项进入 Rename Allocation
 Cluster；真实四模块 directed test 和 28 项回归已通过，5 ns OOC WNS 为 +0.846 ns。
+ROB 精确异常 flush 修订后 5 ns OOC WNS 为 +0.903 ns。Rename + ROB Cluster 已闭合
+P2 分配、ROB entry 构造和恢复 ack 边界；初次 OOC WNS -0.281 ns、TNS -31.185 ns，
+并发现 2 个 ready/valid 组合环。去环后 OOC WNS +0.559 ns、TNS 0、loop 0。
+Commit + CSR Cluster 已完成 ROB-head 系统指令语义并通过 Questa 30 项回归；5 ns OOC
+WNS 为 +1.202 ns，当前冻结。下一项接入 CSR operand prepare、ROB operand capture 和
+提交侧 PRF 写口。
 
 ## 6. 关键属性
 

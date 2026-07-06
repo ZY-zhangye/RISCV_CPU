@@ -36,6 +36,10 @@ module reorder_buffer (
     output rob_entry_t               head_entry1_o,     // ROB 头指针 lane1 完整条目 (已锁存输出)
     input  logic [1:0]               retire_count_i,    // Commit 阶段退休指令数 (0/1/2)
 
+    // 精确异常恢复：清空所有在途项并取消正在进行的分支扫描
+    input  logic                     exception_flush_i,
+    output logic                     exception_flush_done_o,
+
     // 分支预测正确释放接口 (多周期扫描清除 Mask 位)
     input  logic                     branch_clear_valid_i,   // 启动分支正确释放扫描
     input  logic [CP_W-1:0]          branch_clear_id_i,      // 被释放的分支检查点 ID
@@ -82,9 +86,9 @@ module reorder_buffer (
   logic [5:0] scan_occupancy_q;                          // 回滚扫描时临时重算的有效 uop 数
   logic branch_clear_done_q;
   logic restore_done_q;
+  logic exception_flush_done_q;
 
   logic alloc_fire;
-  logic alloc_legal;
   logic retire_row_fire;
   logic [1:0] head_row_count;
 
@@ -136,10 +140,10 @@ module reorder_buffer (
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
   endfunction
 
-  // 分配流控判定：没有在扫描、没有非法分配（不能是 2'b10 这种前置无效）、且 ROB Row 还有空余
-  assign alloc_legal = (alloc_valid_i != 2'b10);
-  assign alloc_ready_o = !scan_busy_q && alloc_legal && (used_rows_q != ROB_ROWS);
-  assign alloc_fire = alloc_ready_o && (alloc_valid_i != 2'b00);
+  // Ready 只表示本地容量/扫描状态，不能反向依赖 alloc_valid，否则与上游
+  // ready->valid 协调逻辑形成组合环。非法 2'b10 不满足 lane0，因此不会 fire。
+  assign alloc_ready_o = !scan_busy_q && (used_rows_q != ROB_ROWS);
+  assign alloc_fire = alloc_ready_o && alloc_valid_i[0];
 
   // 退休发射判定：ROB 非空、没有在扫描、提交端发出非零信号、且提交数量能覆盖当前整行已有的有效项
   assign head_row_count = {1'b0, head_entry0_q.valid} +
@@ -162,6 +166,7 @@ module reorder_buffer (
   assign occupancy_o = occupancy_q;
   assign branch_clear_done_o = branch_clear_done_q;
   assign restore_done_o = restore_done_q;
+  assign exception_flush_done_o = exception_flush_done_q;
 
   // ==========================================================================
   // 主更新时序逻辑 (ROB Core Sequential Logic)
@@ -208,14 +213,38 @@ module reorder_buffer (
       scan_occupancy_q <= '0;
       branch_clear_done_q <= 1'b0;
       restore_done_q <= 1'b0;
+      exception_flush_done_q <= 1'b0;
     end else begin
       branch_clear_done_q <= 1'b0;
       restore_done_q <= 1'b0;
+      exception_flush_done_q <= 1'b0;
+
+      // 模式 A. 精确异常清空。Entry payload 可保留，valid/complete 全清后不可见。
+      // ----------------------------------------------------------------------
+      if (exception_flush_i) begin
+        valid_q <= '0;
+        complete_q <= '0;
+        head_row_q <= '0;
+        tail_row_q <= '0;
+        used_rows_q <= '0;
+        occupancy_q <= '0;
+        head_entry0_q <= '0;
+        head_entry1_q <= '0;
+        scan_busy_q <= 1'b0;
+        scan_restore_q <= 1'b0;
+        scan_row_q <= '0;
+        scan_branch_id_q <= '0;
+        scan_restore_tail_q <= '0;
+        scan_old_tail_row_q <= '0;
+        scan_used_rows_q <= '0;
+        scan_occupancy_q <= '0;
+        exception_flush_done_q <= 1'b1;
+      end
 
       // ----------------------------------------------------------------------
-      // 模式 A. 分支恢复扫描初始化 (REC_BRANCH)
+      // 模式 B. 分支恢复扫描初始化 (REC_BRANCH)
       // ----------------------------------------------------------------------
-      if (restore_valid_i) begin
+      else if (restore_valid_i) begin
         scan_busy_q <= 1'b1;
         scan_restore_q <= 1'b1;
         scan_row_q <= '0;
@@ -226,7 +255,7 @@ module reorder_buffer (
       end
 
       // ----------------------------------------------------------------------
-      // 模式 B. 分支正确解析扫描初始化 (Branch resolve clean)
+      // 模式 C. 分支正确解析扫描初始化 (Branch resolve clean)
       // ----------------------------------------------------------------------
       else if (branch_clear_valid_i && !scan_busy_q) begin
         scan_busy_q <= 1'b1;
@@ -236,7 +265,7 @@ module reorder_buffer (
       end
 
       // ----------------------------------------------------------------------
-      // 模式 C. 活跃多周期扫描处理 (Active Sequential Scan)
+      // 模式 D. 活跃多周期扫描处理 (Active Sequential Scan)
       // ----------------------------------------------------------------------
       else if (scan_busy_q) begin
         scan_last = (scan_row_q == ROB_ROWS - 1);
@@ -332,7 +361,7 @@ module reorder_buffer (
       end
 
       // ----------------------------------------------------------------------
-      // 模式 D. 正常运行状态更新 (Normal execution: Alloc, Complete, Retire)
+      // 模式 E. 正常运行状态更新 (Normal execution: Alloc, Complete, Retire)
       // ----------------------------------------------------------------------
       else begin
         used_rows_next = used_rows_q;
@@ -464,5 +493,14 @@ module reorder_buffer (
       end
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i) begin : rob_interface_assertions
+    if (!rst_i) begin
+      assert (alloc_valid_i != 2'b10)
+        else $error("ROB allocation valid must be prefix encoded");
+    end
+  end
+`endif
 
 endmodule
