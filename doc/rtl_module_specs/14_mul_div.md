@@ -77,6 +77,32 @@ OUTPUT 保持 result_valid，直到 Completion Buffer 接收。
   `writeback_arbiter` 的 `mul`/`div` 输入。
 - recovery 原样广播给两个子单元，错误路径结果由子单元本地 kill/clear。
 
+### 4.1 Backend MDU Cluster 集成状态（2026-07-06）
+
+`rtl/backend/backend_mdu_cluster.sv` 已在 Backend LSU Cluster 的冻结边界上打开 MDU
+执行链路：
+
+- Dispatch Buffer 新增 MDU 分派路径，经一级 skid/register 送入单组 `IQ_MDU_ENTRIES`
+  Issue Queue。
+- Issue Arbiter 打开 MDU candidate/grant，Operand Read 打开 MDU 输出端口，
+  `muldiv_frontend` 连接到本地 `mul_pipeline` 和 `div_unit`。
+- Writeback Arbiter 打开 `PROD_MUL`、`PROD_DIV` 两个 producer 输入，与 INT/LSU
+  completion 共同仲裁双写回端口。
+- 分支 completion event 除送入 recovery/commit 外，也通过
+  `branch_update_valid_o/branch_update_o` 暴露给前端集成边界，用于更新
+  `branch_predictor`。
+- 集群级 `mdu_accept_i` 固定为 `1'b1`，不把 MUL/DIV 子单元 ready 组合反馈到全局
+  Issue Arbiter；真实反压由 Operand Read 的 MDU holding register 通过 `mdu_ex_ready`
+  吸收，DIV busy 或 completion backpressure 只停留在 MDU 本地链路。
+- 首次 Backend MDU Cluster OOC 暴露 recovery/MUL-DIV ready 经 Operand Read 回灌
+  Issue Arbiter P2 的路径。当前集群内增加 2-entry MDU execute FIFO，Operand Read
+  只看 FIFO full 形成 `mdu_ex_ready`，`muldiv_frontend` raw ready 只控制 FIFO pop；
+  FIFO 对 recovery 执行错误路径清除和幸存项 branch mask 清理，并纳入 `busy_o`。
+
+该设计选择会在 MDU 子单元忙时占用 Operand Read 的 MDU holding entry，但换取更清晰的
+集成时序边界，避免 `div_unit busy -> muldiv_frontend ready -> operand_read ready ->
+issue_arbiter proposal/grant` 的跨模块组合长路径。
+
 ## 5. Recovery
 
 乘法流水中的错误路径项不能简单停整条流水；每级按 branch_mask kill valid。除法器若
@@ -110,3 +136,12 @@ OUTPUT 保持 result_valid，直到 Completion Buffer 接收。
 - `test/tb_muldiv_frontend.sv` 覆盖 MUL/DIV 基本路由、DIV busy 下 MUL 继续接受、
   DIV busy 拒绝第二个 DIV，以及 recovery 对 MUL/DIV 子单元的转发 kill。QuestaSim 最小测试和
   22 项当前回归均通过，`Errors: 0, Warnings: 0`。Vivado 5 ns OOC 时序验证待运行后补充最终 WNS/资源。
+- `test/tb_backend_mdu_cluster.sv` 覆盖 Backend MDU 集成边界中的 MUL 写回、DIV 写回、
+  MDU issue occupancy 清空、ROB retire 和 backend idle 收敛。QuestaSim 2024.1 已复跑
+  `tb_backend_mdu_cluster`、`tb_backend_lsu_cluster`、`tb_backend_int_cluster`、
+  `tb_commit_recovery_cluster`、`tb_muldiv_frontend`，全部 `Errors: 0`。Vivado 5 ns
+  首次 OOC WNS `-0.339 ns`，已加入 2-entry MDU execute FIFO timing cut；复测 WNS
+  `-0.204 ns`，失败端点降到 `164`，loops `0`。剩余最差路径为 Issue Arbiter 内部
+  route 主导路径，当前冻结 Backend MDU Cluster，等待 FPGA 后端实现阶段吸收。
+- 为支持 `frontend_backend_cluster`，`tb_backend_mdu_cluster` 已补齐
+  `branch_update_valid_o/branch_update_o` 端口连接并复跑通过，`Errors: 0`。

@@ -118,6 +118,9 @@ BRAM/DSP 和最差路径端点。
 | Commit + Recovery Cluster | Rename/ROB + Commit/CSR/PRF + recovery ack/redirect | +0.121 ns | TNS 0、loop 0，Questa 32 项通过，冻结 |
 | Backend INT Cluster | Commit/Recovery + Dispatch/IQ/Issue/RR/INT0/INT1/WB | +0.110 ns | TNS 0、loop 0，Questa 33 项通过，时序健康并冻结 |
 | Backend LSU Cluster | Backend INT + Memory IQ + LQ/SQ + LSU + LSU writeback | -0.203 ns | TNS/端点已大幅收敛；当前最差路径为 Issue Arbiter 内部布线主导路径，RTL 冻结等待后端实现吸收 |
+| Backend MDU Cluster | Backend LSU + MDU IQ + Mul/Div frontend + MUL/DIV writeback | -0.204 ns | 原 ready 回灌路径已消失；剩余为 Issue Arbiter 内部 route 主导路径，RTL 冻结等待后端实现吸收 |
+| Frontend Backend Cluster | Fetch + BP + IBUF + Decode + Backend MDU Cluster | -0.196 ns | Top paths 仍为后端 Issue Arbiter 内部 route 主导路径；前端边界无新增关键路径，RTL 冻结等待实现吸收 |
+| Core Top | frontend_backend_cluster wrapper + typed memory boundary + irq pins | Questa 通过 | `tb_core_top` 与 `tb_frontend_backend_cluster` 通过，OOC 待 SoC wrapper 前统一测 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint
@@ -185,6 +188,54 @@ recovery；recovery flush 仍由 holding register 与执行端本地处理。同
 布线约 87%。考虑该路径属于已冻结共享发射仲裁器，继续 RTL 切分会引入额外发射延迟
 或影响 Backend INT Cluster，当前冻结 Backend LSU Cluster，交 FPGA 后端实现阶段吸收；
 若 post-place/post-route 仍负余量，再按新报告定点处理。
+
+下一项 `backend_mdu_cluster` 已打开 MDU dispatch、MDU Issue Queue、Issue Arbiter
+MDU candidate/grant、Operand Read MDU 输出、`muldiv_frontend` 和 Writeback Arbiter
+的 MUL/DIV producer。为避免长 ready 链回灌全局发射仲裁，集群级
+`issue_arbiter.mdu_accept_i` 固定为 `1'b1`；真实 MUL/DIV backpressure 由 Operand Read
+MDU holding register 和 `muldiv_frontend` 本地 ready 协议吸收。QuestaSim 2024.1
+已复跑 `tb_backend_mdu_cluster`、`tb_backend_lsu_cluster`、`tb_backend_int_cluster`、
+`tb_commit_recovery_cluster`、`tb_muldiv_frontend`，全部 `Errors: 0`。下一步等待
+Vivado 对 `backend_mdu_cluster` 做 5.000 ns OOC 综合。
+
+首次复测 WNS `-0.339 ns`、TNS `-87.559 ns`、失败端点 `331`、loops `0`。最差路径
+从 recovery controller state 出发，经 MUL pipeline recovery kill/valid、
+`muldiv_frontend` raw ready、Operand Read MDU ready，最终进入 Issue Arbiter registered
+issue output，route 约 84%。当前已在 `backend_mdu_cluster` 内新增 2-entry MDU execute
+FIFO：Operand Read/Issue Arbiter 只看 FIFO full，`muldiv_frontend` raw ready 只控制
+本地 FIFO pop；FIFO 支持 recovery kill/branch-mask clear 并纳入 `busy_o`。Questa
+目标回归全部通过，等待下一次 5.000 ns OOC 复测。
+
+复测 WNS `-0.204 ns`、TNS `-33.490 ns`、失败端点 `164`、loops `0`。最差路径已经
+转为 Issue Arbiter 内部 `int_candidate_q -> proposal_* -> proposal_uop_q reset`，
+逻辑 7 级、route 约 87.2%。考虑该路径属于已冻结共享仲裁器，继续 RTL 切分会影响
+Backend INT/LSU/MDU 的统一发射延迟和已验证边界，当前冻结 Backend MDU Cluster；
+后续先交由 FPGA 后端实现阶段吸收，若 post-place/post-route 仍失败再定点优化
+proposal reset/fanout。
+
+下一项 `frontend_backend_cluster` 已打开前端到 Backend MDU Cluster 的完整 directed
+路径：`fetch_pipeline` 访问外部 128-bit I-cache block，预测结果进入 fetch，fetch packet
+进入 `instruction_buffer`，双发 decode 后直接驱动 backend rename/dispatch。Backend
+分支 completion event 通过新增的 `branch_update_valid_o/branch_update_o` 回写
+`branch_predictor`。QuestaSim 2024.1 已通过新增 `tb_frontend_backend_cluster`：
+测试程序 `ADDI x1,6; ADDI x2,7; MUL x3,x1,x2; DIVU x4,x3,x2`，检查 INT/MUL/DIV
+写回数据 `6/7/42/6`，并确认 LQ/SQ 未泄漏。同步复跑
+`tb_backend_mdu_cluster`、`tb_fetch_pipeline`、`tb_instruction_buffer`、
+`tb_decode_stage`、`tb_branch_predictor`，全部 `Errors: 0`。该集成边界无 halt 入口，
+默认 IMem 在程序后持续返回 NOP，因此 smoke 不要求全系统 idle。
+
+首次 5.000 ns OOC 综合 WNS `-0.196 ns`、TNS `-32.178 ns`、失败端点 `164`、
+loops `0`。Top paths 与 Backend MDU Cluster 的冻结残余路径一致，均为
+`u_backend/u_issue_arbiter/int_candidate_q[0][src1_ready]` 到 `proposal_*_q[3]`
+reset/payload，logic 7 级、route 约 87.4%。前端新增模块和 branch predictor update
+未进入最差路径。当前冻结 Frontend Backend Cluster；后续进入 core top/SoC wrapper
+集成，并将该 Issue Arbiter route 主导路径留给 FPGA 实现阶段吸收。
+
+`core_top` 已完成薄 wrapper 集成：内部实例化 `frontend_backend_cluster`，对外暴露
+instruction memory、typed load/store memory、recovery/debug 状态和 CSR 状态端口。
+`ext_irq_i/timer_irq_i/software_irq_i` 当前汇总为 `interrupt_pending_o`，CSR interrupt
+pending 采样留待后续 CSR interrupt 扩展。QuestaSim 2024.1 已通过 `tb_core_top` 与
+`tb_frontend_backend_cluster`，均 `Errors: 0`。
 
 ## 6. 关键属性
 

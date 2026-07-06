@@ -20,6 +20,7 @@
 | D13 | Allocator 是否允许组合响应 | 禁止；使用保持到 fire/cancel 的寄存 reservation | free_list、rename、ROB、LSQ |
 | D14 | 200 MHz 如何验收 | xc7k325tffg900-2、5.000 ns、route 后 WNS/WHS≥0、无未约束路径 | 全核 |
 | D15 | Free List 分配返回结构 | S0/S1 分拍选择后进入单 reservation；不串联两个优先选择器 | free_list、rename |
+| D16 | SoC 级总线和外设接入方式 | V1 使用固定地址窗口和简单 ready-valid 地址路由；预留单在途 MMIO 外设总线，暂不引入 AXI/Wishbone | soc_top、soc_addr_router、data_memory、peripherals |
 
 ## 变更规则
 

@@ -34,6 +34,7 @@
 | 16_commit_csr_recovery.md | commit_unit、csr_file、recovery_controller | 精确提交、异常和恢复 |
 | 17_verification_timing.md | testbench/constraints | 验证矩阵和时序验收 |
 | 18_architecture_decisions.md | architecture review | 已冻结的 V1 架构选择 |
+| 19_soc_top.md | soc_top、soc_addr_router | SoC wrapper、地址路由和外设预留 |
 
 ## 关键架构参数
 
