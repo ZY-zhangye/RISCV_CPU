@@ -256,7 +256,7 @@ module issue_arbiter (
   // 检查每路候选 uop 操作数是否 ready、目标端口是否冲突，并选拔最多 2 个 INT、1 个 MEM 和 1 个 MDU 候选送入第一拍锁存
   always @* begin : preselect
     integer idx;
-    logic [2:0] proposal_count;
+    logic [1:0] int_proposal_count;
     logic [2:0] int_selected;
     logic int0_used;
     logic int1_used;
@@ -267,7 +267,7 @@ module issue_arbiter (
     int0_used = 1'b0;
     int1_used = 1'b0;
     mem_selected = 1'b0;
-    proposal_count = 3'd0;
+    int_proposal_count = 2'd0;
     for (idx = 0; idx < PROPOSALS; idx = idx + 1) begin
       proposal_uop_d[idx] = '0;
       proposal_port_d[idx] = ISSUE_INT0;
@@ -285,17 +285,17 @@ module issue_arbiter (
             is_branch(int_candidate_q[idx]) &&
             branch_unmasked(int_candidate_q[idx]) &&
             operands_ready(int_candidate_q[idx]) && int1_ready_q) begin
-          proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate_q[idx];
-          proposal_port_d[proposal_count] = ISSUE_INT1;
-          proposal_int_group_d[proposal_count][idx] = 1'b1;
-          proposal_even_reads_d[proposal_count] =
+          proposal_valid_d[int_proposal_count] = 1'b1;
+          proposal_uop_d[int_proposal_count] = int_candidate_q[idx];
+          proposal_port_d[int_proposal_count] = ISSUE_INT1;
+          proposal_int_group_d[int_proposal_count][idx] = 1'b1;
+          proposal_even_reads_d[int_proposal_count] =
               even_read_count(int_candidate_q[idx]);
-          proposal_odd_reads_d[proposal_count] =
+          proposal_odd_reads_d[int_proposal_count] =
               odd_read_count(int_candidate_q[idx]);
           int_selected[idx] = 1'b1;
           int1_used = 1'b1;
-          proposal_count = proposal_count + 3'd1;
+          int_proposal_count = int_proposal_count + 2'd1;
         end
       end
 
@@ -305,17 +305,17 @@ module issue_arbiter (
             int_candidate_valid_q[idx] &&
             is_csr(int_candidate_q[idx]) &&
             operands_ready(int_candidate_q[idx]) && int0_ready_q) begin
-          proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate_q[idx];
-          proposal_port_d[proposal_count] = ISSUE_INT0;
-          proposal_int_group_d[proposal_count][idx] = 1'b1;
-          proposal_even_reads_d[proposal_count] =
+          proposal_valid_d[int_proposal_count] = 1'b1;
+          proposal_uop_d[int_proposal_count] = int_candidate_q[idx];
+          proposal_port_d[int_proposal_count] = ISSUE_INT0;
+          proposal_int_group_d[int_proposal_count][idx] = 1'b1;
+          proposal_even_reads_d[int_proposal_count] =
               even_read_count(int_candidate_q[idx]);
-          proposal_odd_reads_d[proposal_count] =
+          proposal_odd_reads_d[int_proposal_count] =
               odd_read_count(int_candidate_q[idx]);
           int_selected[idx] = 1'b1;
           int0_used = 1'b1;
-          proposal_count = proposal_count + 3'd1;
+          int_proposal_count = int_proposal_count + 2'd1;
         end
       end
 
@@ -325,17 +325,17 @@ module issue_arbiter (
             int_candidate_valid_q[idx] &&
             is_shift(int_candidate_q[idx]) &&
             operands_ready(int_candidate_q[idx]) && int0_ready_q) begin
-          proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate_q[idx];
-          proposal_port_d[proposal_count] = ISSUE_INT0;
-          proposal_int_group_d[proposal_count][idx] = 1'b1;
-          proposal_even_reads_d[proposal_count] =
+          proposal_valid_d[int_proposal_count] = 1'b1;
+          proposal_uop_d[int_proposal_count] = int_candidate_q[idx];
+          proposal_port_d[int_proposal_count] = ISSUE_INT0;
+          proposal_int_group_d[int_proposal_count][idx] = 1'b1;
+          proposal_even_reads_d[int_proposal_count] =
               even_read_count(int_candidate_q[idx]);
-          proposal_odd_reads_d[proposal_count] =
+          proposal_odd_reads_d[int_proposal_count] =
               odd_read_count(int_candidate_q[idx]);
           int_selected[idx] = 1'b1;
           int0_used = 1'b1;
-          proposal_count = proposal_count + 3'd1;
+          int_proposal_count = int_proposal_count + 2'd1;
         end
       end
 
@@ -348,54 +348,54 @@ module issue_arbiter (
             operands_ready(int_candidate_q[idx]) &&
             ((!int0_used && int0_ready_q) ||
              (!int1_used && int1_ready_q))) begin
-          proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = int_candidate_q[idx];
-          proposal_int_group_d[proposal_count][idx] = 1'b1;
-          proposal_even_reads_d[proposal_count] =
+          proposal_valid_d[int_proposal_count] = 1'b1;
+          proposal_uop_d[int_proposal_count] = int_candidate_q[idx];
+          proposal_int_group_d[int_proposal_count][idx] = 1'b1;
+          proposal_even_reads_d[int_proposal_count] =
               even_read_count(int_candidate_q[idx]);
-          proposal_odd_reads_d[proposal_count] =
+          proposal_odd_reads_d[int_proposal_count] =
               odd_read_count(int_candidate_q[idx]);
           if (!int0_used && int0_ready_q) begin
-            proposal_port_d[proposal_count] = ISSUE_INT0;
+            proposal_port_d[int_proposal_count] = ISSUE_INT0;
             int0_used = 1'b1;
           end else begin
-            proposal_port_d[proposal_count] = ISSUE_INT1;
+            proposal_port_d[int_proposal_count] = ISSUE_INT1;
             int1_used = 1'b1;
           end
           int_selected[idx] = 1'b1;
-          proposal_count = proposal_count + 3'd1;
+          int_proposal_count = int_proposal_count + 2'd1;
         end
       end
 
-      // E. 访存指令挑选：分配到 LSU
+      // E. 访存指令挑选：分配到固定 LSU proposal 槽，避免经过 INT
+      // proposal 压缩链。
       for (idx = 0; idx < 2; idx = idx + 1) begin
         if (!mem_selected && mem_candidate_valid_q[idx] &&
             mem_issue_allowed_q[idx] && operands_ready(mem_candidate_q[idx]) &&
             lsu_ready_q) begin
-          proposal_valid_d[proposal_count] = 1'b1;
-          proposal_uop_d[proposal_count] = mem_candidate_q[idx];
-          proposal_port_d[proposal_count] = ISSUE_LSU;
-          proposal_mem_group_d[proposal_count][idx] = 1'b1;
-          proposal_even_reads_d[proposal_count] =
+          proposal_valid_d[2] = 1'b1;
+          proposal_uop_d[2] = mem_candidate_q[idx];
+          proposal_port_d[2] = ISSUE_LSU;
+          proposal_mem_group_d[2][idx] = 1'b1;
+          proposal_even_reads_d[2] =
               even_read_count(mem_candidate_q[idx]);
-          proposal_odd_reads_d[proposal_count] =
+          proposal_odd_reads_d[2] =
               odd_read_count(mem_candidate_q[idx]);
           mem_selected = 1'b1;
-          proposal_count = proposal_count + 3'd1;
         end
       end
 
-      // F. MDU 乘除法指令挑选
+      // F. MDU 乘除法指令挑选：固定 MDU proposal 槽。
       if (mdu_candidate_valid_q &&
           mdu_accept_q && mdu_ready_q &&
           operands_ready(mdu_candidate_uop_q)) begin
-        proposal_valid_d[proposal_count] = 1'b1;
-        proposal_uop_d[proposal_count] = mdu_candidate_uop_q;
-        proposal_port_d[proposal_count] = ISSUE_MDU;
-        proposal_mdu_group_d[proposal_count] = 1'b1;
-        proposal_even_reads_d[proposal_count] =
+        proposal_valid_d[3] = 1'b1;
+        proposal_uop_d[3] = mdu_candidate_uop_q;
+        proposal_port_d[3] = ISSUE_MDU;
+        proposal_mdu_group_d[3] = 1'b1;
+        proposal_even_reads_d[3] =
             even_read_count(mdu_candidate_uop_q);
-        proposal_odd_reads_d[proposal_count] =
+        proposal_odd_reads_d[3] =
             odd_read_count(mdu_candidate_uop_q);
       end
     end
