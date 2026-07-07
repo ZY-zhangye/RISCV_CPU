@@ -4,12 +4,20 @@
 
 当前 SoC V1 wrapper 为 `rtl/soc/soc_data_ram.sv`。该模块直接对接
 `soc_addr_router` 的 typed RAM 端口：`load_mem_req_t`、`load_mem_resp_t` 和
-`store_mem_req_t`。V1 先实现为 32-bit word RAM，load 请求打一拍返回并带 response
+`store_mem_req_t`。V1 先实现为 32-bit data RAM，load 请求打一拍返回并带 response
 holding，store 按 `byte_enable` 更新已对齐 word。首次 5 ns OOC WNS 为 `+0.955 ns`，
-但 Vivado 报告显示推断为 distributed RAM，不满足 256 KiB 主存资源目标；当前已在
-memory array 增加 `ram_style="block"`，并把写路径改为显式 byte-lane write enable，
-等待复综合确认 RAMB 推断。`tb_soc_data_ram` 已覆盖初始化写入、load response 反压保持、
-byte store、并行 load/store、窗口外 load error 和初始化写 error。
+但 Vivado 报告显示单个 32-bit word array 的 byte merge 写法被识别为读改写结构，
+并回退到 distributed RAM。当前已将实现改为 4 个 8-bit byte-lane RAM array，
+每个 lane 独立 `ram_style="block"`；init/store 先在 RAM 外仲裁为单一
+`ram_write_index/data/wstrb` 写端口，load 使用唯一 `load_index` 同步读端口，逻辑上只
+向每个 lane 暴露一个读地址和一个写地址。读数据在 `load_pipe_data_q` 处直接锁存
+BRAM 输出，不在输出寄存器前放置同周期写直通 mux；同周期读写同一 word 的新值可见性
+由 LSQ/store forwarding 保证，不由 data RAM wrapper 提供。该形态同时避免
+`mem[index] <= merge_word(mem[index], ...)` 读改写、init/store 双写地址端口，以及
+BRAM 输出寄存器前的 bypass mux。
+`tb_soc_data_ram` 已覆盖初始化写入、load response 反压保持、byte store、并行
+load/store、窗口外 load error 和初始化写 error。复综合 WNS 为 `+2.747 ns`，
+Vivado 推断 64 个 BRAM，资源与时序均满足冻结条件。
 
 ## 1. 组织
 

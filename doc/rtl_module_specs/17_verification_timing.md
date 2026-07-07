@@ -123,7 +123,7 @@ BRAM/DSP 和最差路径端点。
 | Core Top | frontend_backend_cluster wrapper + typed memory boundary + irq pins | Questa 通过 | `tb_core_top` 与 `tb_frontend_backend_cluster` 通过，OOC 待 SoC wrapper 前统一测 |
 | SoC Addr Router | typed load/store 到 RAM/MMIO 固定地址路由 | +1.828 ns | `tb_soc_addr_router` 通过，OOC 时序健康并冻结；进入 instruction memory wrapper |
 | SoC IMem | 128-bit instruction block memory wrapper | +2.380 ns | `tb_soc_imem` 通过，OOC 时序健康并冻结；进入 data RAM wrapper |
-| SoC Data RAM | typed data RAM wrapper | +0.955 ns | 首次 OOC WNS 为正，但推断为 distributed RAM；已加 `ram_style="block"` 与显式 byte-lane write enable，`tb_soc_data_ram` 复测通过，等待 BRAM 推断复综合 |
+| SoC Data RAM | typed data RAM wrapper | +2.747 ns | 4 个 8-bit byte-lane RAM array，init/store 仲裁成单一写地址端口，load 使用唯一同步读地址端口，且移除 BRAM 输出寄存器前写直通 bypass；Vivado 推断 64 个 BRAM，`tb_soc_data_ram` 通过，冻结 |
 | SoC Top | core_top + IMem + addr router + Data RAM + MMIO bus | Questa 通过 | `tb_soc_top` 覆盖 IMem 初始化、core 取指、INT/MUL/DIV 写回和顶层预留线；load/store 全系统 smoke 后续补 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
