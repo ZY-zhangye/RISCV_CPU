@@ -66,6 +66,7 @@ module writeback_arbiter (
   completion_t in_payload [0:PRODUCERS-1];
 
   logic [1:0] buf_count_q [0:PRODUCERS-1];
+  logic [PRODUCERS-1:0] buf_nonempty_q;
   completion_t buf_head_q [0:PRODUCERS-1];
   completion_t buf_tail_q [0:PRODUCERS-1];
 
@@ -174,7 +175,7 @@ module writeback_arbiter (
 
     if (!recovery_i.valid) begin
       for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
-        if (!lane_valid_d[0] && (buf_count_q[idx] != 2'd0)) begin
+        if (!lane_valid_d[0] && buf_nonempty_q[idx]) begin
           lane_valid_d[0] = 1'b1;
           lane_payload_d[0] = buf_head_q[idx];
           select_fire[idx] = 1'b1;
@@ -184,7 +185,7 @@ module writeback_arbiter (
       if (lane_valid_d[0]) begin
         for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
           if (!select_fire[idx] && !lane_valid_d[1] &&
-              (buf_count_q[idx] != 2'd0) &&
+              buf_nonempty_q[idx] &&
               pair_allowed(lane_payload_d[0], buf_head_q[idx])) begin
             lane_valid_d[1] = 1'b1;
             lane_payload_d[1] = buf_head_q[idx];
@@ -205,6 +206,7 @@ module writeback_arbiter (
     logic kill_tail;
     if (rst_i) begin
       wb_valid_q <= '0;
+      buf_nonempty_q <= '0;
       for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
         buf_count_q[idx] <= '0;
         buf_head_q[idx] <= '0;
@@ -215,6 +217,7 @@ module writeback_arbiter (
     end else if (recovery_i.valid) begin
       if (recovery_i.cause == REC_EXCEPT) begin
         wb_valid_q <= '0;
+        buf_nonempty_q <= '0;
         for (lane = 0; lane < 2; lane = lane + 1)
           wb_q[lane] <= '0;
         for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
@@ -242,6 +245,7 @@ module writeback_arbiter (
                   buf_head_q[idx], recovery_i);
               if (kill_head) begin
                 buf_count_q[idx] <= '0;
+                buf_nonempty_q[idx] <= 1'b0;
                 buf_head_q[idx] <= '0;
                 buf_tail_q[idx] <= '0;
               end else begin
@@ -267,17 +271,20 @@ module writeback_arbiter (
                       buf_tail_q[idx], recovery_i.checkpoint_id);
                   buf_tail_q[idx] <= '0;
                   buf_count_q[idx] <= 2'd1;
+                  buf_nonempty_q[idx] <= 1'b1;
                 end
                 2'b10: begin
                   buf_head_q[idx] <= clear_completion_checkpoint(
                       buf_head_q[idx], recovery_i.checkpoint_id);
                   buf_tail_q[idx] <= '0;
                   buf_count_q[idx] <= 2'd1;
+                  buf_nonempty_q[idx] <= 1'b1;
                 end
                 default: begin
                   buf_head_q[idx] <= '0;
                   buf_tail_q[idx] <= '0;
                   buf_count_q[idx] <= '0;
+                  buf_nonempty_q[idx] <= 1'b0;
                 end
               endcase
             end
@@ -303,9 +310,11 @@ module writeback_arbiter (
             if (buf_count_q[idx] == 2'd0) begin
               buf_head_q[idx] <= in_payload[idx];
               buf_count_q[idx] <= 2'd1;
+              buf_nonempty_q[idx] <= 1'b1;
             end else begin
               buf_tail_q[idx] <= in_payload[idx];
               buf_count_q[idx] <= 2'd2;
+              buf_nonempty_q[idx] <= 1'b1;
             end
           end
           2'b10: begin
@@ -313,10 +322,12 @@ module writeback_arbiter (
               buf_head_q[idx] <= buf_tail_q[idx];
               buf_tail_q[idx] <= '0;
               buf_count_q[idx] <= 2'd1;
+              buf_nonempty_q[idx] <= 1'b1;
             end else begin
               buf_head_q[idx] <= '0;
               buf_tail_q[idx] <= '0;
               buf_count_q[idx] <= 2'd0;
+              buf_nonempty_q[idx] <= 1'b0;
             end
           end
           default: begin // pop one head and push one new payload
@@ -326,10 +337,12 @@ module writeback_arbiter (
               buf_head_q[idx] <= buf_tail_q[idx];
               buf_tail_q[idx] <= '0;
               buf_count_q[idx] <= 2'd1;
+              buf_nonempty_q[idx] <= 1'b1;
             end else begin
               buf_head_q[idx] <= in_payload[idx];
               buf_tail_q[idx] <= '0;
               buf_count_q[idx] <= 2'd1;
+              buf_nonempty_q[idx] <= 1'b1;
             end
           end
         endcase
@@ -392,6 +405,11 @@ module writeback_arbiter (
           assert (!wakeup_valid_o[lane] && !prf_write_valid_o[lane])
             else $error("exception/store completion generated PRF write or wakeup");
         end
+      end
+
+      for (int prod = 0; prod < PRODUCERS; prod = prod + 1) begin
+        assert (buf_nonempty_q[prod] == (buf_count_q[prod] != 2'd0))
+          else $error("writeback_arbiter buffer nonempty shadow mismatch");
       end
     end
   end
