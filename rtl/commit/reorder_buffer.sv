@@ -70,6 +70,7 @@ module reorder_buffer (
   logic head_bank_q;                                      // 头行内当前可见的最老 bank
   logic [ROB_ROW_W-1:0] tail_row_q;                      // 尾行指针 (指向新分配写入的行)
   logic [ROB_ROW_W:0] used_rows_q;                       // 当前已占用 Row 数量 (0 ~ 16)
+  logic full_q;                                           // used_rows_q == ROB_ROWS 的寄存影子，切断分配 ready 长路径
   logic [5:0] occupancy_q;                               // 当前在途 uop 占用总数
 
   // 提交级输出寄存器
@@ -171,8 +172,7 @@ module reorder_buffer (
                          !restore_pending_q &&
                          !exception_flush_i &&
                          !restore_valid_i &&
-                         !branch_clear_valid_i &&
-                         (used_rows_q != ROB_ROWS);
+                         !full_q;
   assign alloc_fire = alloc_ready_o && alloc_valid_i[0];
 
   // 退休发射判定：ROB 非空、没有在扫描、提交端发出非零信号、且提交数量能覆盖当前整行已有的有效项
@@ -196,7 +196,7 @@ module reorder_buffer (
   assign busy_o = scan_busy_q || exception_flush_pending_q ||
                   restore_pending_q;
   assign empty_o = (used_rows_q == '0);
-  assign full_o = (used_rows_q == ROB_ROWS);
+  assign full_o = full_q;
   assign occupancy_o = occupancy_q;
   assign branch_clear_done_o = branch_clear_done_q;
   assign restore_done_o = restore_done_q;
@@ -235,6 +235,7 @@ module reorder_buffer (
       head_bank_q <= 1'b0;
       tail_row_q <= '0;
       used_rows_q <= '0;
+      full_q <= 1'b0;
       occupancy_q <= '0;
       head_entry0_q <= '0;
       head_entry1_q <= '0;
@@ -277,6 +278,7 @@ module reorder_buffer (
         head_bank_q <= 1'b0;
         tail_row_q <= '0;
         used_rows_q <= '0;
+        full_q <= 1'b0;
         occupancy_q <= '0;
         head_entry0_q <= '0;
         head_entry1_q <= '0;
@@ -571,8 +573,10 @@ module reorder_buffer (
                                  next_row(rob_id_row(scan_restore_tail_q)) :
                                  rob_id_row(scan_restore_tail_q);
             tail_row_q <= tail_after_restore;
-            used_rows_q <= scan_used_rows_q +
-                           {{ROB_ROW_W{1'b0}}, scan_row_survives};
+            used_rows_next = scan_used_rows_q +
+                             {{ROB_ROW_W{1'b0}}, scan_row_survives};
+            used_rows_q <= used_rows_next;
+            full_q <= (used_rows_next == ROB_ROWS);
             occupancy_q <= scan_occupancy_q + {4'd0, scan_row_count};
             restore_done_q <= 1'b1;
           end else begin
@@ -658,6 +662,7 @@ module reorder_buffer (
         end
 
         used_rows_q <= used_rows_next;
+        full_q <= (used_rows_next == ROB_ROWS);
         occupancy_q <= occupancy_next;
 
         // 5. Head payload 只按已寄存的 head_row_q 读取。退休拍清空可见
@@ -687,16 +692,6 @@ module reorder_buffer (
           head0_next.complete = complete_q[head_id1];
           head0_next.entry = entry_q[head_id1];
           head1_next = '0;
-        end
-
-        // 旁路直通：若原本为空，本周期发生分配，则下一周期的 head_entry 直接由 alloc 数据填充
-        if ((used_rows_q == '0) && alloc_fire && !retire_row_fire) begin
-          head0_next.valid = alloc_valid_i[0];
-          head0_next.complete = alloc_entry0_i.exception_valid;
-          head0_next.entry = alloc_entry0_i;
-          head1_next.valid = alloc_valid_i[1];
-          head1_next.complete = alloc_valid_i[1] && alloc_entry1_i.exception_valid;
-          head1_next.entry = alloc_entry1_i;
         end
 
         // 旁路直通：若本周期正在完成（Writeback）的指令就是下一周期的 head，则直接旁路更新就绪标志
@@ -746,7 +741,7 @@ module reorder_buffer (
           end
         end
 
-        if ((used_rows_next == '0) && !alloc_fire) begin
+        if (used_rows_q == '0) begin
           head_entry0_q.valid <= 1'b0;
           head_entry0_q.complete <= 1'b0;
           head_entry1_q.valid <= 1'b0;
@@ -764,6 +759,8 @@ module reorder_buffer (
     if (!rst_i) begin
       assert (alloc_valid_i != 2'b10)
         else $error("ROB allocation valid must be prefix encoded");
+      assert (full_q == (used_rows_q == ROB_ROWS))
+        else $error("ROB full_q must track used_rows_q");
     end
   end
 `endif

@@ -34,6 +34,7 @@ module issue_arbiter (
     input  logic                    int1_ready_i,          // 整数流水线 1 就绪
     input  logic                    lsu_ready_i,           // 访存访存流线就绪
     input  logic                    mdu_ready_i,           // MDU 流水线就绪
+    input  logic                    issue_block_i,         // 下一拍将进入全局恢复，暂不授予 IQ
     input  recovery_t               recovery_i,            // 恢复控制包 (分支误预测或精确异常)
 
     // 发发射授权信号 (Grants，送回各 IQ 用以清除被发射槽位)
@@ -462,7 +463,7 @@ module issue_arbiter (
       issue_uop_d[idx] = '0;
     end
 
-    if (!rst_i && !recovery_i.valid) begin
+    if (!rst_i && !recovery_i.valid && !issue_block_i) begin
       for (idx = 0; idx < PROPOSALS; idx = idx + 1) begin
         // 与 IQ 实时送来的候选身份进行多路比较匹配。ROB ID 会环回，
         // 仅比较 ROB ID 可能让旧 proposal 在 ID 复用后错误发射。

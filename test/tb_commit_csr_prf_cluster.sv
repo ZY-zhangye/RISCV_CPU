@@ -31,6 +31,8 @@ module tb_commit_csr_prf_cluster;
   logic [1:0] instret_count_o;
   logic store_pending_o;
   logic csr_wb_pending_o;
+  logic csr_commit_wakeup_valid_o;
+  logic [PRD_W-1:0] csr_commit_wakeup_prd_o;
   logic [XLEN-1:0] mstatus_o;
   logic [XLEN-1:0] mtvec_o;
   logic [XLEN-1:0] mepc_o;

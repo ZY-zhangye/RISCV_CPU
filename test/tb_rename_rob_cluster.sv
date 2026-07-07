@@ -161,8 +161,11 @@ module tb_rename_rob_cluster;
     wait_dispatch(first0, first1);
     if (first0.rob_id != 0 || first1.rob_id != 1 ||
         first0.prd == 0 || first1.prd == 0 || first0.prd == first1.prd ||
-        rob_occupancy_o != 2 || rob_head_valid_o != 2'b11)
+        rob_occupancy_o != 2)
       $fatal(1, "initial Rename/ROB allocation mismatch");
+    @(posedge clk_i); #1;
+    if (rob_head_valid_o != 2'b11)
+      $fatal(1, "ROB head refill after initial allocation mismatch");
     if (rob_head0_o.entry.pc != 32'h8000_0000 ||
         rob_head1_o.entry.pc != 32'h8000_0004 ||
         rob_head0_o.entry.new_prd != first0.prd ||

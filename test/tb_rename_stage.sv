@@ -61,6 +61,40 @@ module tb_rename_stage;
     return uop;
   endfunction
 
+  function automatic decoded_uop_t make_load(
+      input logic [4:0] rs1,
+      input logic [4:0] rd,
+      input mem_op_t mem_op
+  );
+    decoded_uop_t uop;
+    uop = '0;
+    uop.pc = 32'h8000_0200;
+    uop.fu_type = FU_LSU;
+    uop.mem_op = mem_op;
+    uop.rs1 = rs1;
+    uop.rd = rd;
+    uop.need_rs1 = 1'b1;
+    uop.write_rd = (rd != 0);
+    return uop;
+  endfunction
+
+  function automatic decoded_uop_t make_store(
+      input logic [4:0] rs1,
+      input logic [4:0] rs2,
+      input mem_op_t mem_op
+  );
+    decoded_uop_t uop;
+    uop = '0;
+    uop.pc = 32'h8000_0204;
+    uop.fu_type = FU_LSU;
+    uop.mem_op = mem_op;
+    uop.rs1 = rs1;
+    uop.rs2 = rs2;
+    uop.need_rs1 = 1'b1;
+    uop.need_rs2 = 1'b1;
+    return uop;
+  endfunction
+
   task automatic send_decode(
       input logic [1:0] valid,
       input decoded_uop_t uop0,
@@ -175,6 +209,51 @@ module tb_rename_stage;
         rn_uop1_o.prs1 != 6'd32 || rn_uop1_o.src1_ready ||
         rn_uop1_o.old_prd != 6'd32 || rn_uop1_o.prd != 6'd33)
       $fatal(1, "lane RAW/WAW rename failed");
+    consume_rename();
+
+    // Same-bundle load-to-store data dependency: lane1 store rs2 must consume
+    // lane0 load's freshly allocated destination, not the old architectural map.
+    lane0 = make_load(5'd2, 5'd14, MEM_LB);
+    lane1 = make_store(5'd2, 5'd14, MEM_SB);
+    send_decode(2'b11, lane0, lane1);
+    if (alloc_req_o.lane_valid != 2'b11 ||
+        alloc_req_o.need_prd != 2'b01 ||
+        alloc_req_o.need_lq != 2'b01 ||
+        alloc_req_o.need_sq != 2'b10)
+      $fatal(1, "load/store allocation request failed");
+    grant(2'b11, 6'd44, 6'd0, 2'd0);
+    if (rn_valid_o != 2'b11 ||
+        rn_uop0_o.prd != 6'd44 ||
+        rn_uop1_o.prs2 != 6'd44 ||
+        rn_uop1_o.src2_ready ||
+        rn_uop1_o.dec.need_rs2 != 1'b1 ||
+        rn_uop1_o.dec.rs2 != 5'd14)
+      $fatal(1, "same-bundle load-to-store data RAW rename failed");
+    consume_rename();
+
+    // Same-bundle load-to-store base dependency: lane1 store rs1 must consume
+    // lane0 load's destination, while rs2 remains the independent store data.
+    lane0 = make_load(5'd2, 5'd4, MEM_LW);
+    lane1 = make_store(5'd4, 5'd1, MEM_SB);
+    send_decode(2'b11, lane0, lane1);
+    if (alloc_req_o.lane_valid != 2'b11 ||
+        alloc_req_o.need_prd != 2'b01 ||
+        alloc_req_o.need_lq != 2'b01 ||
+        alloc_req_o.need_sq != 2'b10)
+      $fatal(1, "load/store base allocation request failed");
+    grant(2'b11, 6'd45, 6'd0, 2'd0);
+    if (rn_valid_o != 2'b11 ||
+        rn_uop0_o.prd != 6'd45 ||
+        rn_uop1_o.prs1 != 6'd45 ||
+        rn_uop1_o.src1_ready ||
+        rn_uop1_o.prs2 != 6'd1 ||
+        !rn_uop1_o.src2_ready ||
+        rn_uop1_o.dec.rs1 != 5'd4 ||
+        rn_uop1_o.dec.rs2 != 5'd1)
+      $fatal(1, "same-bundle load-to-store base RAW rename failed prs=%0d/%0d ready=%0b/%0b rs=%0d/%0d",
+             rn_uop1_o.prs1, rn_uop1_o.prs2,
+             rn_uop1_o.src1_ready, rn_uop1_o.src2_ready,
+             rn_uop1_o.dec.rs1, rn_uop1_o.dec.rs2);
     consume_rename();
 
     // WB readiness is observed by the next map read.

@@ -130,7 +130,7 @@ module commit_recovery_cluster #(
   assign lq_retire_id_o = lq_retire_id_q;
   assign commit_map0_commit = commit_txn_fire ? commit_map0_q : '0;
   assign commit_map1_commit = commit_txn_fire ? commit_map1_q : '0;
-  assign reclaim_valid_offer = commit_txn_pending_q ? reclaim_valid_q : '0;
+  assign reclaim_valid_offer = commit_txn_fire ? reclaim_valid_q : '0;
   assign reclaim_prd_commit = reclaim_prd_q;
   assign wakeup_valid_o[0] = csr_commit_wakeup_valid ? 1'b1 : wb_valid_i[0];
   assign wakeup_valid_o[1] = wb_valid_i[1];
@@ -139,7 +139,7 @@ module commit_recovery_cluster #(
   assign wakeup_prd_o[1] = wb_prd_i[1];
   assign branch_mispredict_pending = branch_i.valid && branch_i.mispredict;
   assign commit_txn_blocked = recovery_busy_o || branch_mispredict_pending ||
-                              commit_recovery_q.valid || commit_recovery.valid ||
+                              commit_recovery_q.valid ||
                               rob_busy || checkpoint_clear_valid_o;
   assign commit_hold = recovery_busy_o || branch_mispredict_pending ||
                        commit_txn_pending_q || commit_recovery_q.valid ||
@@ -330,6 +330,9 @@ module commit_recovery_cluster #(
       if ((reclaim_valid_offer != 2'b00) && !reclaim_ready)
         assert (retire_count_o == 0)
           else $error("ROB retired while Free List reclaim was blocked");
+      if (commit_txn_pending_q && !commit_txn_fire)
+        assert (reclaim_valid_offer == 2'b00)
+          else $error("commit reclaim offer repeated before transaction fire");
     end
   end
 `endif

@@ -14,6 +14,8 @@ module tb_int_pipeline0;
   logic result_ready_i = 1'b0;
   completion_t result_o;
 
+  logic checkpoint_clear_i = 1'b0;
+  logic [CP_W-1:0] checkpoint_clear_id_i = '0;
   recovery_t recovery_i = '0;
 
   int_pipeline0 dut (.*);

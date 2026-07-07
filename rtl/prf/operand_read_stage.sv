@@ -481,7 +481,13 @@ module operand_read_stage (
           // 检查 2：到达操作数读取阶段的指令，必须在此前已被唤醒（操作数就绪）
           assert ((!slot_uop[first].need_rs1 || slot_uop[first].src1_ready) &&
                   (!slot_uop[first].need_rs2 || slot_uop[first].src2_ready))
-            else $error("operand_read received a source-not-ready uop");
+            else $error("operand_read received source-not-ready uop slot=%0d port=%0d pc=%08h rob=%0d fu=%0d need=%0b/%0b ready=%0b/%0b prs=%0d/%0d prd=%0d mask=%b",
+                        first, slot_port[first], slot_uop[first].pc,
+                        slot_uop[first].rob_id, slot_uop[first].fu_type,
+                        slot_uop[first].need_rs1, slot_uop[first].need_rs2,
+                        slot_uop[first].src1_ready, slot_uop[first].src2_ready,
+                        slot_uop[first].prs1, slot_uop[first].prs2,
+                        slot_uop[first].prd, slot_uop[first].branch_mask);
         end
 
         // 检查 3：同一个时钟周期接收的 3 个 slot 绝不能指向同一个目的执行端口（即不允许端口冲突发生在此处）

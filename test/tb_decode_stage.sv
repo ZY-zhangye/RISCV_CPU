@@ -232,8 +232,9 @@ module tb_decode_stage;
 
     send_bundle(2'b11, make_slot(32'h3020_0073),
                 make_slot(32'h0020_81b3));
-    if (out_valid_o != 2'b01 || !decoded_uop0_o.is_mret)
-      $fatal(1, "serializing lane0 did not suppress lane1");
+    if (out_valid_o != 2'b11 || !decoded_uop0_o.is_mret ||
+        decoded_uop1_o.alu_op != ALU_ADD)
+      $fatal(1, "serializing lane0 bundle decode failed");
 
     @(negedge clk_i);
     flush_i = 1'b1;

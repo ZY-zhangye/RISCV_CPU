@@ -229,8 +229,8 @@ module tb_lsu_pipeline;
     issue_uop(uop);
     if (!sq_update_valid_o || sq_update_id_o != 3'd1 ||
         sq_update_address_o != 32'h8000_0102 ||
-        sq_update_byte_enable_o != 4'b0100 ||
-        sq_update_data_o != 32'h00aa_0000 ||
+        sq_update_byte_enable_o != 4'b0001 ||
+        sq_update_data_o != 32'h0000_00aa ||
         sq_update_exception_valid_o)
       $fatal(1, "Store AGU/update mismatch");
     @(posedge clk_i);
@@ -245,8 +245,8 @@ module tb_lsu_pipeline;
     if (!lq_address_valid_o || lq_address_id_o != 3'd0 ||
         lq_address_o != 32'h8000_0201)
       $fatal(1, "Load address update mismatch");
-    wait_mem_request(3'd0, 32'h8000_0200);
-    accept_mem_and_respond(3'd0, 32'h0000_8000, 1'b0);
+    wait_mem_request(3'd0, 32'h8000_0201);
+    accept_mem_and_respond(3'd0, 32'h0000_0080, 1'b0);
     expect_result(5'd8, 6'd20, 32'hffff_ff80, 1'b1, 1'b0, 1'b0);
     if (!lq_complete_valid_o || lq_complete_id_o != 3'd0 ||
         lq_complete_forwarded_o)
@@ -260,8 +260,8 @@ module tb_lsu_pipeline;
     sq_entries_i[0].address_valid = 1'b1;
     sq_entries_i[0].address = 32'h8000_0301;
     sq_entries_i[0].data_valid = 1'b1;
-    sq_entries_i[0].data = 32'h0000_8000;
-    sq_entries_i[0].byte_enable = 4'b0010;
+    sq_entries_i[0].data = 32'h0000_0080;
+    sq_entries_i[0].byte_enable = 4'b0001;
     // A farther matching Store in the opposite half of the reduction tree
     // must lose to entry 0 (ROB 9 is nearer to the Load at ROB 10).
     sq_entries_i[7] = '0;
@@ -270,8 +270,8 @@ module tb_lsu_pipeline;
     sq_entries_i[7].address_valid = 1'b1;
     sq_entries_i[7].address = 32'h8000_0301;
     sq_entries_i[7].data_valid = 1'b1;
-    sq_entries_i[7].data = 32'h0000_7f00;
-    sq_entries_i[7].byte_enable = 4'b0010;
+    sq_entries_i[7].data = 32'h0000_007f;
+    sq_entries_i[7].byte_enable = 4'b0001;
     uop = make_load(5'd10, 3'd1, 6'd21, MEM_LB,
                     32'h8000_0300, 32'd1, '0);
     issue_uop(uop);
@@ -314,25 +314,20 @@ module tb_lsu_pipeline;
     expect_result(5'd12, 6'd22, 32'h1234_5678, 1'b1, 1'b0, 1'b0);
     drain_result();
 
-    // Misaligned Load completes with exception and never requests memory.
+    // Byte-addressed Data RAM supports an unaligned halfword window.
     sq_entries_i[0] = '0;
     uop = make_load(5'd13, 3'd3, 6'd23, MEM_LH,
                     32'h8000_0600, 32'd1, '0);
     issue_uop(uop);
-    cycles = 0;
-    while (!result_valid_o) begin
-      @(posedge clk_i);
-      #1;
-      cycles = cycles + 1;
-      if (mem_req_o.valid)
-        $fatal(1, "misaligned Load accessed memory");
-      if (cycles > 6)
-        $fatal(1, "timeout waiting for misaligned Load exception");
-    end
-    expect_result(5'd13, 6'd23, 32'd0, 1'b0, 1'b0, 1'b1);
-    if (result_o.exception_cause != 4'd4 ||
-        result_o.exception_tval != 32'h8000_0601)
-      $fatal(1, "misaligned Load exception payload mismatch");
+    if (!lq_address_valid_o || lq_address_id_o != 3'd3 ||
+        lq_address_o != 32'h8000_0601)
+      $fatal(1, "Unaligned Load address update mismatch");
+    wait_mem_request(3'd3, 32'h8000_0601);
+    accept_mem_and_respond(3'd3, 32'h0000_8000, 1'b0);
+    expect_result(5'd13, 6'd23, 32'hffff_8000, 1'b1, 1'b0, 1'b0);
+    if (!lq_complete_valid_o || lq_complete_id_o != 3'd3 ||
+        lq_complete_forwarded_o)
+      $fatal(1, "Unaligned Load completion pulse mismatch");
     drain_result();
 
     // Recovery kills an in-flight speculative Load and suppresses all side effects.

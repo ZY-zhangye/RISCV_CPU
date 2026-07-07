@@ -15,6 +15,8 @@ module tb_int_branch_pipeline1;
   completion_t result_o;
 
   branch_resolve_t branch_event_o;
+  logic checkpoint_clear_i = 1'b0;
+  logic [CP_W-1:0] checkpoint_clear_id_i = '0;
   recovery_t recovery_i = '0;
 
   int_branch_pipeline1 dut (.*);

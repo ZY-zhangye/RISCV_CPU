@@ -19,6 +19,7 @@ module tb_issue_arbiter;
   logic int1_ready_i = 1'b1;
   logic lsu_ready_i = 1'b1;
   logic mdu_ready_i = 1'b1;
+  logic issue_block_i = 1'b0;
   recovery_t recovery_i = '0;
 
   logic [2:0] int_issue_grant_o;
@@ -78,6 +79,7 @@ module tb_issue_arbiter;
       int1_ready_i = 1'b1;
       lsu_ready_i = 1'b1;
       mdu_ready_i = 1'b1;
+      issue_block_i = 1'b0;
     end
   endtask
 
@@ -281,6 +283,43 @@ module tb_issue_arbiter;
     check_transaction(3'b000, 2'b00, 1'b0, 3'b000,
                       ISSUE_INT0, ISSUE_INT0, ISSUE_INT0,
                       '0, '0, '0);
+
+    // A pending branch recovery handoff blocks the final grant for one cycle
+    // without requiring the IQ to drop or reselect its held candidate.
+    @(negedge clk_i);
+    clear_candidates();
+    int_candidate_valid_i = 3'b001;
+    int_candidate_uop0_i = make_uop(5'd22, FU_INT, ALU_ADD,
+                                    6'd1, 6'd2, 1'b1, 1'b1);
+    @(posedge clk_i);
+    #1;
+    if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
+      $fatal(1, "issue block setup bypassed candidate snapshot");
+    @(posedge clk_i);
+    #1;
+    if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
+      $fatal(1, "issue block setup bypassed proposal stage");
+    @(negedge clk_i);
+    issue_block_i = 1'b1;
+    @(posedge clk_i);
+    #1;
+    if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
+      $fatal(1, "issue block did not suppress final grant");
+    @(negedge clk_i);
+    issue_block_i = 1'b0;
+    #1;
+    if (int_issue_grant_o != 3'b001)
+      $fatal(1, "held candidate did not grant after issue block dropped");
+    @(posedge clk_i);
+    #1;
+    if (issue_valid_o != 3'b001 || issue_uop0_o.rob_id != 5'd22)
+      $fatal(1, "held candidate did not issue after issue block dropped");
+    @(negedge clk_i);
+    clear_candidates();
+    @(posedge clk_i);
+    #1;
+    if (issue_valid_o != 3'b000)
+      $fatal(1, "issue output did not clear after blocked candidate test");
 
     // Recovery suppresses a live delayed grant and flushes both stages.
     @(negedge clk_i);

@@ -161,7 +161,10 @@ module tb_store_queue;
     recovery_i.checkpoint_id = 2'd2;
     @(posedge clk_i);
     #1;
+    if (mem_req_o.valid)
+      $fatal(1, "recovery did not suppress committed Store memory request");
     recovery_i = '0;
+    #1;
     if (entries_o[1].valid || !mem_req_o.valid || mem_req_o !== held_req)
       $fatal(1, "branch recovery Store handling mismatch");
 

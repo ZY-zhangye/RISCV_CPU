@@ -133,10 +133,12 @@ module tb_reorder_buffer;
                     make_entry(32'h1004, 5'd2, 6'd34, 6'd2, 4'b0010),
                     id0, id1);
 
-    if (id0 != 5'd0 || id1 != 5'd1 || occupancy_o != 6'd2 ||
-        head_valid_o != 2'b11)
+    if (id0 != 5'd0 || id1 != 5'd1 || occupancy_o != 6'd2)
       $fatal(1, "initial dual allocation mismatch id=%0d/%0d occ=%0d head=%b",
              id0, id1, occupancy_o, head_valid_o);
+    @(posedge clk_i); #1;
+    if (head_valid_o != 2'b11)
+      $fatal(1, "initial dual head refill mismatch head=%b", head_valid_o);
 
     complete_pair(id0, id1);
     if (!head_entry0_o.complete || !head_entry1_o.complete)
@@ -150,9 +152,12 @@ module tb_reorder_buffer;
     allocate_bundle(2'b01,
                     make_entry(32'h2000, 5'd3, 6'd35, 6'd3, 4'b0100),
                     '0, id2, id3);
-    if (id2 != 5'd2 || id3 != 5'd3 || occupancy_o != 6'd1 ||
-        head_valid_o != 2'b01)
+    if (id2 != 5'd2 || id3 != 5'd3 || occupancy_o != 6'd1)
       $fatal(1, "single allocation did not consume a new row");
+    @(posedge clk_i); #1;
+    if (head_valid_o != 2'b01)
+      $fatal(1, "single allocation head refill mismatch head=%b",
+             head_valid_o);
 
     @(negedge clk_i);
     complete0_i = make_completion(id2, 1'b1);

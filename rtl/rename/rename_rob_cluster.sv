@@ -74,6 +74,7 @@ module rename_rob_cluster (
 
   logic [1:0] rob_alloc_valid;
   logic rob_alloc_ready;
+  logic rob_alloc_ready_for_alloc;
   logic [ROB_ID_W-1:0] rob_alloc_id0;
   logic [ROB_ID_W-1:0] rob_alloc_id1;
   rob_alloc_t rob_alloc_entry0;
@@ -81,6 +82,9 @@ module rename_rob_cluster (
 
   logic branch_restore_valid;
   logic [ROB_ID_W-1:0] branch_restore_tail;
+  logic rob_restore_valid_q;
+  logic [ROB_ID_W-1:0] rob_restore_tail_q;
+  logic rob_exception_flush_q;
   logic free_list_branch_done;
   logic lsq_branch_done;
   logic free_list_rebuild_done;
@@ -148,6 +152,7 @@ module rename_rob_cluster (
   assign rob_alloc_entry1 = make_rob_entry(dispatch_uop1_o);
   assign exception_recovery = recovery_i.valid &&
                               (recovery_i.cause == REC_EXCEPT);
+  assign rob_alloc_ready_for_alloc = rob_alloc_ready && !checkpoint_clear_i;
   assign busy_o = allocation_busy || rob_busy;
   assign rob_busy_o = rob_busy;
 
@@ -176,6 +181,19 @@ module rename_rob_cluster (
       recovery_ack_q <= '0;
     end else begin
       recovery_ack_q <= recovery_ack_q | selected_recovery_done;
+    end
+  end
+
+  always_ff @(posedge clk_i) begin : rob_recovery_input_slice
+    if (rst_i) begin
+      rob_restore_valid_q <= 1'b0;
+      rob_restore_tail_q <= '0;
+      rob_exception_flush_q <= 1'b0;
+    end else begin
+      rob_restore_valid_q <= branch_restore_valid;
+      rob_exception_flush_q <= exception_recovery;
+      if (branch_restore_valid)
+        rob_restore_tail_q <= branch_restore_tail;
     end
   end
 
@@ -217,7 +235,7 @@ module rename_rob_cluster (
       .rename_valid_i(dispatch_valid_o),
       .rename_uop0_i(dispatch_uop0_o),
       .rename_uop1_i(dispatch_uop1_o),
-      .rob_alloc_ready_i(rob_alloc_ready),
+      .rob_alloc_ready_i(rob_alloc_ready_for_alloc),
       .rob_alloc_id0_i(rob_alloc_id0),
       .rob_alloc_id1_i(rob_alloc_id1),
       .rob_alloc_valid_o(rob_alloc_valid),
@@ -262,13 +280,13 @@ module rename_rob_cluster (
       .head_entry0_o(rob_head0_o),
       .head_entry1_o(rob_head1_o),
       .retire_count_i,
-      .exception_flush_i(exception_recovery),
+      .exception_flush_i(rob_exception_flush_q),
       .exception_flush_done_o(rob_exception_done),
       .branch_clear_valid_i(checkpoint_clear_i),
       .branch_clear_id_i(checkpoint_clear_id_i),
       .branch_clear_done_o(rob_branch_clear_done_o),
-      .restore_valid_i(branch_restore_valid),
-      .restore_tail_i(branch_restore_tail),
+      .restore_valid_i(rob_restore_valid_q),
+      .restore_tail_i(rob_restore_tail_q),
       .restore_done_o(rob_restore_done),
       .busy_o(rob_busy),
       .empty_o(rob_empty_o),
