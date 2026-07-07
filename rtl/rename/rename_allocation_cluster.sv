@@ -101,13 +101,13 @@ module rename_allocation_cluster (
   assign branch_is_lane1 = rename_valid_i[1] &&
                            (rename_uop1_i.dec.fu_type == FU_BRANCH);
   assign branch_checkpoint_save = checkpoint_alloc_fire;
-  assign branch_checkpoint_id = branch_is_lane1 ?
-                                rename_uop1_i.checkpoint_id :
-                                rename_uop0_i.checkpoint_id;
-  assign branch_rob_tail = (branch_is_lane1 ? rename_uop1_i.rob_id :
-                                              rename_uop0_i.rob_id) + 1'b1;
-  assign branch_parent_mask = branch_is_lane1 ? rename_uop1_i.branch_mask :
-                                               rename_uop0_i.branch_mask;
+  assign branch_checkpoint_id = checkpoint_alloc_id;
+  assign branch_rob_tail = (branch_is_lane1 ? rob_alloc_id1_i :
+                                              rob_alloc_id0_i) + 1'b1;
+  assign branch_parent_mask =
+      (branch_is_lane1 ? rename_uop1_i.branch_mask :
+                         rename_uop0_i.branch_mask) &
+      ~({{(CHECKPOINTS-1){1'b0}}, 1'b1} << branch_checkpoint_id);
 
   always_comb begin : checkpoint_keep_counts
     checkpoint_keep_prd_count = '0;

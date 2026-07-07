@@ -109,9 +109,19 @@ module commit_unit (
       retire_count_o = 2'd1;
       instret_count_o = 2'd1;
     end else if (lane0_can_retire) begin
-      reclaim_valid_o = normal_reclaim_valid;
-      reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
-      reclaim_prd_o[1] = rob_head1_i.entry.old_prd;
+      if (normal_reclaim_valid[0]) begin
+        reclaim_valid_o[0] = 1'b1;
+        reclaim_prd_o[0] = rob_head0_i.entry.old_prd;
+      end
+      if (normal_reclaim_valid[1]) begin
+        if (normal_reclaim_valid[0]) begin
+          reclaim_valid_o[1] = 1'b1;
+          reclaim_prd_o[1] = rob_head1_i.entry.old_prd;
+        end else begin
+          reclaim_valid_o[0] = 1'b1;
+          reclaim_prd_o[0] = rob_head1_i.entry.old_prd;
+        end
+      end
 
       if (normal_retire_fire) begin
       retire_count_o = lane1_can_retire ? 2'd2 : 2'd1;

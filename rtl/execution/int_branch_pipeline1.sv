@@ -28,6 +28,8 @@ module int_branch_pipeline1 (
 
     output branch_resolve_t branch_event_o,
 
+    input  logic          checkpoint_clear_i,
+    input  logic [CP_W-1:0] checkpoint_clear_id_i,
     input  recovery_t     recovery_i
 );
 
@@ -186,6 +188,7 @@ module int_branch_pipeline1 (
       completion.producer = PROD_INT1;
       completion.write_prf = uop.write_rd && !is_exception;
       completion.is_store = 1'b0;
+      completion.branch_mask = uop.branch_mask;
       make_completion = completion;
     end
   endfunction
@@ -199,6 +202,15 @@ module int_branch_pipeline1 (
       one_hot = '0;
       one_hot[checkpoint_id] = 1'b1;
       clear_checkpoint = mask & ~one_hot;
+    end
+  endfunction
+
+  function automatic logic [CHECKPOINTS-1:0] clear_if_checkpoint_clear(
+      input logic [CHECKPOINTS-1:0] mask
+  );
+    begin
+      clear_if_checkpoint_clear = checkpoint_clear_i ?
+          clear_checkpoint(mask, checkpoint_clear_id_i) : mask;
     end
   endfunction
 
@@ -243,6 +255,8 @@ module int_branch_pipeline1 (
       end else if (completion_valid_q && (recovery_i.cause == REC_BRANCH)) begin
         completion_branch_mask_q <= clear_checkpoint(completion_branch_mask_q,
                                                      recovery_i.checkpoint_id);
+        completion_q.branch_mask <= clear_checkpoint(completion_branch_mask_q,
+                                                     recovery_i.checkpoint_id);
       end
     end else begin
       branch_event_q <= '0;
@@ -250,15 +264,25 @@ module int_branch_pipeline1 (
 
       if (accept_fire) begin
         completion_q <= make_completion(ex_uop_i);
-        completion_branch_mask_q <= ex_uop_i.branch_mask;
+        completion_q.branch_mask <= clear_if_checkpoint_clear(
+            ex_uop_i.branch_mask);
+        completion_branch_mask_q <= clear_if_checkpoint_clear(
+            ex_uop_i.branch_mask);
         completion_valid_q <= 1'b1;
 
         branch_event_q <= make_branch_event(ex_uop_i);
-        branch_event_mask_q <= ex_uop_i.branch_mask;
+        branch_event_mask_q <= clear_if_checkpoint_clear(ex_uop_i.branch_mask);
       end else if (result_valid_o && result_ready_i) begin
         completion_q <= '0;
         completion_branch_mask_q <= '0;
         completion_valid_q <= 1'b0;
+      end else if (checkpoint_clear_i && completion_valid_q) begin
+        completion_branch_mask_q <= clear_checkpoint(completion_branch_mask_q,
+                                                     checkpoint_clear_id_i);
+        completion_q.branch_mask <= clear_checkpoint(completion_branch_mask_q,
+                                                     checkpoint_clear_id_i);
+        branch_event_mask_q <= clear_checkpoint(branch_event_mask_q,
+                                                checkpoint_clear_id_i);
       end
     end
   end
@@ -276,7 +300,10 @@ module int_branch_pipeline1 (
       assert (ex_uop_i.valid)
         else $error("int_branch_pipeline1 accepted an invalid execute uop");
       assert ((ex_uop_i.fu_type == FU_INT) || (ex_uop_i.fu_type == FU_BRANCH))
-        else $error("int_branch_pipeline1 accepted unsupported FU");
+        else $error("int_branch_pipeline1 accepted unsupported FU pc=%08h fu=%0d alu=%0d branch=%0d rob=%0d prd=%0d mask=%b",
+                    ex_uop_i.pc, ex_uop_i.fu_type, ex_uop_i.alu_op,
+                    ex_uop_i.branch_op, ex_uop_i.rob_id, ex_uop_i.prd,
+                    ex_uop_i.branch_mask);
       assert ((ex_uop_i.alu_op != ALU_SLL) &&
               (ex_uop_i.alu_op != ALU_SRL) &&
               (ex_uop_i.alu_op != ALU_SRA))

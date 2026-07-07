@@ -191,6 +191,8 @@ module rat_amt (
         if (checkpoint_clear_i) begin
           active_branch_mask_q[checkpoint_clear_id_i] <= 1'b0;
           checkpoint_valid_q[checkpoint_clear_id_i] <= 1'b0;
+          for (index = 0; index < CHECKPOINTS; index = index + 1)
+            checkpoint_mask_q[index][checkpoint_clear_id_i] <= 1'b0;
         end
 
         // D. 建立分支投机检查点 (Branch Checkpoint saving)

@@ -47,6 +47,7 @@ module csr_file #(
 );
 
   localparam logic [11:0] CSR_MSTATUS  = 12'h300;
+  localparam logic [11:0] CSR_MISA     = 12'h301;
   localparam logic [11:0] CSR_MIE      = 12'h304;
   localparam logic [11:0] CSR_MTVEC    = 12'h305;
   localparam logic [11:0] CSR_MSCRATCH = 12'h340;
@@ -56,7 +57,11 @@ module csr_file #(
   localparam logic [11:0] CSR_MIP      = 12'h344;
   localparam logic [11:0] CSR_MCYCLE   = 12'hb00;
   localparam logic [11:0] CSR_MINSTRET = 12'hb02;
+  localparam logic [11:0] CSR_MVENDORID = 12'hf11;
+  localparam logic [11:0] CSR_MARCHID   = 12'hf12;
+  localparam logic [11:0] CSR_MIMPID    = 12'hf13;
   localparam logic [11:0] CSR_MHARTID  = 12'hf14;
+  localparam logic [XLEN-1:0] MISA_VALUE = 32'h4000_1100;
 
   localparam int MSTATUS_MIE  = 3;
   localparam int MSTATUS_MPIE = 7;
@@ -72,11 +77,15 @@ module csr_file #(
   logic [XLEN-1:0] mip_q;
   logic [XLEN-1:0] mcycle_q;
   logic [XLEN-1:0] minstret_q;
+  logic csr_forward_valid_q;
+  logic [11:0] csr_forward_addr_q;
+  logic [XLEN-1:0] csr_forward_data_q;
 
   logic csr_known;
   logic csr_read_only;
   logic csr_write_intent;
   logic csr_write_enable;
+  logic [XLEN-1:0] csr_rdata;
   logic [XLEN-1:0] csr_operand;
   logic [XLEN-1:0] csr_new_value;
 
@@ -94,9 +103,10 @@ module csr_file #(
   function automatic logic is_known_csr(input logic [11:0] addr);
     begin
       unique case (addr)
-        CSR_MSTATUS, CSR_MIE, CSR_MTVEC, CSR_MSCRATCH,
+        CSR_MSTATUS, CSR_MISA, CSR_MIE, CSR_MTVEC, CSR_MSCRATCH,
         CSR_MEPC, CSR_MCAUSE, CSR_MTVAL, CSR_MIP,
-        CSR_MCYCLE, CSR_MINSTRET, CSR_MHARTID: is_known_csr = 1'b1;
+        CSR_MCYCLE, CSR_MINSTRET, CSR_MVENDORID, CSR_MARCHID,
+        CSR_MIMPID, CSR_MHARTID: is_known_csr = 1'b1;
         default: is_known_csr = 1'b0;
       endcase
     end
@@ -104,7 +114,29 @@ module csr_file #(
 
   function automatic logic is_read_only_csr(input logic [11:0] addr);
     begin
-      is_read_only_csr = (addr == CSR_MHARTID);
+      is_read_only_csr = (addr == CSR_MISA) || (addr == CSR_MVENDORID) ||
+                         (addr == CSR_MARCHID) || (addr == CSR_MIMPID) ||
+                         (addr == CSR_MHARTID);
+    end
+  endfunction
+
+  function automatic logic is_counter_csr(input logic [11:0] addr);
+    begin
+      is_counter_csr = (addr == CSR_MCYCLE) || (addr == CSR_MINSTRET);
+    end
+  endfunction
+
+  function automatic logic [XLEN-1:0] canonical_write_value(
+      input logic [11:0] addr,
+      input logic [XLEN-1:0] value
+  );
+    begin
+      unique case (addr)
+        CSR_MSTATUS: canonical_write_value = mask_mstatus(value);
+        CSR_MTVEC:   canonical_write_value = {value[XLEN-1:2], 2'b00};
+        CSR_MEPC:    canonical_write_value = {value[XLEN-1:1], 1'b0};
+        default:     canonical_write_value = value;
+      endcase
     end
   endfunction
 
@@ -112,6 +144,7 @@ module csr_file #(
     begin
       unique case (addr)
         CSR_MSTATUS:  read_csr = mstatus_q;
+        CSR_MISA:     read_csr = MISA_VALUE;
         CSR_MIE:      read_csr = mie_q;
         CSR_MTVEC:    read_csr = mtvec_q;
         CSR_MSCRATCH: read_csr = mscratch_q;
@@ -121,6 +154,9 @@ module csr_file #(
         CSR_MIP:      read_csr = mip_q;
         CSR_MCYCLE:   read_csr = mcycle_q;
         CSR_MINSTRET: read_csr = minstret_q;
+        CSR_MVENDORID,
+        CSR_MARCHID,
+        CSR_MIMPID:   read_csr = '0;
         CSR_MHARTID:  read_csr = HART_ID;
         default:      read_csr = '0;
       endcase
@@ -138,9 +174,9 @@ module csr_file #(
   always_comb begin : csr_alu
     unique case (csr_op_i)
       CSR_RW, CSR_RWI: csr_new_value = csr_operand;
-      CSR_RS, CSR_RSI: csr_new_value = csr_rdata_o | csr_operand;
-      CSR_RC, CSR_RCI: csr_new_value = csr_rdata_o & ~csr_operand;
-      default:         csr_new_value = csr_rdata_o;
+      CSR_RS, CSR_RSI: csr_new_value = csr_rdata | csr_operand;
+      CSR_RC, CSR_RCI: csr_new_value = csr_rdata & ~csr_operand;
+      default:         csr_new_value = csr_rdata;
     endcase
   end
 
@@ -148,7 +184,10 @@ module csr_file #(
       ((csr_op_i == CSR_RW) || (csr_op_i == CSR_RWI) || (csr_operand != '0));
   assign csr_write_enable = csr_valid_i && csr_commit_i && csr_known &&
                             !csr_read_only && csr_write_intent;
-  assign csr_rdata_o = read_csr(csr_addr_i);
+  assign csr_rdata =
+      (csr_forward_valid_q && (csr_forward_addr_q == csr_addr_i)) ?
+      csr_forward_data_q : read_csr(csr_addr_i);
+  assign csr_rdata_o = csr_rdata;
   assign csr_illegal_o =
       csr_valid_i && (!csr_known || (csr_read_only && csr_write_intent));
   assign csr_result_valid_o = csr_valid_i && csr_ready_o;
@@ -177,12 +216,16 @@ module csr_file #(
       mip_q <= '0;
       mcycle_q <= '0;
       minstret_q <= '0;
+      csr_forward_valid_q <= 1'b0;
+      csr_forward_addr_q <= '0;
+      csr_forward_data_q <= '0;
     end else begin
       mcycle_q <= mcycle_q + 32'd1;
       if (retire_valid_i)
         minstret_q <= minstret_q + {{(XLEN-2){1'b0}}, retire_count_i};
 
       if (exception_valid_i) begin
+        csr_forward_valid_q <= 1'b0;
         mstatus_next = mstatus_q;
         mstatus_next[MSTATUS_MPIE] = mstatus_q[MSTATUS_MIE];
         mstatus_next[MSTATUS_MIE] = 1'b0;
@@ -192,12 +235,17 @@ module csr_file #(
         mcause_q <= {{(XLEN-4){1'b0}}, exception_cause_i};
         mtval_q <= exception_tval_i;
       end else if (mret_valid_i) begin
+        csr_forward_valid_q <= 1'b0;
         mstatus_next = mstatus_q;
         mstatus_next[MSTATUS_MIE] = mstatus_q[MSTATUS_MPIE];
         mstatus_next[MSTATUS_MPIE] = 1'b1;
         mstatus_next[MSTATUS_MPP_LSB +: 2] = 2'b00;
         mstatus_q <= mask_mstatus(mstatus_next);
       end else if (csr_write_enable && !csr_illegal_o) begin
+        csr_forward_valid_q <= !is_counter_csr(csr_addr_i);
+        csr_forward_addr_q <= csr_addr_i;
+        csr_forward_data_q <= canonical_write_value(csr_addr_i,
+                                                    csr_new_value);
         unique case (csr_addr_i)
           CSR_MSTATUS:  mstatus_q <= mask_mstatus(csr_new_value);
           CSR_MIE:      mie_q <= csr_new_value;
@@ -212,6 +260,8 @@ module csr_file #(
           default: begin
           end
         endcase
+      end else if (csr_valid_i && csr_commit_i) begin
+        csr_forward_valid_q <= 1'b0;
       end
     end
   end

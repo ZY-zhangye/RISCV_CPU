@@ -115,6 +115,8 @@ module backend_int_cluster #(
   logic [1:0][XLEN-1:0] prf_write_data;
   logic [1:0] wakeup_valid;
   logic [1:0][PRD_W-1:0] wakeup_prd;
+  logic [1:0] ready_wakeup_valid;
+  logic [1:0][PRD_W-1:0] ready_wakeup_prd;
   logic [1:0] rob_complete_valid;
   completion_t rob_complete [0:1];
 
@@ -174,6 +176,8 @@ module backend_int_cluster #(
       .wb_prd_i(prf_write_prd),
       .wb_data_i(prf_write_data),
       .prf_ready_bits_o,
+      .wakeup_valid_o(ready_wakeup_valid),
+      .wakeup_prd_o(ready_wakeup_prd),
       .store_commit_valid_o,
       .store_commit_sq_id_o,
       .store_commit_ready_i,
@@ -216,8 +220,10 @@ module backend_int_cluster #(
       .mdu_push_ready_i(2'b00),
       .mdu_push_uop0_o(),
       .mdu_push_uop1_o(),
-      .wb_valid_i(wakeup_valid),
-      .wb_prd_i(wakeup_prd),
+      .wb_valid_i(ready_wakeup_valid),
+      .wb_prd_i(ready_wakeup_prd),
+      .checkpoint_clear_i(checkpoint_clear_valid_o),
+      .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o),
       .empty_o(db_empty),
       .full_o(db_full),
@@ -234,8 +240,9 @@ module backend_int_cluster #(
       .push_ready_o(int_iq_push_ready),
       .push_uop0_i(int_push_uop0),
       .push_uop1_i(int_push_uop1),
-      .wb_valid_i(wakeup_valid),
-      .wb_prd_i(wakeup_prd),
+      .wb_valid_i(ready_wakeup_valid),
+      .wb_prd_i(ready_wakeup_prd),
+      .prf_ready_bits_i(prf_ready_bits_o),
       .candidate_valid_o(int_candidate_valid),
       .candidate_uop0_o(int_candidate_uop0),
       .candidate_uop1_o(int_candidate_uop1),
@@ -245,6 +252,8 @@ module backend_int_cluster #(
       .candidate_slot2_o(unused_int_slot2),
       .issue_grant_i(int_issue_grant),
       .candidate_reselect_i(3'b000),
+      .checkpoint_clear_i(checkpoint_clear_valid_o),
+      .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o),
       .empty_o(int_iq_empty),
       .full_o(int_iq_full),
@@ -314,6 +323,8 @@ module backend_int_cluster #(
       .mdu_valid_o(),
       .mdu_ready_i(1'b0),
       .mdu_uop_o(),
+      .checkpoint_clear_i(checkpoint_clear_valid_o),
+      .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o)
   );
 
@@ -326,6 +337,8 @@ module backend_int_cluster #(
       .result_valid_o(int0_result_valid),
       .result_ready_i(int0_result_ready),
       .result_o(int0_result),
+      .checkpoint_clear_i(checkpoint_clear_valid_o),
+      .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o)
   );
 
@@ -339,6 +352,8 @@ module backend_int_cluster #(
       .result_ready_i(int1_result_ready),
       .result_o(int1_result),
       .branch_event_o(branch_event_raw),
+      .checkpoint_clear_i(checkpoint_clear_valid_o),
+      .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o)
   );
 

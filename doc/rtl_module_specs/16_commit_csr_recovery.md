@@ -47,15 +47,18 @@ mcycle、minstret、mhartid。CSR 指令到达 ROB head 后读取、计算旧值
 CSR 执行期间暂停年轻提交和新序列化操作，但不需要全核组合停顿；前端停止通过
 recovery/serialize 状态逐级生效。
 
-### 3.1 CSR File V1 实现状态（2026-07-05）
+### 3.1 CSR File V1 实现状态（2026-07-07）
 
 `rtl/commit/csr_file.sv` 已实现 commit-time machine-mode CSR 状态文件：
 
-- 支持 `mstatus/mie/mtvec/mscratch/mepc/mcause/mtval/mip/mcycle/minstret/mhartid`。
+- 支持 `mstatus/misa/mie/mtvec/mscratch/mepc/mcause/mtval/mip/mcycle/minstret`，
+  以及 `mvendorid/marchid/mimpid/mhartid`。
 - CSR 指令组合读旧值，时钟沿按 `CSR_RW/RS/RC/RWI/RSI/RCI` 原子更新。
 - CSR 组合检查与 `csr_commit_i` 副作用使能分离，等待 PRF/reclaim 时不会提前改状态。
 - `CSRRS/CSRRC/CSRRSI/CSRRCI` 在 operand/zimm 为 0 时不写 CSR。
-- `mhartid` 只读，未知地址或只读写入产生 `csr_illegal_o`。
+- `misa` 固定返回 `32'h4000_1100`，表示 RV32IM；`mvendorid/marchid/mimpid`
+  作为只读 machine ID CSR 返回 0。
+- `misa/mvendorid/marchid/mimpid/mhartid` 只读，未知地址或只读写入产生 `csr_illegal_o`。
 - 异常入口写 `mepc/mcause/mtval`，并执行 machine-mode `mstatus` 栈切换；
   `exception_vector_o` 输出对齐后的 `mtvec`。
 - `mret_valid_i` 恢复 `MIE/MPIE/MPP` 并输出 `mepc` 作为返回 PC。
@@ -266,9 +269,10 @@ IQ、LSQ、MDU 的 done/ack，避免假定所有模块一拍完成。
 
 ## 10. 当前验证状态
 
-- `test/tb_csr_file.sv` 覆盖 CSR 读改写、只读/未知地址非法、`mcycle/minstret`、
-  异常入口和 MRET 状态恢复。QuestaSim 最小测试和 23 项当前回归均通过，
-  `Errors: 0, Warnings: 0`。Vivado 5 ns OOC 时序验证待运行后补充最终 WNS/资源。
+- `test/tb_csr_file.sv` 覆盖 CSR 读改写、只读/未知地址非法、`misa`/machine ID CSR、
+  `mcycle/minstret`、异常入口和 MRET 状态恢复。QuestaSim directed 测试通过。
+  SoC official HEX 已通过 `rv32mi-p-csr` 与 `rv32mi-p-mcsr`。
+  Vivado 5 ns OOC 时序验证待运行后补充最终 WNS/资源。
 - `test/tb_commit_unit.sv` 覆盖普通双提交、serializing 单提交、incomplete lane0 阻塞、
   lane1 exception 阻止同周期双提交、lane0 exception recovery，以及 Store 两阶段提交。
   QuestaSim 最小测试和 24 项当前回归均通过，`Errors: 0, Warnings: 0`。Vivado 5 ns OOC 时序验证待运行后补充最终 WNS/资源。

@@ -41,6 +41,8 @@ module commit_csr_prf_cluster #(
     output logic [1:0]                   instret_count_o,
     output logic                         store_pending_o,
     output logic                         csr_wb_pending_o,
+    output logic                         csr_commit_wakeup_valid_o,
+    output logic [PRD_W-1:0]             csr_commit_wakeup_prd_o,
     output logic [XLEN-1:0]              mstatus_o,
     output logic [XLEN-1:0]              mtvec_o,
     output logic [XLEN-1:0]              mepc_o,
@@ -62,6 +64,8 @@ module commit_csr_prf_cluster #(
   assign csr_wb_pending_o = csr_wb_pending_q;
   assign csr_wb_buffer_ready = !csr_wb_pending_q && prf_commit_ready;
   assign prf_commit_fire = csr_wb_pending_q && prf_commit_ready;
+  assign csr_commit_wakeup_valid_o = prf_commit_fire;
+  assign csr_commit_wakeup_prd_o = csr_wb_prd_q;
 
   always_ff @(posedge clk_i) begin
     if (rst_i) begin

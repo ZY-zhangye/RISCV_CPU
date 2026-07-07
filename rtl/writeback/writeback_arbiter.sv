@@ -117,6 +117,48 @@ module writeback_arbiter (
       if (consumes_prf_bank(first) && consumes_prf_bank(second) &&
           (first.prd[0] == second.prd[0]))
         pair_allowed = 1'b0;
+      end
+  endfunction
+
+  function automatic logic [CHECKPOINTS-1:0] clear_checkpoint(
+      input logic [CHECKPOINTS-1:0] mask,
+      input logic [CP_W-1:0] checkpoint_id
+  );
+    logic [CHECKPOINTS-1:0] one_hot;
+    begin
+      one_hot = '0;
+      one_hot[checkpoint_id] = 1'b1;
+      clear_checkpoint = mask & ~one_hot;
+    end
+  endfunction
+
+  function automatic completion_t clear_completion_checkpoint(
+      input completion_t completion,
+      input logic [CP_W-1:0] checkpoint_id
+  );
+    completion_t cleared;
+    begin
+      cleared = completion;
+      cleared.branch_mask = clear_checkpoint(completion.branch_mask,
+                                             checkpoint_id);
+      clear_completion_checkpoint = cleared;
+    end
+  endfunction
+
+  function automatic logic completion_killed_by_recovery(
+      input completion_t completion,
+      input recovery_t recovery
+  );
+    begin
+      completion_killed_by_recovery = 1'b0;
+      if (completion.valid && recovery.valid) begin
+        if (recovery.cause == REC_EXCEPT) begin
+          completion_killed_by_recovery = 1'b1;
+        end else if (recovery.cause == REC_BRANCH) begin
+          completion_killed_by_recovery =
+              completion.branch_mask[recovery.checkpoint_id];
+        end
+      end
     end
   endfunction
 
@@ -158,6 +200,9 @@ module writeback_arbiter (
   // --------------------------------------------------------------------------
   always_ff @(posedge clk_i) begin : pipeline_state
     integer idx;
+    integer lane;
+    logic kill_head;
+    logic kill_tail;
     if (rst_i) begin
       wb_valid_q <= '0;
       for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
@@ -168,7 +213,79 @@ module writeback_arbiter (
       for (idx = 0; idx < 2; idx = idx + 1)
         wb_q[idx] <= '0;
     end else if (recovery_i.valid) begin
-      wb_valid_q <= '0;
+      if (recovery_i.cause == REC_EXCEPT) begin
+        wb_valid_q <= '0;
+        for (lane = 0; lane < 2; lane = lane + 1)
+          wb_q[lane] <= '0;
+        for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
+          buf_count_q[idx] <= '0;
+          buf_head_q[idx] <= '0;
+          buf_tail_q[idx] <= '0;
+        end
+      end else begin
+        for (lane = 0; lane < 2; lane = lane + 1) begin
+          if (wb_valid_q[lane]) begin
+            if (completion_killed_by_recovery(wb_q[lane], recovery_i)) begin
+              wb_valid_q[lane] <= 1'b0;
+              wb_q[lane] <= '0;
+            end else begin
+              wb_q[lane] <= clear_completion_checkpoint(
+                  wb_q[lane], recovery_i.checkpoint_id);
+            end
+          end
+        end
+
+        for (idx = 0; idx < PRODUCERS; idx = idx + 1) begin
+          unique case (buf_count_q[idx])
+            2'd1: begin
+              kill_head = completion_killed_by_recovery(
+                  buf_head_q[idx], recovery_i);
+              if (kill_head) begin
+                buf_count_q[idx] <= '0;
+                buf_head_q[idx] <= '0;
+                buf_tail_q[idx] <= '0;
+              end else begin
+                buf_head_q[idx] <= clear_completion_checkpoint(
+                    buf_head_q[idx], recovery_i.checkpoint_id);
+                buf_tail_q[idx] <= '0;
+              end
+            end
+            2'd2: begin
+              kill_head = completion_killed_by_recovery(
+                  buf_head_q[idx], recovery_i);
+              kill_tail = completion_killed_by_recovery(
+                  buf_tail_q[idx], recovery_i);
+              unique case ({kill_tail, kill_head})
+                2'b00: begin
+                  buf_head_q[idx] <= clear_completion_checkpoint(
+                      buf_head_q[idx], recovery_i.checkpoint_id);
+                  buf_tail_q[idx] <= clear_completion_checkpoint(
+                      buf_tail_q[idx], recovery_i.checkpoint_id);
+                end
+                2'b01: begin
+                  buf_head_q[idx] <= clear_completion_checkpoint(
+                      buf_tail_q[idx], recovery_i.checkpoint_id);
+                  buf_tail_q[idx] <= '0;
+                  buf_count_q[idx] <= 2'd1;
+                end
+                2'b10: begin
+                  buf_head_q[idx] <= clear_completion_checkpoint(
+                      buf_head_q[idx], recovery_i.checkpoint_id);
+                  buf_tail_q[idx] <= '0;
+                  buf_count_q[idx] <= 2'd1;
+                end
+                default: begin
+                  buf_head_q[idx] <= '0;
+                  buf_tail_q[idx] <= '0;
+                  buf_count_q[idx] <= '0;
+                end
+              endcase
+            end
+            default: begin
+            end
+          endcase
+        end
+      end
     end else begin
       wb_valid_q[0] <= lane_valid_d[0];
       wb_valid_q[1] <= lane_valid_d[1];

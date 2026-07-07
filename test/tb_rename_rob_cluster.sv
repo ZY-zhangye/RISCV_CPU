@@ -51,6 +51,7 @@ module tb_rename_rob_cluster;
   logic [3:0] free_sq_count_o;
   logic [$clog2(CHECKPOINTS+1)-1:0] active_checkpoint_count_o;
   logic busy_o;
+  logic rob_busy_o;
 
   rename_rob_cluster dut (.*);
 

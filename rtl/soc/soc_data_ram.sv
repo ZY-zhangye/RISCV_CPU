@@ -1,9 +1,9 @@
 // Simple SoC data RAM wrapper.
 //
-// V1 stores 32-bit words and accepts typed LSU memory requests after address
-// routing. Loads produce a one-cycle registered response when the response slot
-// is free. Stores are committed side effects and update bytes selected by
-// byte_enable.
+// V1 stores bytes in 32-bit word banks and accepts LSU memory requests after
+// address routing. Loads return the 4-byte window starting at the byte address.
+// Stores update absolute byte addresses selected by byte_enable, so byte/half/
+// word accesses may cross an aligned word boundary.
 import core_types_pkg::*;
 
 module soc_data_ram #(
@@ -49,16 +49,9 @@ module soc_data_ram #(
   logic load_hit;
   logic store_hit;
   logic init_hit;
-  logic [WORD_INDEX_W-1:0] load_index;
-  logic [WORD_INDEX_W-1:0] store_index;
-  logic [WORD_INDEX_W-1:0] init_index;
   logic load_fire;
   logic store_fire;
   logic init_fire;
-  logic ram_write_valid;
-  logic [WORD_INDEX_W-1:0] ram_write_index;
-  logic [XLEN-1:0] ram_write_data;
-  logic [3:0] ram_write_wstrb;
 
   function automatic logic in_range(input logic [XLEN-1:0] addr);
     logic [XLEN-1:0] offset;
@@ -78,12 +71,35 @@ module soc_data_ram #(
     end
   endfunction
 
-  assign load_hit = load_req_i.valid && in_range(load_req_i.address);
-  assign store_hit = store_req_i.valid && in_range(store_req_i.address);
-  assign init_hit = init_write_valid_i && in_range(init_write_addr_i);
-  assign load_index = word_index(load_req_i.address);
-  assign store_index = word_index(store_req_i.address);
-  assign init_index = word_index(init_write_addr_i);
+  function automatic logic [1:0] byte_lane(input logic [XLEN-1:0] addr);
+    logic [XLEN-1:0] offset;
+    begin
+      offset = addr - BASE_ADDR;
+      byte_lane = offset[1:0];
+    end
+  endfunction
+
+  function automatic logic byte_window_in_range(
+      input logic [XLEN-1:0] address,
+      input logic [3:0] mask
+  );
+    begin
+      byte_window_in_range = 1'b1;
+      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
+        if (mask[byte_idx] && !in_range(address + byte_idx))
+          byte_window_in_range = 1'b0;
+      end
+    end
+  endfunction
+
+  assign load_hit = load_req_i.valid &&
+                    byte_window_in_range(load_req_i.address, 4'b1111);
+  assign store_hit = store_req_i.valid &&
+                     byte_window_in_range(store_req_i.address,
+                                          store_req_i.byte_enable);
+  assign init_hit = init_write_valid_i &&
+                    byte_window_in_range(init_write_addr_i,
+                                         init_write_wstrb_i);
 
   assign load_req_ready_o = !load_pipe_valid_q && !load_resp_q.valid;
   assign store_req_ready_o = !init_write_valid_i;
@@ -94,10 +110,6 @@ module soc_data_ram #(
   assign load_fire = load_req_i.valid && load_req_ready_o;
   assign store_fire = store_req_i.valid && store_req_ready_o;
   assign init_fire = init_write_valid_i && init_hit;
-  assign ram_write_valid = init_fire || (store_fire && store_hit);
-  assign ram_write_index = init_fire ? init_index : store_index;
-  assign ram_write_data = init_fire ? init_write_data_i : store_req_i.data;
-  assign ram_write_wstrb = init_fire ? init_write_wstrb_i : store_req_i.byte_enable;
 
 `ifndef SYNTHESIS
   initial begin
@@ -107,15 +119,39 @@ module soc_data_ram #(
 `endif
 
   always_ff @(posedge clk_i) begin
-    if (ram_write_valid) begin
-      if (ram_write_wstrb[0])
-        mem_b0_q[ram_write_index] <= ram_write_data[7:0];
-      if (ram_write_wstrb[1])
-        mem_b1_q[ram_write_index] <= ram_write_data[15:8];
-      if (ram_write_wstrb[2])
-        mem_b2_q[ram_write_index] <= ram_write_data[23:16];
-      if (ram_write_wstrb[3])
-        mem_b3_q[ram_write_index] <= ram_write_data[31:24];
+    logic [XLEN-1:0] write_addr;
+    logic [XLEN-1:0] load_addr;
+    logic [WORD_INDEX_W-1:0] access_index;
+    logic [1:0] access_lane;
+
+    if (init_fire) begin
+      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
+        if (init_write_wstrb_i[byte_idx]) begin
+          write_addr = init_write_addr_i + byte_idx;
+          access_index = word_index(write_addr);
+          access_lane = byte_lane(write_addr);
+          unique case (access_lane)
+            2'd0: mem_b0_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
+            2'd1: mem_b1_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
+            2'd2: mem_b2_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
+            default: mem_b3_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
+          endcase
+        end
+      end
+    end else if (store_fire && store_hit) begin
+      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
+        if (store_req_i.byte_enable[byte_idx]) begin
+          write_addr = store_req_i.address + byte_idx;
+          access_index = word_index(write_addr);
+          access_lane = byte_lane(write_addr);
+          unique case (access_lane)
+            2'd0: mem_b0_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
+            2'd1: mem_b1_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
+            2'd2: mem_b2_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
+            default: mem_b3_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
+          endcase
+        end
+      end
     end
 
     if (rst_i) begin
@@ -135,10 +171,17 @@ module soc_data_ram #(
         load_pipe_data_q <= '0;
 
         if (load_hit) begin
-          load_pipe_data_q[7:0] <= mem_b0_q[load_index];
-          load_pipe_data_q[15:8] <= mem_b1_q[load_index];
-          load_pipe_data_q[23:16] <= mem_b2_q[load_index];
-          load_pipe_data_q[31:24] <= mem_b3_q[load_index];
+          for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
+            load_addr = load_req_i.address + byte_idx;
+            access_index = word_index(load_addr);
+            access_lane = byte_lane(load_addr);
+            unique case (access_lane)
+              2'd0: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b0_q[access_index];
+              2'd1: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b1_q[access_index];
+              2'd2: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b2_q[access_index];
+              default: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b3_q[access_index];
+            endcase
+          end
         end
       end
 
@@ -156,12 +199,10 @@ module soc_data_ram #(
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin
       if (load_req_i.valid)
-        assert (load_req_i.address[1:0] == 2'b00)
-          else $error("soc_data_ram load address is not word aligned");
+        assert (byte_window_in_range(load_req_i.address, 4'b1111))
+          else $error("soc_data_ram load address window is out of range");
 
       if (store_req_i.valid) begin
-        assert (store_req_i.address[1:0] == 2'b00)
-          else $error("soc_data_ram store address is not word aligned");
         assert (store_req_i.byte_enable != 4'b0000)
           else $error("soc_data_ram store byte_enable is zero");
       end

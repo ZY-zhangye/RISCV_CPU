@@ -67,6 +67,7 @@ module frontend_backend_cluster #(
   logic bp_query_valid;
   logic branch_update_valid;
   branch_update_t branch_update;
+  logic frontend_flush;
 
   logic [1:0] ibuf_decode_valid;
   logic ibuf_decode_ready;
@@ -77,6 +78,8 @@ module frontend_backend_cluster #(
   logic dec_ready;
   decoded_uop_t dec_uop0;
   decoded_uop_t dec_uop1;
+
+  assign frontend_flush = recovery_busy_o || redirect_valid_o;
 
   fetch_pipeline u_fetch (
       .clk_i,
@@ -115,7 +118,7 @@ module frontend_backend_cluster #(
       .decode_ready_i(ibuf_decode_ready),
       .decode_slot0_o(decode_slot0),
       .decode_slot1_o(decode_slot1),
-      .flush_i(redirect_valid_o),
+      .flush_i(frontend_flush),
       .occupancy_o(ibuf_occupancy_o)
   );
 
@@ -130,7 +133,7 @@ module frontend_backend_cluster #(
       .out_ready_i(dec_ready),
       .decoded_uop0_o(dec_uop0),
       .decoded_uop1_o(dec_uop1),
-      .flush_i(redirect_valid_o)
+      .flush_i(frontend_flush)
   );
 
   backend_mdu_cluster #(

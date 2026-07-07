@@ -64,6 +64,10 @@ module operand_read_stage (
     input  logic                         mdu_ready_i,       // MDU 就绪接收信号 (反压)
     output execute_uop_t                 mdu_uop_o,         // MDU 执行包 payload
 
+    // 分支预测正确时释放对应 checkpoint
+    input  logic                         checkpoint_clear_i,
+    input  logic [CP_W-1:0]              checkpoint_clear_id_i,
+
     // 恢复控制包 (分支误预测或异常)
     input  wire recovery_t               recovery_i
 );
@@ -207,6 +211,17 @@ module operand_read_stage (
     end
   endfunction
 
+  function automatic issue_uop_t clear_issue_checkpoint(input issue_uop_t uop);
+    issue_uop_t cleared;
+    begin
+      cleared = uop;
+      if (checkpoint_clear_i)
+        cleared.branch_mask = clear_checkpoint(cleared.branch_mask,
+                                               checkpoint_clear_id_i);
+      clear_issue_checkpoint = cleared;
+    end
+  endfunction
+
   // ==========================================================================
   // 通道分发路由组合块 (Incoming Routing Combinational Block)
   // ==========================================================================
@@ -229,7 +244,7 @@ module operand_read_stage (
           default:    port_index = ISSUE_MDU;
         endcase
         incoming_valid[port_index] = 1'b1;
-        incoming_uop[port_index] = slot_uop[slot];
+        incoming_uop[port_index] = clear_issue_checkpoint(slot_uop[slot]);
         incoming_slot[port_index] = slot[1:0];           // 记录该 uop 来自哪一个发射 Slot
       end
     end
@@ -309,6 +324,11 @@ module operand_read_stage (
       meta_execute[port_index] = make_execute(meta_uop_q[port_index],
                                               resolved_src1[port_index],
                                               resolved_src2[port_index]);
+      if (checkpoint_clear_i) begin
+        meta_execute[port_index].branch_mask = clear_checkpoint(
+            meta_execute[port_index].branch_mask,
+            checkpoint_clear_id_i);
+      end
     end
   end
 
@@ -341,6 +361,11 @@ module operand_read_stage (
           meta_uop_q[port_index].branch_mask <= clear_checkpoint(
               meta_uop_q[port_index].branch_mask,
               recovery_i.checkpoint_id);
+          if (!meta_data_valid_q[port_index]) begin
+            meta_src1_q[port_index] <= resolved_src1[port_index];
+            meta_src2_q[port_index] <= resolved_src2[port_index];
+            meta_data_valid_q[port_index] <= 1'b1;
+          end
         end
 
         if ((recovery_i.cause == REC_EXCEPT) ||
@@ -391,6 +416,19 @@ module operand_read_stage (
           meta_uop_q[port_index] <= incoming_uop[port_index];
           meta_slot_q[port_index] <= incoming_slot[port_index];
         end
+
+        if (checkpoint_clear_i) begin
+          if (meta_valid_q[port_index] && !meta_ready[port_index]) begin
+            meta_uop_q[port_index].branch_mask <= clear_checkpoint(
+                meta_uop_q[port_index].branch_mask,
+                checkpoint_clear_id_i);
+          end
+          if (response_valid_q[port_index] && !response_ready[port_index]) begin
+            response_uop_q[port_index].branch_mask <= clear_checkpoint(
+                response_uop_q[port_index].branch_mask,
+                checkpoint_clear_id_i);
+          end
+        end
       end
     end
   end
@@ -401,20 +439,24 @@ module operand_read_stage (
 `ifndef SYNTHESIS
   // 断言：当执行端不就绪（Stall）时，四个执行通道的输出端口和 valid 状态必须保持稳定
   property int0_hold_stable;
-    @(posedge clk_i) disable iff (rst_i || recovery_i.valid)
-      int0_valid_o && !int0_ready_i |=> int0_valid_o && $stable(int0_uop_o);
+    @(posedge clk_i) disable iff (rst_i)
+      int0_valid_o && !int0_ready_i && !recovery_i.valid |=>
+        recovery_i.valid || (int0_valid_o && $stable(int0_uop_o));
   endproperty
   property int1_hold_stable;
-    @(posedge clk_i) disable iff (rst_i || recovery_i.valid)
-      int1_valid_o && !int1_ready_i |=> int1_valid_o && $stable(int1_uop_o);
+    @(posedge clk_i) disable iff (rst_i)
+      int1_valid_o && !int1_ready_i && !recovery_i.valid |=>
+        recovery_i.valid || (int1_valid_o && $stable(int1_uop_o));
   endproperty
   property lsu_hold_stable;
-    @(posedge clk_i) disable iff (rst_i || recovery_i.valid)
-      lsu_valid_o && !lsu_ready_i |=> lsu_valid_o && $stable(lsu_uop_o);
+    @(posedge clk_i) disable iff (rst_i)
+      lsu_valid_o && !lsu_ready_i && !recovery_i.valid |=>
+        recovery_i.valid || (lsu_valid_o && $stable(lsu_uop_o));
   endproperty
   property mdu_hold_stable;
-    @(posedge clk_i) disable iff (rst_i || recovery_i.valid)
-      mdu_valid_o && !mdu_ready_i |=> mdu_valid_o && $stable(mdu_uop_o);
+    @(posedge clk_i) disable iff (rst_i)
+      mdu_valid_o && !mdu_ready_i && !recovery_i.valid |=>
+        recovery_i.valid || (mdu_valid_o && $stable(mdu_uop_o));
   endproperty
 
   assert property (int0_hold_stable);

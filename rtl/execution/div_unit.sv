@@ -135,6 +135,7 @@ module div_unit (
       completion.producer = PROD_DIV;
       completion.write_prf = meta.write_rd;
       completion.is_store = 1'b0;
+      completion.branch_mask = meta.branch_mask;
       make_completion = completion;
     end
   endfunction
@@ -232,6 +233,11 @@ module div_unit (
       end else if (recovery_i.cause == REC_BRANCH) begin
         meta_q.branch_mask <= clear_checkpoint(meta_q.branch_mask,
                                                recovery_i.checkpoint_id);
+        if (state_q == ST_OUTPUT) begin
+          completion_q.branch_mask <= clear_checkpoint(
+              meta_q.branch_mask,
+              recovery_i.checkpoint_id);
+        end
       end
     end else begin
       unique case (state_q)

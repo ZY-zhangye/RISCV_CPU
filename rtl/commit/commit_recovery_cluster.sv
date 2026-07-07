@@ -43,6 +43,8 @@ module commit_recovery_cluster #(
     input  logic [1:0][PRD_W-1:0]        wb_prd_i,
     input  logic [1:0][XLEN-1:0]         wb_data_i,
     output logic [PHYS_REGS-1:0]         prf_ready_bits_o,
+    output logic [1:0]                   wakeup_valid_o,
+    output logic [1:0][PRD_W-1:0]        wakeup_prd_o,
 
     output logic                         store_commit_valid_o,
     output logic [SQ_ID_W-1:0]           store_commit_sq_id_o,
@@ -96,11 +98,16 @@ module commit_recovery_cluster #(
   logic [1:0] retire_count_q;
   logic [1:0] lq_retire_valid_q;
   logic [1:0][LQ_ID_W-1:0] lq_retire_id_q;
+  logic rob_busy;
   logic commit_txn_pending_q;
   logic commit_txn_fire;
   logic reclaim_drain_pending_q;
   logic csr_wb_pending;
+  logic csr_commit_wakeup_valid;
+  logic [PRD_W-1:0] csr_commit_wakeup_prd;
   logic commit_hold;
+  logic branch_mispredict_pending;
+  logic commit_txn_blocked;
   logic [1:0] alloc_clear_valid;
   logic [1:0][PRD_W-1:0] alloc_clear_prd;
   recovery_cause_t active_recovery_cause_q;
@@ -116,6 +123,7 @@ module commit_recovery_cluster #(
   assign branch_recovery_complete = redirect_valid_o &&
       (active_recovery_cause_q == REC_BRANCH);
   assign commit_txn_fire = commit_txn_pending_q &&
+      !commit_txn_blocked &&
       ((reclaim_valid_q == 2'b00) || reclaim_ready);
   assign retire_count_o = commit_txn_fire ? retire_count_q : 2'd0;
   assign lq_retire_valid_o = commit_txn_fire ? lq_retire_valid_q : 2'b00;
@@ -124,8 +132,18 @@ module commit_recovery_cluster #(
   assign commit_map1_commit = commit_txn_fire ? commit_map1_q : '0;
   assign reclaim_valid_offer = commit_txn_pending_q ? reclaim_valid_q : '0;
   assign reclaim_prd_commit = reclaim_prd_q;
-  assign commit_hold = recovery_busy_o || commit_txn_pending_q ||
-                       commit_recovery_q.valid || csr_wb_pending;
+  assign wakeup_valid_o[0] = csr_commit_wakeup_valid ? 1'b1 : wb_valid_i[0];
+  assign wakeup_valid_o[1] = wb_valid_i[1];
+  assign wakeup_prd_o[0] = csr_commit_wakeup_valid ?
+                           csr_commit_wakeup_prd : wb_prd_i[0];
+  assign wakeup_prd_o[1] = wb_prd_i[1];
+  assign branch_mispredict_pending = branch_i.valid && branch_i.mispredict;
+  assign commit_txn_blocked = recovery_busy_o || branch_mispredict_pending ||
+                              commit_recovery_q.valid || commit_recovery.valid ||
+                              rob_busy || checkpoint_clear_valid_o;
+  assign commit_hold = recovery_busy_o || branch_mispredict_pending ||
+                       commit_txn_pending_q || commit_recovery_q.valid ||
+                       csr_wb_pending;
   assign busy_o = rename_busy || recovery_busy_o || commit_txn_pending_q ||
                   reclaim_drain_pending_q ||
                   commit_recovery_q.valid || csr_wb_pending ||
@@ -217,9 +235,9 @@ module commit_recovery_cluster #(
       .reclaim_prd0_i(reclaim_prd_commit[0]),
       .reclaim_prd1_i(reclaim_prd_commit[1]),
       .reclaim_ready_o(reclaim_ready),
-      .wb_ready_valid_i(wb_valid_i),
-      .wb_ready_prd0_i(wb_prd_i[0]),
-      .wb_ready_prd1_i(wb_prd_i[1]),
+      .wb_ready_valid_i(wakeup_valid_o),
+      .wb_ready_prd0_i(wakeup_prd_o[0]),
+      .wb_ready_prd1_i(wakeup_prd_o[1]),
       .complete0_i,
       .complete1_i,
       .lq_release_valid_i,
@@ -243,7 +261,8 @@ module commit_recovery_cluster #(
       .free_lq_count_o,
       .free_sq_count_o,
       .active_checkpoint_count_o,
-      .busy_o(rename_busy)
+      .busy_o(rename_busy),
+      .rob_busy_o(rob_busy)
   );
 
   commit_csr_prf_cluster #(
@@ -278,6 +297,8 @@ module commit_recovery_cluster #(
       .instret_count_o(instret_count),
       .store_pending_o(store_pending),
       .csr_wb_pending_o(csr_wb_pending),
+      .csr_commit_wakeup_valid_o(csr_commit_wakeup_valid),
+      .csr_commit_wakeup_prd_o(csr_commit_wakeup_prd),
       .mstatus_o,
       .mtvec_o,
       .mepc_o,

@@ -137,6 +137,25 @@ module reorder_buffer (
     end
   endfunction
 
+  function automatic logic restore_kills_id(
+      input logic [ROB_ID_W-1:0] rob_id,
+      input logic [ROB_ID_W-1:0] restore_tail,
+      input logic [ROB_ROW_W-1:0] old_tail_row
+  );
+    logic [ROB_ROW_W-1:0] row;
+    begin
+      row = rob_id_row(rob_id);
+      if (!row_in_range(row, rob_id_row(restore_tail), old_tail_row)) begin
+        restore_kills_id = 1'b0;
+      end else if ((row == rob_id_row(restore_tail)) &&
+                   rob_id_bank(restore_tail)) begin
+        restore_kills_id = rob_id_bank(rob_id);
+      end else begin
+        restore_kills_id = 1'b1;
+      end
+    end
+  endfunction
+
   function automatic logic [1:0] lane_count(input logic [1:0] valid);
     lane_count = (valid == 2'b11) ? 2'd2 :
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
@@ -144,7 +163,11 @@ module reorder_buffer (
 
   // Ready 只表示本地容量/扫描状态，不能反向依赖 alloc_valid，否则与上游
   // ready->valid 协调逻辑形成组合环。非法 2'b10 不满足 lane0，因此不会 fire。
-  assign alloc_ready_o = !scan_busy_q && (used_rows_q != ROB_ROWS);
+  assign alloc_ready_o = !scan_busy_q &&
+                         !exception_flush_i &&
+                         !restore_valid_i &&
+                         !branch_clear_valid_i &&
+                         (used_rows_q != ROB_ROWS);
   assign alloc_fire = alloc_ready_o && alloc_valid_i[0];
 
   // 退休发射判定：ROB 非空、没有在扫描、提交端发出非零信号、且提交数量能覆盖当前整行已有的有效项
@@ -269,6 +292,41 @@ module reorder_buffer (
         scan_restore_q <= 1'b0;
         scan_row_q <= '0;
         scan_branch_id_q <= branch_clear_id_i;
+
+        // A correct-branch clear scan starts while younger work may still be
+        // completing. The scan will clear branch masks on following cycles, but
+        // the completion pulse itself must be captured in this init cycle.
+        if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
+          complete_q[complete0_i.rob_id] <= 1'b1;
+          if (entry_q[complete0_i.rob_id].is_csr ||
+              complete0_i.exception_valid) begin
+            alloc_tmp = entry_q[complete0_i.rob_id];
+            if (entry_q[complete0_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete0_i.data;
+            if (complete0_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete0_i.exception_cause;
+              alloc_tmp.exception_tval = complete0_i.exception_tval;
+            end
+            entry_q[complete0_i.rob_id] <= alloc_tmp;
+          end
+        end
+
+        if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
+          complete_q[complete1_i.rob_id] <= 1'b1;
+          if (entry_q[complete1_i.rob_id].is_csr ||
+              complete1_i.exception_valid) begin
+            alloc_tmp = entry_q[complete1_i.rob_id];
+            if (entry_q[complete1_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete1_i.data;
+            if (complete1_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete1_i.exception_cause;
+              alloc_tmp.exception_tval = complete1_i.exception_tval;
+            end
+            entry_q[complete1_i.rob_id] <= alloc_tmp;
+          end
+        end
       end
 
       // ----------------------------------------------------------------------
@@ -339,7 +397,85 @@ module reorder_buffer (
           scan_occupancy_q <= scan_occupancy_q + {4'd0, scan_row_count};
         end
 
-        // 扫描行遇到当前的头行时，同步更新输出寄存器
+        // Checkpoint scans are metadata operations, not execution stalls. Keep
+        // accepting completions for entries that survive the active scan;
+        // otherwise a completion that arrives during recovery is lost forever.
+        if (complete0_i.valid && valid_q[complete0_i.rob_id] &&
+            (!scan_restore_q ||
+             !restore_kills_id(complete0_i.rob_id, scan_restore_tail_q,
+                               scan_old_tail_row_q))) begin
+          complete_q[complete0_i.rob_id] <= 1'b1;
+          if (rob_id_row(complete0_i.rob_id) == scan_row_q) begin
+            if (rob_id_bank(complete0_i.rob_id))
+              scan_entry1.complete = 1'b1;
+            else
+              scan_entry0.complete = 1'b1;
+          end
+
+          if (entry_q[complete0_i.rob_id].is_csr ||
+              complete0_i.exception_valid ||
+              (!scan_restore_q &&
+               (rob_id_row(complete0_i.rob_id) == scan_row_q))) begin
+            alloc_tmp = entry_q[complete0_i.rob_id];
+            if (entry_q[complete0_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete0_i.data;
+            if (complete0_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete0_i.exception_cause;
+              alloc_tmp.exception_tval = complete0_i.exception_tval;
+            end
+            if (!scan_restore_q &&
+                (rob_id_row(complete0_i.rob_id) == scan_row_q))
+              alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
+            entry_q[complete0_i.rob_id] <= alloc_tmp;
+            if (rob_id_row(complete0_i.rob_id) == scan_row_q) begin
+              if (rob_id_bank(complete0_i.rob_id))
+                scan_entry1.entry = alloc_tmp;
+              else
+                scan_entry0.entry = alloc_tmp;
+            end
+          end
+        end
+
+        if (complete1_i.valid && valid_q[complete1_i.rob_id] &&
+            (!scan_restore_q ||
+             !restore_kills_id(complete1_i.rob_id, scan_restore_tail_q,
+                               scan_old_tail_row_q))) begin
+          complete_q[complete1_i.rob_id] <= 1'b1;
+          if (rob_id_row(complete1_i.rob_id) == scan_row_q) begin
+            if (rob_id_bank(complete1_i.rob_id))
+              scan_entry1.complete = 1'b1;
+            else
+              scan_entry0.complete = 1'b1;
+          end
+
+          if (entry_q[complete1_i.rob_id].is_csr ||
+              complete1_i.exception_valid ||
+              (!scan_restore_q &&
+               (rob_id_row(complete1_i.rob_id) == scan_row_q))) begin
+            alloc_tmp = entry_q[complete1_i.rob_id];
+            if (entry_q[complete1_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete1_i.data;
+            if (complete1_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete1_i.exception_cause;
+              alloc_tmp.exception_tval = complete1_i.exception_tval;
+            end
+            if (!scan_restore_q &&
+                (rob_id_row(complete1_i.rob_id) == scan_row_q))
+              alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
+            entry_q[complete1_i.rob_id] <= alloc_tmp;
+            if (rob_id_row(complete1_i.rob_id) == scan_row_q) begin
+              if (rob_id_bank(complete1_i.rob_id))
+                scan_entry1.entry = alloc_tmp;
+              else
+                scan_entry0.entry = alloc_tmp;
+            end
+          end
+        end
+
+        // 扫描行遇到当前 head 时，同步更新提交输出。必须放在 completion
+        // 合并之后，否则同拍完成的 head 项会以旧 complete 位重新锁存。
         if (scan_row_q == head_row_q) begin
           if (head_bank_q) begin
             head_entry0_q <= scan_entry1;

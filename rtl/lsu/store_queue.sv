@@ -98,8 +98,10 @@ module store_queue (
                           !entry_q[commit_sq_id_i].exception_valid;
   assign commit_capture = commit_valid_i && commit_ready_o;
 
-  assign mem_req_o = commit_buffer_valid_q ? commit_buffer_q : '0;
-  assign mem_fire = commit_buffer_valid_q && mem_req_ready_i;
+  assign mem_req_o = (!recovery_i.valid && commit_buffer_valid_q) ?
+                     commit_buffer_q : '0;
+  assign mem_fire = !recovery_i.valid && commit_buffer_valid_q &&
+                    mem_req_ready_i;
 
   assign commit_done_o = commit_done_q;
   assign sq_release_valid_o = sq_release_valid_q;

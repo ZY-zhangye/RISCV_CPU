@@ -7,6 +7,7 @@ module tb_csr_file;
   localparam logic [31:0] RESET_MTVEC_VALUE = 32'h8000_0100;
 
   localparam logic [11:0] CSR_MSTATUS  = 12'h300;
+  localparam logic [11:0] CSR_MISA     = 12'h301;
   localparam logic [11:0] CSR_MIE      = 12'h304;
   localparam logic [11:0] CSR_MTVEC    = 12'h305;
   localparam logic [11:0] CSR_MSCRATCH = 12'h340;
@@ -15,7 +16,11 @@ module tb_csr_file;
   localparam logic [11:0] CSR_MTVAL    = 12'h343;
   localparam logic [11:0] CSR_MCYCLE   = 12'hb00;
   localparam logic [11:0] CSR_MINSTRET = 12'hb02;
+  localparam logic [11:0] CSR_MVENDORID = 12'hf11;
+  localparam logic [11:0] CSR_MARCHID   = 12'hf12;
+  localparam logic [11:0] CSR_MIMPID    = 12'hf13;
   localparam logic [11:0] CSR_MHARTID  = 12'hf14;
+  localparam logic [31:0] MISA_VALUE = 32'h4000_1100;
 
   logic clk_i = 1'b0;
   logic rst_i = 1'b1;
@@ -158,6 +163,11 @@ module tb_csr_file;
     csr_cycle(CSR_RSI, CSR_MSCRATCH, '0, 5'd2, 32'd5, 1'b0);
     csr_cycle(CSR_RS, CSR_MSCRATCH, 32'b0, '0, 32'd7, 1'b0);
 
+    csr_cycle(CSR_RS, CSR_MISA, 32'b0, '0, MISA_VALUE, 1'b0);
+    csr_cycle(CSR_RW, CSR_MISA, 32'hffff_ffff, '0, MISA_VALUE, 1'b1);
+    csr_cycle(CSR_RS, CSR_MVENDORID, 32'b0, '0, 32'b0, 1'b0);
+    csr_cycle(CSR_RS, CSR_MARCHID, 32'b0, '0, 32'b0, 1'b0);
+    csr_cycle(CSR_RS, CSR_MIMPID, 32'b0, '0, 32'b0, 1'b0);
     csr_cycle(CSR_RS, CSR_MHARTID, 32'b0, '0, HART_ID_VALUE, 1'b0);
     csr_cycle(CSR_RW, CSR_MHARTID, 32'hdead_beef, '0, HART_ID_VALUE, 1'b1);
     csr_cycle(CSR_RW, 12'h7c0, 32'h1, '0, 32'b0, 1'b1);

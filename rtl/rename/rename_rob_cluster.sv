@@ -56,7 +56,8 @@ module rename_rob_cluster (
     output logic [3:0]                   free_lq_count_o,
     output logic [3:0]                   free_sq_count_o,
     output logic [$clog2(CHECKPOINTS+1)-1:0] active_checkpoint_count_o,
-    output logic                         busy_o
+    output logic                         busy_o,
+    output logic                         rob_busy_o
 );
 
   alloc_req_t alloc_req;
@@ -65,6 +66,9 @@ module rename_rob_cluster (
   logic alloc_cancel;
   logic alloc_commit_ready;
   logic rename_ready;
+  logic [1:0] rename_valid;
+  renamed_uop_t rename_uop0;
+  renamed_uop_t rename_uop1;
   logic rename_recovery_done;
   logic [PRD_W-1:0] amt_map [0:ARCH_REGS-1];
 
@@ -136,12 +140,16 @@ module rename_rob_cluster (
   endfunction
 
   assign rename_ready = dispatch_ready_i && alloc_commit_ready;
-  assign dispatch_fire_o = (dispatch_valid_o != 2'b00) && rename_ready;
+  assign dispatch_valid_o = alloc_commit_ready ? rename_valid : 2'b00;
+  assign dispatch_uop0_o = rename_uop0;
+  assign dispatch_uop1_o = rename_uop1;
+  assign dispatch_fire_o = (rename_valid != 2'b00) && rename_ready;
   assign rob_alloc_entry0 = make_rob_entry(dispatch_uop0_o);
   assign rob_alloc_entry1 = make_rob_entry(dispatch_uop1_o);
   assign exception_recovery = recovery_i.valid &&
                               (recovery_i.cause == REC_EXCEPT);
   assign busy_o = allocation_busy || rob_busy;
+  assign rob_busy_o = rob_busy;
 
   always_comb begin : recovery_done_select
     selected_recovery_done = '0;
@@ -178,10 +186,10 @@ module rename_rob_cluster (
       .dec_ready_o,
       .dec_uop0_i,
       .dec_uop1_i,
-      .rn_valid_o(dispatch_valid_o),
+      .rn_valid_o(rename_valid),
       .rn_ready_i(rename_ready),
-      .rn_uop0_o(dispatch_uop0_o),
-      .rn_uop1_o(dispatch_uop1_o),
+      .rn_uop0_o(rename_uop0),
+      .rn_uop1_o(rename_uop1),
       .alloc_req_o(alloc_req),
       .alloc_resp_i(alloc_resp),
       .alloc_fire_o(alloc_fire),

@@ -117,6 +117,7 @@ module mul_pipeline (
       completion.producer = PROD_MUL;
       completion.write_prf = meta.write_rd;
       completion.is_store = 1'b0;
+      completion.branch_mask = meta.branch_mask;
       make_completion = completion;
     end
   endfunction
@@ -203,9 +204,12 @@ module mul_pipeline (
         if (s3_valid_q) begin
           if (s3_branch_mask_q[recovery_i.checkpoint_id])
             s3_valid_q <= 1'b0;
-          else
+          else begin
             s3_branch_mask_q <= clear_checkpoint(
                 s3_branch_mask_q, recovery_i.checkpoint_id);
+            s3_completion_q.branch_mask <= clear_checkpoint(
+                s3_branch_mask_q, recovery_i.checkpoint_id);
+          end
         end
       end
     end else if (pipe_advance) begin
@@ -279,6 +283,8 @@ module mul_pipeline (
             end else begin
               fifo_branch_mask_q[0] <= clear_checkpoint(
                   fifo_branch_mask_q[0], recovery_i.checkpoint_id);
+              fifo_completion_q[0].branch_mask <= clear_checkpoint(
+                  fifo_branch_mask_q[0], recovery_i.checkpoint_id);
             end
           end
           2'd2: begin
@@ -288,15 +294,23 @@ module mul_pipeline (
                     fifo_branch_mask_q[0], recovery_i.checkpoint_id);
                 fifo_branch_mask_q[1] <= clear_checkpoint(
                     fifo_branch_mask_q[1], recovery_i.checkpoint_id);
+                fifo_completion_q[0].branch_mask <= clear_checkpoint(
+                    fifo_branch_mask_q[0], recovery_i.checkpoint_id);
+                fifo_completion_q[1].branch_mask <= clear_checkpoint(
+                    fifo_branch_mask_q[1], recovery_i.checkpoint_id);
               end
               2'b01: begin
                 fifo_completion_q[0] <= fifo_completion_q[1];
+                fifo_completion_q[0].branch_mask <= clear_checkpoint(
+                    fifo_branch_mask_q[1], recovery_i.checkpoint_id);
                 fifo_branch_mask_q[0] <= clear_checkpoint(
                     fifo_branch_mask_q[1], recovery_i.checkpoint_id);
                 fifo_count_q <= 2'd1;
               end
               2'b10: begin
                 fifo_branch_mask_q[0] <= clear_checkpoint(
+                    fifo_branch_mask_q[0], recovery_i.checkpoint_id);
+                fifo_completion_q[0].branch_mask <= clear_checkpoint(
                     fifo_branch_mask_q[0], recovery_i.checkpoint_id);
                 fifo_count_q <= 2'd1;
               end

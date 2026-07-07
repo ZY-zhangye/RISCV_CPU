@@ -354,6 +354,7 @@ package core_types_pkg;
     producer_t   producer;              // 产生该结果的数据源，用作仲裁分流
     logic        write_prf;             // 是否真正写入物理寄存器堆 (Store 或异常时为 0)
     logic        is_store;              // 标识此为 Store 确认包 (只更新 ROB，不写物理寄存器)
+    logic [CHECKPOINTS-1:0] branch_mask; // 结果对应指令所在的投机分支掩码
   } completion_t;
 
   // ==========================================================================

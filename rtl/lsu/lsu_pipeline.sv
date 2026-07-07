@@ -103,6 +103,7 @@ module lsu_pipeline (
   logic issue_fire;
   logic [XLEN-1:0] issue_address;
   logic issue_misaligned;
+  logic mem_resp_matches_active_load;
 
   function automatic logic is_load_op(input mem_op_t mem_op);
     is_load_op = (mem_op <= MEM_LHU);
@@ -117,35 +118,29 @@ module lsu_pipeline (
       input logic [XLEN-1:0] address
   );
     begin
-      unique case (mem_op)
-        MEM_LH, MEM_LHU, MEM_SH: access_misaligned = address[0];
-        MEM_LW, MEM_SW:          access_misaligned = |address[1:0];
-        default:                 access_misaligned = 1'b0;
-      endcase
+      access_misaligned = 1'b0;
     end
   endfunction
 
   function automatic logic [3:0] load_byte_mask(
-      input mem_op_t mem_op,
-      input logic [1:0] offset
+      input mem_op_t mem_op
   );
     begin
       unique case (mem_op)
-        MEM_LB, MEM_LBU: load_byte_mask = 4'b0001 << offset;
-        MEM_LH, MEM_LHU: load_byte_mask = 4'b0011 << offset;
+        MEM_LB, MEM_LBU: load_byte_mask = 4'b0001;
+        MEM_LH, MEM_LHU: load_byte_mask = 4'b0011;
         default:         load_byte_mask = 4'b1111;
       endcase
     end
   endfunction
 
   function automatic logic [3:0] store_byte_enable(
-      input mem_op_t mem_op,
-      input logic [1:0] offset
+      input mem_op_t mem_op
   );
     begin
       unique case (mem_op)
-        MEM_SB:  store_byte_enable = 4'b0001 << offset;
-        MEM_SH:  store_byte_enable = 4'b0011 << offset;
+        MEM_SB:  store_byte_enable = 4'b0001;
+        MEM_SH:  store_byte_enable = 4'b0011;
         default: store_byte_enable = 4'b1111;
       endcase
     end
@@ -153,13 +148,12 @@ module lsu_pipeline (
 
   function automatic logic [XLEN-1:0] align_store_data(
       input mem_op_t mem_op,
-      input logic [XLEN-1:0] data,
-      input logic [1:0] offset
+      input logic [XLEN-1:0] data
   );
     begin
       unique case (mem_op)
-        MEM_SB:  align_store_data = {24'd0, data[7:0]} << (offset * 8);
-        MEM_SH:  align_store_data = {16'd0, data[15:0]} << (offset * 8);
+        MEM_SB:  align_store_data = {24'd0, data[7:0]};
+        MEM_SH:  align_store_data = {16'd0, data[15:0]};
         default: align_store_data = data;
       endcase
     end
@@ -167,18 +161,15 @@ module lsu_pipeline (
 
   function automatic logic [XLEN-1:0] extract_load_data(
       input mem_op_t mem_op,
-      input logic [XLEN-1:0] word,
-      input logic [1:0] offset
+      input logic [XLEN-1:0] word
   );
-    logic [XLEN-1:0] shifted;
     begin
-      shifted = word >> (offset * 8);
       unique case (mem_op)
-        MEM_LB:  extract_load_data = {{24{shifted[7]}}, shifted[7:0]};
-        MEM_LBU: extract_load_data = {24'd0, shifted[7:0]};
-        MEM_LH:  extract_load_data = {{16{shifted[15]}}, shifted[15:0]};
-        MEM_LHU: extract_load_data = {16'd0, shifted[15:0]};
-        default: extract_load_data = shifted;
+        MEM_LB:  extract_load_data = {{24{word[7]}}, word[7:0]};
+        MEM_LBU: extract_load_data = {24'd0, word[7:0]};
+        MEM_LH:  extract_load_data = {{16{word[15]}}, word[15:0]};
+        MEM_LHU: extract_load_data = {16'd0, word[15:0]};
+        default: extract_load_data = word;
       endcase
     end
   endfunction
@@ -250,7 +241,45 @@ module lsu_pipeline (
       completion.producer = PROD_LSU;
       completion.write_prf = uop.is_load && uop.write_rd && !exception_valid;
       completion.is_store = uop.is_store;
+      completion.branch_mask = uop.branch_mask;
       make_completion = completion;
+    end
+  endfunction
+
+  function automatic forward_candidate_t build_forward_candidate(
+      input store_queue_entry_t entry,
+      input logic [ROB_ID_W-1:0] load_rob_id,
+      input logic [XLEN-1:0] load_address,
+      input logic [3:0] required_mask
+  );
+    forward_candidate_t candidate;
+    logic [XLEN-1:0] load_byte_address;
+    logic [XLEN-1:0] store_byte_address;
+    begin
+      candidate = '0;
+      if (entry.valid &&
+          rob_is_older(entry.rob_id, load_rob_id) &&
+          entry.address_valid) begin
+        candidate.distance = rob_distance(entry.rob_id, load_rob_id);
+        candidate.data_valid = entry.data_valid;
+
+        for (int load_byte = 0; load_byte < 4; load_byte = load_byte + 1) begin
+          if (required_mask[load_byte]) begin
+            load_byte_address = load_address + XLEN'(load_byte);
+            for (int store_byte = 0; store_byte < 4; store_byte = store_byte + 1) begin
+              store_byte_address = entry.address + XLEN'(store_byte);
+              if (entry.byte_enable[store_byte] &&
+                  (store_byte_address == load_byte_address)) begin
+                candidate.byte_enable[load_byte] = 1'b1;
+                candidate.data[load_byte * 8 +: 8] =
+                    entry.data[store_byte * 8 +: 8];
+              end
+            end
+          end
+        end
+        candidate.valid = |candidate.byte_enable;
+      end
+      build_forward_candidate = candidate;
     end
   endfunction
 
@@ -298,12 +327,10 @@ module lsu_pipeline (
                              (state_q == LSU_STORE_EXEC) &&
                              completion_slot_ready;
   assign sq_update_id_o = req_uop_q.sq_id;
-  assign sq_update_address_o = {req_address_q[XLEN-1:2], 2'b00};
+  assign sq_update_address_o = req_address_q;
   assign sq_update_data_o = align_store_data(req_uop_q.mem_op,
-                                             req_uop_q.store_data,
-                                             req_address_q[1:0]);
-  assign sq_update_byte_enable_o = store_byte_enable(req_uop_q.mem_op,
-                                                     req_address_q[1:0]);
+                                             req_uop_q.store_data);
+  assign sq_update_byte_enable_o = store_byte_enable(req_uop_q.mem_op);
   assign sq_update_exception_valid_o = req_exception_valid_q;
   assign sq_update_exception_cause_o = req_exception_cause_q;
   assign sq_update_exception_tval_o = req_exception_tval_q;
@@ -313,13 +340,15 @@ module lsu_pipeline (
     if (!recovery_i.valid && (state_q == LSU_LOAD_MEM_REQ)) begin
       mem_req_o.valid = 1'b1;
       mem_req_o.lq_id = req_uop_q.lq_id;
-      mem_req_o.address = {req_address_q[XLEN-1:2], 2'b00};
+      mem_req_o.address = req_address_q;
     end
   end
-  assign mem_resp_ready_o = !recovery_i.valid &&
-                            (state_q == LSU_LOAD_MEM_WAIT) &&
-                            completion_slot_ready &&
-                            (mem_resp_i.lq_id == req_uop_q.lq_id);
+  assign mem_resp_matches_active_load =
+      (state_q == LSU_LOAD_MEM_WAIT) &&
+      (mem_resp_i.lq_id == req_uop_q.lq_id);
+  assign mem_resp_ready_o = recovery_i.valid ||
+                            !mem_resp_matches_active_load ||
+                            completion_slot_ready;
 
   always_ff @(posedge clk_i) begin : lsu_state
     integer idx;
@@ -359,6 +388,9 @@ module lsu_pipeline (
         end else if (completion_valid_q &&
                      (recovery_i.cause == REC_BRANCH)) begin
           completion_branch_mask_q <= clear_checkpoint(
+              completion_branch_mask_q,
+              recovery_i.checkpoint_id);
+          completion_q.branch_mask <= clear_checkpoint(
               completion_branch_mask_q,
               recovery_i.checkpoint_id);
         end
@@ -423,25 +455,13 @@ module lsu_pipeline (
               end
             end else begin
               older_unknown = 1'b0;
-              required_mask = load_byte_mask(req_uop_q.mem_op,
-                                             req_address_q[1:0]);
+              required_mask = load_byte_mask(req_uop_q.mem_op);
               for (idx = 0; idx < SQ_ENTRIES; idx = idx + 1) begin
-                sq_candidate_q[idx].valid <=
-                    sq_entries_i[idx].valid &&
-                    rob_is_older(sq_entries_i[idx].rob_id,
-                                 req_uop_q.rob_id) &&
-                    sq_entries_i[idx].address_valid &&
-                    (sq_entries_i[idx].address[XLEN-1:2] ==
-                     req_address_q[XLEN-1:2]) &&
-                    (|(sq_entries_i[idx].byte_enable & required_mask));
-                sq_candidate_q[idx].distance <= rob_distance(
-                    sq_entries_i[idx].rob_id,
-                    req_uop_q.rob_id);
-                sq_candidate_q[idx].data_valid <=
-                    sq_entries_i[idx].data_valid;
-                sq_candidate_q[idx].byte_enable <=
-                    sq_entries_i[idx].byte_enable;
-                sq_candidate_q[idx].data <= sq_entries_i[idx].data;
+                sq_candidate_q[idx] <= build_forward_candidate(
+                    sq_entries_i[idx],
+                    req_uop_q.rob_id,
+                    req_address_q,
+                    required_mask);
                 if (sq_entries_i[idx].valid &&
                     rob_is_older(sq_entries_i[idx].rob_id,
                                  req_uop_q.rob_id)) begin
@@ -466,16 +486,14 @@ module lsu_pipeline (
 
         if (state_q == LSU_LOAD_DECIDE) begin
             if (selected_candidate_q.valid) begin
-              required_mask = load_byte_mask(req_uop_q.mem_op,
-                                             req_address_q[1:0]);
+              required_mask = load_byte_mask(req_uop_q.mem_op);
               full_cover = ((selected_candidate_q.byte_enable &
                              required_mask) == required_mask);
               if (full_cover && selected_candidate_q.data_valid) begin
                 if (completion_slot_ready) begin
                   loaded_data = extract_load_data(
                       req_uop_q.mem_op,
-                      selected_candidate_q.data,
-                      req_address_q[1:0]);
+                      selected_candidate_q.data);
                   completion_q <= make_completion(req_uop_q,
                                                   loaded_data,
                                                   1'b0,
@@ -499,11 +517,10 @@ module lsu_pipeline (
         if ((state_q == LSU_LOAD_MEM_REQ) && mem_req_ready_i)
           state_q <= LSU_LOAD_MEM_WAIT;
 
-        if ((state_q == LSU_LOAD_MEM_WAIT) && mem_resp_i.valid &&
+        if (mem_resp_matches_active_load && mem_resp_i.valid &&
             mem_resp_ready_o) begin
           loaded_data = extract_load_data(req_uop_q.mem_op,
-                                          mem_resp_i.data,
-                                          req_address_q[1:0]);
+                                          mem_resp_i.data);
           completion_q <= make_completion(req_uop_q,
                                           loaded_data,
                                           mem_resp_i.error,

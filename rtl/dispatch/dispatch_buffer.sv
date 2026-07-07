@@ -46,6 +46,10 @@ module dispatch_buffer (
     input  logic [1:0]  wb_valid_i,        // 写回 ready 广播有效位
     input  logic [1:0][PRD_W-1:0] wb_prd_i,// 写回 ready 广播 PRD
 
+    // 分支预测正确时释放对应 checkpoint
+    input  logic        checkpoint_clear_i,
+    input  logic [CP_W-1:0] checkpoint_clear_id_i,
+
     // 全局恢复控制
     input  recovery_t   recovery_i,        // 恢复控制信号 (分支误预测或精确异常)
 
@@ -85,6 +89,11 @@ module dispatch_buffer (
   logic dispatch1_fire;
   logic [1:0] dispatch_count;
   logic [1:0] rn_count;
+  logic [1:0] enqueue_count;
+  logic enqueue0_valid;
+  logic enqueue1_valid;
+  renamed_uop_t enqueue0_uop;
+  renamed_uop_t enqueue1_uop;
   logic [PTR_W-1:0] head1_ptr;
   logic [PTR_W-1:0] tail1_ptr;
 
@@ -102,6 +111,10 @@ module dispatch_buffer (
   function automatic logic [1:0] valid_count(input logic [1:0] valid);
     valid_count = (valid == 2'b11) ? 2'd2 :
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
+  endfunction
+
+  function automatic logic needs_issue(input renamed_uop_t uop);
+    needs_issue = !uop.dec.exception_valid && (uop.dec.fu_type != FU_NONE);
   endfunction
 
   function automatic logic wake_src(
@@ -124,6 +137,35 @@ module dispatch_buffer (
       woke.src2_ready = wake_src(uop.src2_ready, uop.dec.need_rs2, uop.prs2);
       wake_renamed = woke;
     end
+  endfunction
+
+  function automatic logic [CHECKPOINTS-1:0] clear_checkpoint(
+      input logic [CHECKPOINTS-1:0] mask,
+      input logic [CP_W-1:0] checkpoint_id
+  );
+    logic [CHECKPOINTS-1:0] one_hot;
+    begin
+      one_hot = '0;
+      one_hot[checkpoint_id] = 1'b1;
+      clear_checkpoint = mask & ~one_hot;
+    end
+  endfunction
+
+  function automatic renamed_uop_t clear_renamed_checkpoint(
+      input renamed_uop_t uop
+  );
+    renamed_uop_t cleared;
+    begin
+      cleared = uop;
+      if (checkpoint_clear_i)
+        cleared.branch_mask = clear_checkpoint(cleared.branch_mask,
+                                               checkpoint_clear_id_i);
+      clear_renamed_checkpoint = cleared;
+    end
+  endfunction
+
+  function automatic renamed_uop_t prepare_renamed(input renamed_uop_t uop);
+    prepare_renamed = clear_renamed_checkpoint(wake_renamed(uop));
   endfunction
 
   // 指令分类解算器：将功能单元类型转换为分派路由类别
@@ -224,9 +266,10 @@ module dispatch_buffer (
 
   // 重命名级流控与握手判定
   assign rn_count = valid_count(rn_valid_i);
+  assign enqueue_count = valid_count({enqueue1_valid, enqueue0_valid});
   // 当没有处于恢复模式、且缓冲区空余项足够容纳本周期请求数量时就绪
   assign rn_ready_o = !recovery_i.valid && (rn_valid_i != 2'b10) &&
-                      (rn_count <= (DB_ENTRIES[PTR_W-1:0] - count_q));
+                      (enqueue_count <= (DB_ENTRIES[PTR_W-1:0] - count_q));
 
   assign empty_o = (count_q == '0);
   assign full_o = (count_q == DB_ENTRIES[PTR_W-1:0]);
@@ -239,10 +282,32 @@ module dispatch_buffer (
   assign head1_valid = valid_q[head1_ptr] && (count_q >= 3'd2);
   assign head0_uop = uop_q[head_q];
   assign head1_uop = uop_q[head1_ptr];
-  assign head0_issue = to_issue(wake_renamed(head0_uop));
-  assign head1_issue = to_issue(wake_renamed(head1_uop));
+  assign head0_issue = to_issue(prepare_renamed(head0_uop));
+  assign head1_issue = to_issue(prepare_renamed(head1_uop));
   assign head0_class = classify(head0_uop);
   assign head1_class = classify(head1_uop);
+
+  always_comb begin : enqueue_compact
+    enqueue0_valid = 1'b0;
+    enqueue1_valid = 1'b0;
+    enqueue0_uop = '0;
+    enqueue1_uop = '0;
+
+    if (rn_valid_i[0] && needs_issue(rn_uop0_i)) begin
+      enqueue0_valid = 1'b1;
+      enqueue0_uop = rn_uop0_i;
+    end
+
+    if (rn_valid_i[1] && needs_issue(rn_uop1_i)) begin
+      if (enqueue0_valid) begin
+        enqueue1_valid = 1'b1;
+        enqueue1_uop = rn_uop1_i;
+      end else begin
+        enqueue0_valid = 1'b1;
+        enqueue0_uop = rn_uop1_i;
+      end
+    end
+  end
 
   // 顺序发射握手解算：
   // 1. head0 指令有效，且目标 IQ 至少有一个就绪空槽时，head0 握手成功；
@@ -358,7 +423,7 @@ module dispatch_buffer (
 
       for (idx = 0; idx < DB_ENTRIES; idx = idx + 1) begin
         if (valid_q[idx])
-          uop_q[idx] <= wake_renamed(uop_q[idx]);
+          uop_q[idx] <= prepare_renamed(uop_q[idx]);
       end
 
       // 1. 指令出队 (Dispatch)
@@ -372,15 +437,15 @@ module dispatch_buffer (
       end
 
       // 2. 指令入队 (Rename enqueue)
-      if ((rn_valid_i != 2'b00) && rn_ready_o) begin
-        valid_q[tail_q] <= rn_valid_i[0];
-        uop_q[tail_q] <= wake_renamed(rn_uop0_i);
-        if (rn_valid_i[1]) begin
+      if ((enqueue_count != 2'b00) && rn_ready_o) begin
+        valid_q[tail_q] <= enqueue0_valid;
+        uop_q[tail_q] <= prepare_renamed(enqueue0_uop);
+        if (enqueue1_valid) begin
           valid_q[tail1_ptr] <= 1'b1;
-          uop_q[tail1_ptr] <= wake_renamed(rn_uop1_i);
+          uop_q[tail1_ptr] <= prepare_renamed(enqueue1_uop);
         end
-        next_tail = rn_valid_i[1] ? ptr_add2(tail_q) : ptr_inc(tail_q);
-        next_count = next_count + rn_count;
+        next_tail = enqueue1_valid ? ptr_add2(tail_q) : ptr_inc(tail_q);
+        next_count = next_count + enqueue_count;
       end
 
       head_q <= next_head;

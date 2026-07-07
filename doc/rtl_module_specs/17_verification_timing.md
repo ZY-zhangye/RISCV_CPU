@@ -126,7 +126,8 @@ BRAM/DSP 和最差路径端点。
 | SoC Data RAM | typed data RAM wrapper | +2.747 ns | 4 个 8-bit byte-lane RAM array，init/store 仲裁成单一写地址端口，load 使用唯一同步读地址端口，且移除 BRAM 输出寄存器前写直通 bypass；Vivado 推断 64 个 BRAM，`tb_soc_data_ram` 通过，冻结 |
 | SoC LED Periph | MMIO LED register + external bus fallthrough | -0.196 ns | `soc_periph_decode` 在 `0x1000_0000` 提供 32-bit LED 寄存器，低 `LED_WIDTH` 位输出到 `led_o`；其他 MMIO 地址透出到外设扩展总线。OOC 最差路径仍落在既有 `u_issue_arbiter` proposal 寄存路径，非 LED/MMIO decode |
 | SoC Top Reset | power-on counted reset | 待复综合 | `soc_top` 新增 `POWER_ON_RESET_CYCLES`，外部 `rst_i` 释放后继续保持内部 `soc_rst`；`tb_soc_top` 已用 4-cycle 配置复测通过 |
-| SoC Official HEX | RISC-V official HEX regression harness | 仿真入口已恢复 | 新增 `tb_soc_official_hex` 与 `test/soc_official_hex.f`，从 `hex/riscv-tests` 载入镜像到 IMem/DMem，起始 PC 为 `0x8000_0000`，按历史规则在 `0x8000_0044` 提交后一拍检查 committed `x3/gp == 1`。当前 `rv32ui-p-simple` 可运行但超时，最后提交 PC 停在 `0x800000cc`、`gp=0`，待后续分析 CSR/官方启动片段执行路径 |
+| SoC Custom Instr | 自编逐条 SoC 指令回归 | Questa 39/39 PASS | `tb_soc_custom_instr` 直接初始化 SoC IMem/DMem，按小程序逐项检查 writeback、commit PC 和 DMem 结果，覆盖 RV32I、LSU、M 扩展与最小 CSR/FENCE 提交流 |
+| SoC Official HEX | RISC-V official HEX regression harness | Questa supported set PASS | `tb_soc_official_hex` 与 `test/soc_official_hex.f` 从 `hex/riscv-tests` 载入镜像到 IMem/DMem，起始 PC 为 `0x8000_0000`，按历史规则在 `0x8000_0044` 提交后一拍检查 committed `x3/gp == 1`。当前支持集通过：RV32UI 41/41 PASS、RV32UM 8/8 PASS、RV32MI `csr/mcsr` PASS；`rv32ui-p-fence_i` 因测试会运行时修改 IMem，和最终 SoC 规则“不允许运行时改 IMem”冲突，暂作为架构豁免 |
 
 `results/` 下的 Icarus `.vvp` 仿真中间文件已在本次收尾时清理，不纳入版本管理。
 Recovery Controller 已通过 Vivado 5 ns OOC 综合，WNS +3.112 ns；Branch Checkpoint

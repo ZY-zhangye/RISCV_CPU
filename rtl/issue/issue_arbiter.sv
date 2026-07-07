@@ -139,6 +139,12 @@ module issue_arbiter (
     end
   endfunction
 
+  function automatic logic branch_unmasked(input issue_uop_t uop);
+    begin
+      branch_unmasked = (uop.branch_mask == '0);
+    end
+  endfunction
+
   function automatic logic is_csr(input issue_uop_t uop);
     begin
       is_csr = (uop.fu_type == FU_CSR);
@@ -164,6 +170,17 @@ module issue_arbiter (
   function automatic logic [ROB_ID_W-1:0] uop_rob_id(input issue_uop_t uop);
     begin
       uop_rob_id = uop.rob_id;
+    end
+  endfunction
+
+  function automatic logic same_issue_identity(
+      input issue_uop_t live_uop,
+      input issue_uop_t selected
+  );
+    begin
+      same_issue_identity = (live_uop.rob_id == selected.rob_id) &&
+                            (live_uop.pc == selected.pc) &&
+                            (live_uop.fu_type == selected.fu_type);
     end
   endfunction
 
@@ -266,6 +283,7 @@ module issue_arbiter (
       for (idx = 0; idx < 3; idx = idx + 1) begin
         if (!int1_used && int_candidate_valid_q[idx] &&
             is_branch(int_candidate_q[idx]) &&
+            branch_unmasked(int_candidate_q[idx]) &&
             operands_ready(int_candidate_q[idx]) && int1_ready_q) begin
           proposal_valid_d[proposal_count] = 1'b1;
           proposal_uop_d[proposal_count] = int_candidate_q[idx];
@@ -324,6 +342,7 @@ module issue_arbiter (
       // D. 普通整型指令挑选：可分配到 INT0 或 INT1
       for (idx = 0; idx < 3; idx = idx + 1) begin
         if (!int_selected[idx] && int_candidate_valid_q[idx] &&
+            (int_candidate_q[idx].fu_type == FU_INT) &&
             !is_branch(int_candidate_q[idx]) && !is_csr(int_candidate_q[idx]) &&
             !is_shift(int_candidate_q[idx]) &&
             operands_ready(int_candidate_q[idx]) &&
@@ -429,7 +448,6 @@ module issue_arbiter (
     logic [3:0] fire;
     logic source_match;
     logic endpoint_ready;
-    logic [ROB_ID_W-1:0] selected_rob;
     logic [1:0] slot0_index;
     logic [1:0] slot1_index;
     logic [1:0] slot2_index;
@@ -446,22 +464,21 @@ module issue_arbiter (
 
     if (!rst_i && !recovery_i.valid) begin
       for (idx = 0; idx < PROPOSALS; idx = idx + 1) begin
-        selected_rob = uop_rob_id(selected_uop_q[idx]);
-
-        // 与 IQ 实时送来的候选 ROB ID 进行多路比较匹配
+        // 与 IQ 实时送来的候选身份进行多路比较匹配。ROB ID 会环回，
+        // 仅比较 ROB ID 可能让旧 proposal 在 ID 复用后错误发射。
         source_match =
             (selected_int_group_q[idx][0] && int_candidate_valid_i[0] &&
-             (int_candidate_uop0_i.rob_id == selected_rob)) ||
+             same_issue_identity(int_candidate_uop0_i, selected_uop_q[idx])) ||
             (selected_int_group_q[idx][1] && int_candidate_valid_i[1] &&
-             (int_candidate_uop1_i.rob_id == selected_rob)) ||
+             same_issue_identity(int_candidate_uop1_i, selected_uop_q[idx])) ||
             (selected_int_group_q[idx][2] && int_candidate_valid_i[2] &&
-             (int_candidate_uop2_i.rob_id == selected_rob)) ||
+             same_issue_identity(int_candidate_uop2_i, selected_uop_q[idx])) ||
             (selected_mem_group_q[idx][0] && mem_candidate_valid_i[0] &&
-             (mem_candidate_uop0_i.rob_id == selected_rob)) ||
+             same_issue_identity(mem_candidate_uop0_i, selected_uop_q[idx])) ||
             (selected_mem_group_q[idx][1] && mem_candidate_valid_i[1] &&
-             (mem_candidate_uop1_i.rob_id == selected_rob)) ||
+             same_issue_identity(mem_candidate_uop1_i, selected_uop_q[idx])) ||
             (selected_mdu_group_q[idx] && mdu_candidate_valid_i &&
-             (mdu_candidate_uop_i.rob_id == selected_rob));
+             same_issue_identity(mdu_candidate_uop_i, selected_uop_q[idx]));
 
         case (selected_port_q[idx])
           ISSUE_INT0: endpoint_ready = int0_ready_i;

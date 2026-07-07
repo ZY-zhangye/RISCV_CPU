@@ -157,6 +157,18 @@ module rename_stage (
       (wb_ready_valid_i[0] && (wb_ready_prd0_i == map_lane1_prs2_q)) ||
       (wb_ready_valid_i[1] && (wb_ready_prd1_i == map_lane1_prs2_q));
 
+  function automatic logic wake_held_src(
+      input logic             ready,
+      input logic             need_src,
+      input logic [PRD_W-1:0] prs
+  );
+    begin
+      wake_held_src = ready || !need_src ||
+          (wb_ready_valid_i[0] && (wb_ready_prd0_i == prs)) ||
+          (wb_ready_valid_i[1] && (wb_ready_prd1_i == prs));
+    end
+  endfunction
+
   // ==========================================================================
   // 超标量结构限制与重命名请求生成
   // ==========================================================================
@@ -330,6 +342,27 @@ module rename_stage (
             r1_uop1_q.branch_mask[3] <= 1'b0;
           end
         endcase
+      end
+
+      // R1 可能因为 ROB/PRF/Dispatch 后级反压停留多个周期。停留期间仍需
+      // 接收写回 ready 广播，否则依赖项会在离开 Rename 前错过唯一的唤醒脉冲。
+      if (!rn_fire && !r1_load) begin
+        if (r1_valid_q[0]) begin
+          r1_uop0_q.src1_ready <= wake_held_src(r1_uop0_q.src1_ready,
+                                                r1_uop0_q.dec.need_rs1,
+                                                r1_uop0_q.prs1);
+          r1_uop0_q.src2_ready <= wake_held_src(r1_uop0_q.src2_ready,
+                                                r1_uop0_q.dec.need_rs2,
+                                                r1_uop0_q.prs2);
+        end
+        if (r1_valid_q[1]) begin
+          r1_uop1_q.src1_ready <= wake_held_src(r1_uop1_q.src1_ready,
+                                                r1_uop1_q.dec.need_rs1,
+                                                r1_uop1_q.prs1);
+          r1_uop1_q.src2_ready <= wake_held_src(r1_uop1_q.src2_ready,
+                                                r1_uop1_q.dec.need_rs2,
+                                                r1_uop1_q.prs2);
+        end
       end
 
       // 2. 握手出队：
