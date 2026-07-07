@@ -305,12 +305,68 @@ module reorder_buffer (
         scan_used_rows_q <= '0;
         scan_occupancy_q <= '0;
         restore_pending_q <= 1'b0;
+
+        // A restore scan starts one cycle after the raw recovery request. Keep
+        // one-cycle completion pulses while normal ROB mutation is paused; the
+        // following scan still clears any younger entries killed by recovery.
+        if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
+          complete_q[complete0_i.rob_id] <= 1'b1;
+          alloc_tmp = entry_q[complete0_i.rob_id];
+          if (entry_q[complete0_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete0_i.data;
+          if (complete0_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete0_i.exception_cause;
+            alloc_tmp.exception_tval = complete0_i.exception_tval;
+          end
+          entry_q[complete0_i.rob_id] <= alloc_tmp;
+        end
+
+        if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
+          complete_q[complete1_i.rob_id] <= 1'b1;
+          alloc_tmp = entry_q[complete1_i.rob_id];
+          if (entry_q[complete1_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete1_i.data;
+          if (complete1_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete1_i.exception_cause;
+            alloc_tmp.exception_tval = complete1_i.exception_tval;
+          end
+          entry_q[complete1_i.rob_id] <= alloc_tmp;
+        end
       end
 
       // Recovery request capture bubble.  Allocation is already back-pressured
       // combinationally by the raw request inputs; skip normal ROB mutation
       // until the registered recovery operation starts next cycle.
       else if (exception_flush_i || restore_valid_i) begin
+        if (restore_valid_i) begin
+          if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
+            complete_q[complete0_i.rob_id] <= 1'b1;
+            alloc_tmp = entry_q[complete0_i.rob_id];
+            if (entry_q[complete0_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete0_i.data;
+            if (complete0_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete0_i.exception_cause;
+              alloc_tmp.exception_tval = complete0_i.exception_tval;
+            end
+            entry_q[complete0_i.rob_id] <= alloc_tmp;
+          end
+
+          if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
+            complete_q[complete1_i.rob_id] <= 1'b1;
+            alloc_tmp = entry_q[complete1_i.rob_id];
+            if (entry_q[complete1_i.rob_id].is_csr)
+              alloc_tmp.csr_operand = complete1_i.data;
+            if (complete1_i.exception_valid) begin
+              alloc_tmp.exception_valid = 1'b1;
+              alloc_tmp.exception_cause = complete1_i.exception_cause;
+              alloc_tmp.exception_tval = complete1_i.exception_tval;
+            end
+            entry_q[complete1_i.rob_id] <= alloc_tmp;
+          end
+        end
       end
 
       // ----------------------------------------------------------------------
