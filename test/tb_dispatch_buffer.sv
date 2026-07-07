@@ -24,6 +24,9 @@ module tb_dispatch_buffer;
   issue_uop_t mdu_push_uop0_o;
   issue_uop_t mdu_push_uop1_o;
 
+  logic [1:0] wb_valid_i = 2'b00;
+  logic [1:0][PRD_W-1:0] wb_prd_i = '0;
+
   recovery_t recovery_i = '0;
   logic empty_o;
   logic full_o;

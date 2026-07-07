@@ -197,7 +197,7 @@ module backend_mdu_cluster #(
   logic [XLEN-1:0] sq_update_exception_tval;
   branch_resolve_t branch_event_raw;
   branch_resolve_t branch_event_q;
-  branch_resolve_t branch_event_to_commit;
+  branch_resolve_t branch_event_to_commit_q;
   logic branch_event_pending_q;
   logic branch_event_complete_match;
   logic branch_event_fire;
@@ -258,7 +258,6 @@ module backend_mdu_cluster #(
         (rob_complete[1].rob_id == branch_event_q.rob_id)));
   assign branch_event_fire = branch_event_pending_q &&
                              branch_event_complete_match;
-  assign branch_event_to_commit = branch_event_fire ? branch_event_q : '0;
   assign branch_update_valid_o = branch_event_fire;
   assign branch_update_o = branch_event_fire ? branch_event_q.update : '0;
 
@@ -277,7 +276,6 @@ module backend_mdu_cluster #(
   assign int_push_ready = {2{int_push_stage_accept}};
   assign mem_push_ready = {2{mem_push_stage_accept}};
   assign mdu_push_ready = {2{mdu_push_stage_accept}};
-  assign mem_issue_allowed = 2'b11;
   assign mdu_ex_ready = (mdu_fifo_count_q != 2'd2);
   assign mdu_fifo_fire_in = mdu_ex_valid && mdu_ex_ready && !recovery_o.valid;
   assign mdu_fifo_fire_out = (mdu_fifo_count_q != 2'd0) &&
@@ -437,6 +435,42 @@ module backend_mdu_cluster #(
                        (uop.dec.mem_op >= MEM_SB);
   endfunction
 
+  function automatic logic rob_id_is_older(
+      input logic [ROB_ID_W-1:0] candidate,
+      input logic [ROB_ID_W-1:0] reference
+  );
+    logic [ROB_ID_W-1:0] distance;
+    begin
+      distance = reference - candidate;
+      rob_id_is_older = (distance != '0) && !distance[ROB_ID_W-1];
+    end
+  endfunction
+
+  function automatic logic load_waits_for_older_store(input issue_uop_t uop);
+    integer sq_idx;
+    begin
+      load_waits_for_older_store = 1'b0;
+      if (uop.is_load) begin
+        for (sq_idx = 0; sq_idx < SQ_ENTRIES; sq_idx = sq_idx + 1) begin
+          if (sq_entries[sq_idx].valid &&
+              rob_id_is_older(sq_entries[sq_idx].rob_id, uop.rob_id) &&
+              !sq_entries[sq_idx].address_valid)
+            load_waits_for_older_store = 1'b1;
+        end
+      end
+    end
+  endfunction
+
+  always_comb begin
+    mem_issue_allowed = 2'b11;
+    if (mem_candidate_valid[0] &&
+        load_waits_for_older_store(mem_candidate_uop0))
+      mem_issue_allowed[0] = 1'b0;
+    if (mem_candidate_valid[1] &&
+        load_waits_for_older_store(mem_candidate_uop1))
+      mem_issue_allowed[1] = 1'b0;
+  end
+
   always_comb begin
     lq_alloc_valid = '0;
     lq_alloc_id = '0;
@@ -506,7 +540,7 @@ module backend_mdu_cluster #(
       .lq_release_id_i(lq_release_id),
       .sq_release_valid_i({1'b0, sq_release_valid}),
       .sq_release_id_i({{SQ_ID_W{1'b0}}, sq_release_id}),
-      .branch_i(branch_event_to_commit),
+      .branch_i(branch_event_to_commit_q),
       .recovery_o,
       .checkpoint_clear_valid_o,
       .checkpoint_clear_id_o,
@@ -561,6 +595,8 @@ module backend_mdu_cluster #(
       .mdu_push_ready_i(mdu_push_ready),
       .mdu_push_uop0_o(mdu_push_uop0_raw),
       .mdu_push_uop1_o(mdu_push_uop1_raw),
+      .wb_valid_i(wakeup_valid),
+      .wb_prd_i(wakeup_prd),
       .recovery_i(recovery_o),
       .empty_o(db_empty),
       .full_o(db_full),
@@ -587,6 +623,7 @@ module backend_mdu_cluster #(
       .candidate_slot1_o(unused_int_slot1),
       .candidate_slot2_o(unused_int_slot2),
       .issue_grant_i(int_issue_grant),
+      .candidate_reselect_i(3'b000),
       .recovery_i(recovery_o),
       .empty_o(int_iq_empty),
       .full_o(int_iq_full),
@@ -613,6 +650,7 @@ module backend_mdu_cluster #(
       .candidate_slot1_o(unused_mem_slot1),
       .candidate_slot2_o(),
       .issue_grant_i(mem_issue_grant),
+      .candidate_reselect_i(mem_candidate_valid & ~mem_issue_allowed),
       .recovery_i(recovery_o),
       .empty_o(mem_iq_empty),
       .full_o(mem_iq_full),
@@ -639,6 +677,7 @@ module backend_mdu_cluster #(
       .candidate_slot1_o(),
       .candidate_slot2_o(),
       .issue_grant_i(mdu_issue_grant),
+      .candidate_reselect_i(1'b0),
       .recovery_i(recovery_o),
       .empty_o(mdu_iq_empty),
       .full_o(mdu_iq_full),
@@ -883,10 +922,16 @@ module backend_mdu_cluster #(
     if (rst_i) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else if (recovery_o.valid) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else begin
+      branch_event_to_commit_q <= '0;
+      if (branch_event_fire)
+        branch_event_to_commit_q <= branch_event_q;
+
       unique case ({branch_event_fire, branch_event_raw.valid})
         2'b00: begin
         end

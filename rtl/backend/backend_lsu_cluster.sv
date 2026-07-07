@@ -229,7 +229,6 @@ module backend_lsu_cluster #(
                                  mem_push_stage_pop;
   assign int_push_ready = {2{int_push_stage_accept}};
   assign mem_push_ready = {2{mem_push_stage_accept}};
-  assign mem_issue_allowed = 2'b11;
 
   // Register the Dispatch Buffer -> IQ push boundary.  The backend LSU OOC
   // critical path was dominated by dispatch payload/classification wires
@@ -271,6 +270,42 @@ module backend_lsu_cluster #(
     is_store_renamed = (uop.dec.fu_type == FU_LSU) &&
                        (uop.dec.mem_op >= MEM_SB);
   endfunction
+
+  function automatic logic rob_id_is_older(
+      input logic [ROB_ID_W-1:0] candidate,
+      input logic [ROB_ID_W-1:0] reference
+  );
+    logic [ROB_ID_W-1:0] distance;
+    begin
+      distance = reference - candidate;
+      rob_id_is_older = (distance != '0) && !distance[ROB_ID_W-1];
+    end
+  endfunction
+
+  function automatic logic load_waits_for_older_store(input issue_uop_t uop);
+    integer sq_idx;
+    begin
+      load_waits_for_older_store = 1'b0;
+      if (uop.is_load) begin
+        for (sq_idx = 0; sq_idx < SQ_ENTRIES; sq_idx = sq_idx + 1) begin
+          if (sq_entries[sq_idx].valid &&
+              rob_id_is_older(sq_entries[sq_idx].rob_id, uop.rob_id) &&
+              !sq_entries[sq_idx].address_valid)
+            load_waits_for_older_store = 1'b1;
+        end
+      end
+    end
+  endfunction
+
+  always_comb begin
+    mem_issue_allowed = 2'b11;
+    if (mem_candidate_valid[0] &&
+        load_waits_for_older_store(mem_candidate_uop0))
+      mem_issue_allowed[0] = 1'b0;
+    if (mem_candidate_valid[1] &&
+        load_waits_for_older_store(mem_candidate_uop1))
+      mem_issue_allowed[1] = 1'b0;
+  end
 
   always_comb begin
     lq_alloc_valid = '0;
@@ -396,6 +431,8 @@ module backend_lsu_cluster #(
       .mdu_push_ready_i(2'b00),
       .mdu_push_uop0_o(),
       .mdu_push_uop1_o(),
+      .wb_valid_i(wakeup_valid),
+      .wb_prd_i(wakeup_prd),
       .recovery_i(recovery_o),
       .empty_o(db_empty),
       .full_o(db_full),
@@ -422,6 +459,7 @@ module backend_lsu_cluster #(
       .candidate_slot1_o(unused_int_slot1),
       .candidate_slot2_o(unused_int_slot2),
       .issue_grant_i(int_issue_grant),
+      .candidate_reselect_i(3'b000),
       .recovery_i(recovery_o),
       .empty_o(int_iq_empty),
       .full_o(int_iq_full),
@@ -448,6 +486,7 @@ module backend_lsu_cluster #(
       .candidate_slot1_o(unused_mem_slot1),
       .candidate_slot2_o(),
       .issue_grant_i(mem_issue_grant),
+      .candidate_reselect_i(mem_candidate_valid & ~mem_issue_allowed),
       .recovery_i(recovery_o),
       .empty_o(mem_iq_empty),
       .full_o(mem_iq_full),

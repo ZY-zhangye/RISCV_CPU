@@ -298,7 +298,7 @@ module lsu_pipeline (
                              (state_q == LSU_STORE_EXEC) &&
                              completion_slot_ready;
   assign sq_update_id_o = req_uop_q.sq_id;
-  assign sq_update_address_o = req_address_q;
+  assign sq_update_address_o = {req_address_q[XLEN-1:2], 2'b00};
   assign sq_update_data_o = align_store_data(req_uop_q.mem_op,
                                              req_uop_q.store_data,
                                              req_address_q[1:0]);

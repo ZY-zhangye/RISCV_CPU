@@ -47,13 +47,13 @@ module decode_stage (
 
   // 双路发射合法性筛选：
   // 1. lane0 只有在前级标记有效时有效。
-  // 2. lane1 只有当 lane0 和 lane1 同时有效，且 lane0 **不是**序列化指令（如CSR/MRET），
-  //    且 lane0 **没有**携带异常（如地址非对齐、非法指令）时才有效。
-  // 这确保了在遇到例外情况或强序列化操作时，Decode 阶段能立刻在 lane1 产生气泡（清零有效信号），
-  // 避免它们同时进入后级重命名。
+  // 2. lane1 只有当 lane0 和 lane1 同时有效，且 lane0 没有携带异常
+  //    （如地址非对齐、非法指令）时才有效。
+  // 序列化指令不能在这里截断 lane1：IBuf 以 bundle 为单位出队，若 Decode
+  // 清掉 lane1 而不保留它，会直接丢失 lane0 后面的真实指令。序列化退休约束
+  // 由 Commit 阶段处理。
   assign accepted_valid[0] = in_valid_i[0];
   assign accepted_valid[1] = in_valid_i[1] && in_valid_i[0] &&
-                             !decoded_lane0.serializing &&
                              !decoded_lane0.exception_valid;
 
   // 反压就绪计算：没有发生冲刷，且（输出端寄存器为空 或 下一级已被成功接收并腾出空间）

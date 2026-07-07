@@ -42,6 +42,10 @@ module dispatch_buffer (
     output issue_uop_t  mdu_push_uop0_o,   // 写入 MDU IQ 的 uop0
     output issue_uop_t  mdu_push_uop1_o,   // 写入 MDU IQ 的 uop1
 
+    // 写回唤醒广播
+    input  logic [1:0]  wb_valid_i,        // 写回 ready 广播有效位
+    input  logic [1:0][PRD_W-1:0] wb_prd_i,// 写回 ready 广播 PRD
+
     // 全局恢复控制
     input  recovery_t   recovery_i,        // 恢复控制信号 (分支误预测或精确异常)
 
@@ -98,6 +102,28 @@ module dispatch_buffer (
   function automatic logic [1:0] valid_count(input logic [1:0] valid);
     valid_count = (valid == 2'b11) ? 2'd2 :
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
+  endfunction
+
+  function automatic logic wake_src(
+      input logic             ready,
+      input logic             need_src,
+      input logic [PRD_W-1:0] prs
+  );
+    begin
+      wake_src = ready || !need_src ||
+                 (wb_valid_i[0] && (wb_prd_i[0] == prs)) ||
+                 (wb_valid_i[1] && (wb_prd_i[1] == prs));
+    end
+  endfunction
+
+  function automatic renamed_uop_t wake_renamed(input renamed_uop_t uop);
+    renamed_uop_t woke;
+    begin
+      woke = uop;
+      woke.src1_ready = wake_src(uop.src1_ready, uop.dec.need_rs1, uop.prs1);
+      woke.src2_ready = wake_src(uop.src2_ready, uop.dec.need_rs2, uop.prs2);
+      wake_renamed = woke;
+    end
   endfunction
 
   // 指令分类解算器：将功能单元类型转换为分派路由类别
@@ -213,8 +239,8 @@ module dispatch_buffer (
   assign head1_valid = valid_q[head1_ptr] && (count_q >= 3'd2);
   assign head0_uop = uop_q[head_q];
   assign head1_uop = uop_q[head1_ptr];
-  assign head0_issue = to_issue(head0_uop);
-  assign head1_issue = to_issue(head1_uop);
+  assign head0_issue = to_issue(wake_renamed(head0_uop));
+  assign head1_issue = to_issue(wake_renamed(head1_uop));
   assign head0_class = classify(head0_uop);
   assign head1_class = classify(head1_uop);
 
@@ -330,6 +356,11 @@ module dispatch_buffer (
       next_tail = tail_q;
       next_count = {1'b0, count_q};
 
+      for (idx = 0; idx < DB_ENTRIES; idx = idx + 1) begin
+        if (valid_q[idx])
+          uop_q[idx] <= wake_renamed(uop_q[idx]);
+      end
+
       // 1. 指令出队 (Dispatch)
       if (dispatch_count != 0) begin
         valid_q[head_q] <= 1'b0;
@@ -343,10 +374,10 @@ module dispatch_buffer (
       // 2. 指令入队 (Rename enqueue)
       if ((rn_valid_i != 2'b00) && rn_ready_o) begin
         valid_q[tail_q] <= rn_valid_i[0];
-        uop_q[tail_q] <= rn_uop0_i;
+        uop_q[tail_q] <= wake_renamed(rn_uop0_i);
         if (rn_valid_i[1]) begin
           valid_q[tail1_ptr] <= 1'b1;
-          uop_q[tail1_ptr] <= rn_uop1_i;
+          uop_q[tail1_ptr] <= wake_renamed(rn_uop1_i);
         end
         next_tail = rn_valid_i[1] ? ptr_add2(tail_q) : ptr_inc(tail_q);
         next_count = next_count + rn_count;

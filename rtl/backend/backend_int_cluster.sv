@@ -103,7 +103,7 @@ module backend_int_cluster #(
   completion_t int1_result;
   branch_resolve_t branch_event_raw;
   branch_resolve_t branch_event_q;
-  branch_resolve_t branch_event_to_commit;
+  branch_resolve_t branch_event_to_commit_q;
   logic branch_event_pending_q;
   logic branch_event_complete_match;
   logic branch_event_fire;
@@ -132,7 +132,6 @@ module backend_int_cluster #(
         (rob_complete[1].rob_id == branch_event_q.rob_id)));
   assign branch_event_fire = branch_event_pending_q &&
                              branch_event_complete_match;
-  assign branch_event_to_commit = branch_event_fire ? branch_event_q : '0;
 
   // Dispatch Buffer expects independent first/second-slot capacity. Derive it
   // from registered IQ occupancy to avoid a push_valid -> push_ready loop.
@@ -162,7 +161,7 @@ module backend_int_cluster #(
       .lq_release_id_i('0),
       .sq_release_valid_i(2'b00),
       .sq_release_id_i('0),
-      .branch_i(branch_event_to_commit),
+      .branch_i(branch_event_to_commit_q),
       .recovery_o,
       .checkpoint_clear_valid_o,
       .checkpoint_clear_id_o,
@@ -217,6 +216,8 @@ module backend_int_cluster #(
       .mdu_push_ready_i(2'b00),
       .mdu_push_uop0_o(),
       .mdu_push_uop1_o(),
+      .wb_valid_i(wakeup_valid),
+      .wb_prd_i(wakeup_prd),
       .recovery_i(recovery_o),
       .empty_o(db_empty),
       .full_o(db_full),
@@ -243,6 +244,7 @@ module backend_int_cluster #(
       .candidate_slot1_o(unused_int_slot1),
       .candidate_slot2_o(unused_int_slot2),
       .issue_grant_i(int_issue_grant),
+      .candidate_reselect_i(3'b000),
       .recovery_i(recovery_o),
       .empty_o(int_iq_empty),
       .full_o(int_iq_full),
@@ -372,16 +374,22 @@ module backend_int_cluster #(
 
   // The branch pipe resolves before the timing-pipelined writeback arbiter has
   // marked the branch complete in the ROB. Hold the resolve event until the
-  // matching ROB completion is visible, so branch recovery cannot preempt and
-  // drop the branch's own completion.
+  // matching ROB completion is visible, then emit it one cycle later so the ROB
+  // samples the completion before checkpoint clear/recovery can start scanning.
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else if (recovery_o.valid) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else begin
+      branch_event_to_commit_q <= '0;
+      if (branch_event_fire)
+        branch_event_to_commit_q <= branch_event_q;
+
       unique case ({branch_event_fire, branch_event_raw.valid})
         2'b00: begin
           // Hold pending event.

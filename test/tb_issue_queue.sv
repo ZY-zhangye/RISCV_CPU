@@ -24,6 +24,7 @@ module tb_issue_queue;
   logic [SLOT_W-1:0] candidate_slot1_o;
   logic [SLOT_W-1:0] candidate_slot2_o;
   logic [GROUPS-1:0] issue_grant_i = '0;
+  logic [GROUPS-1:0] candidate_reselect_i = '0;
 
   recovery_t recovery_i = '0;
   logic empty_o;

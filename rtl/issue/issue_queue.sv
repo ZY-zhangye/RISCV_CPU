@@ -44,6 +44,7 @@ module issue_queue #(
 
     // 全局仲裁 (Arbiter) 授权及控制输入
     input  logic [GROUPS-1:0]       issue_grant_i,     // 仲裁授权信号 (对应各组)
+    input  logic [GROUPS-1:0]       candidate_reselect_i, // 外部约束阻塞当前候选时请求重选
     input  recovery_t               recovery_i,        // 恢复控制信号 (分支误预测或精确异常)
 
     // 发射队列状态输出
@@ -378,6 +379,12 @@ module issue_queue #(
             // 获得授权：清空候选标志，允许下个候选人浮现
             candidate_valid_q[group_idx] <= 1'b0;
             candidate_slot_q[group_idx] <= '0;
+          end else if (candidate_reselect_i[group_idx] &&
+                       candidate_valid_q[group_idx]) begin
+            // 当前候选被 IQ 外部的约束长期阻塞时，不清除队列项，只允许
+            // 用最新 S0 winner 重新装载候选，避免 held younger uop 阻塞 older ready uop。
+            candidate_valid_q[group_idx] <= selected;
+            candidate_slot_q[group_idx] <= selected_slot;
           end else if (!candidate_valid_q[group_idx]) begin
             // 空闲状态：装载最新选出的候选人并锁定输出
             candidate_valid_q[group_idx] <= selected;
