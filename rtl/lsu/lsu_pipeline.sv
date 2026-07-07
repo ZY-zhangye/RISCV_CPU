@@ -78,6 +78,7 @@ module lsu_pipeline (
   lsu_state_t state_q;
   execute_uop_t req_uop_q;
   logic [XLEN-1:0] req_address_q;
+  logic [XLEN-1:0] req_byte_address_q [0:3];
   logic req_exception_valid_q;
   logic [3:0] req_exception_cause_q;
   logic [XLEN-1:0] req_exception_tval_q;
@@ -249,11 +250,9 @@ module lsu_pipeline (
   function automatic forward_candidate_t build_forward_candidate(
       input store_queue_entry_t entry,
       input logic [ROB_ID_W-1:0] load_rob_id,
-      input logic [XLEN-1:0] load_address,
       input logic [3:0] required_mask
   );
     forward_candidate_t candidate;
-    logic [XLEN-1:0] load_byte_address;
     logic [XLEN-1:0] store_byte_address;
     begin
       candidate = '0;
@@ -265,11 +264,10 @@ module lsu_pipeline (
 
         for (int load_byte = 0; load_byte < 4; load_byte = load_byte + 1) begin
           if (required_mask[load_byte]) begin
-            load_byte_address = load_address + XLEN'(load_byte);
             for (int store_byte = 0; store_byte < 4; store_byte = store_byte + 1) begin
               store_byte_address = entry.address + XLEN'(store_byte);
               if (entry.byte_enable[store_byte] &&
-                  (store_byte_address == load_byte_address)) begin
+                  (store_byte_address == req_byte_address_q[load_byte])) begin
                 candidate.byte_enable[load_byte] = 1'b1;
                 candidate.data[load_byte * 8 +: 8] =
                     entry.data[store_byte * 8 +: 8];
@@ -361,6 +359,8 @@ module lsu_pipeline (
       state_q <= LSU_IDLE;
       req_uop_q <= '0;
       req_address_q <= '0;
+      for (idx = 0; idx < 4; idx = idx + 1)
+        req_byte_address_q[idx] <= '0;
       req_exception_valid_q <= 1'b0;
       req_exception_cause_q <= '0;
       req_exception_tval_q <= '0;
@@ -412,6 +412,10 @@ module lsu_pipeline (
         if (issue_fire) begin
           req_uop_q <= issue_uop_i;
           req_address_q <= issue_address;
+          req_byte_address_q[0] <= issue_address;
+          req_byte_address_q[1] <= issue_address + XLEN'(1);
+          req_byte_address_q[2] <= issue_address + XLEN'(2);
+          req_byte_address_q[3] <= issue_address + XLEN'(3);
           req_exception_valid_q <= issue_misaligned;
           req_exception_cause_q <= is_store_op(issue_uop_i.mem_op) ?
                                    4'd6 : 4'd4;
@@ -460,7 +464,6 @@ module lsu_pipeline (
                 sq_candidate_q[idx] <= build_forward_candidate(
                     sq_entries_i[idx],
                     req_uop_q.rob_id,
-                    req_address_q,
                     required_mask);
                 if (sq_entries_i[idx].valid &&
                     rob_is_older(sq_entries_i[idx].rob_id,
