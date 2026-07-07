@@ -88,6 +88,9 @@ module reorder_buffer (
   logic branch_clear_done_q;
   logic restore_done_q;
   logic exception_flush_done_q;
+  logic exception_flush_pending_q;
+  logic restore_pending_q;
+  logic [ROB_ID_W-1:0] restore_tail_pending_q;
 
   logic alloc_fire;
   logic retire_row_fire;
@@ -164,6 +167,8 @@ module reorder_buffer (
   // Ready 只表示本地容量/扫描状态，不能反向依赖 alloc_valid，否则与上游
   // ready->valid 协调逻辑形成组合环。非法 2'b10 不满足 lane0，因此不会 fire。
   assign alloc_ready_o = !scan_busy_q &&
+                         !exception_flush_pending_q &&
+                         !restore_pending_q &&
                          !exception_flush_i &&
                          !restore_valid_i &&
                          !branch_clear_valid_i &&
@@ -188,7 +193,8 @@ module reorder_buffer (
   assign head_entry0_o = head_entry0_q;
   assign head_entry1_o = head_entry1_q;
 
-  assign busy_o = scan_busy_q;
+  assign busy_o = scan_busy_q || exception_flush_pending_q ||
+                  restore_pending_q;
   assign empty_o = (used_rows_q == '0);
   assign full_o = (used_rows_q == ROB_ROWS);
   assign occupancy_o = occupancy_q;
@@ -243,14 +249,28 @@ module reorder_buffer (
       branch_clear_done_q <= 1'b0;
       restore_done_q <= 1'b0;
       exception_flush_done_q <= 1'b0;
+      exception_flush_pending_q <= 1'b0;
+      restore_pending_q <= 1'b0;
+      restore_tail_pending_q <= '0;
     end else begin
       branch_clear_done_q <= 1'b0;
       restore_done_q <= 1'b0;
       exception_flush_done_q <= 1'b0;
 
+      // Raw recovery requests are captured first and applied on the following
+      // cycle.  This keeps the global recovery controller state off the wide
+      // ROB entry/valid/complete write-enable network.
+      if (exception_flush_i) begin
+        exception_flush_pending_q <= 1'b1;
+        restore_pending_q <= 1'b0;
+      end else if (restore_valid_i) begin
+        restore_pending_q <= 1'b1;
+        restore_tail_pending_q <= restore_tail_i;
+      end
+
       // 模式 A. 精确异常清空。Entry payload 可保留，valid/complete 全清后不可见。
       // ----------------------------------------------------------------------
-      if (exception_flush_i) begin
+      if (exception_flush_pending_q) begin
         valid_q <= '0;
         complete_q <= '0;
         head_row_q <= '0;
@@ -268,20 +288,29 @@ module reorder_buffer (
         scan_old_tail_row_q <= '0;
         scan_used_rows_q <= '0;
         scan_occupancy_q <= '0;
+        exception_flush_pending_q <= 1'b0;
+        restore_pending_q <= 1'b0;
         exception_flush_done_q <= 1'b1;
       end
 
       // ----------------------------------------------------------------------
       // 模式 B. 分支恢复扫描初始化 (REC_BRANCH)
       // ----------------------------------------------------------------------
-      else if (restore_valid_i) begin
+      else if (restore_pending_q) begin
         scan_busy_q <= 1'b1;
         scan_restore_q <= 1'b1;
         scan_row_q <= '0;
-        scan_restore_tail_q <= restore_tail_i;
+        scan_restore_tail_q <= restore_tail_pending_q;
         scan_old_tail_row_q <= tail_row_q;
         scan_used_rows_q <= '0;
         scan_occupancy_q <= '0;
+        restore_pending_q <= 1'b0;
+      end
+
+      // Recovery request capture bubble.  Allocation is already back-pressured
+      // combinationally by the raw request inputs; skip normal ROB mutation
+      // until the registered recovery operation starts next cycle.
+      else if (exception_flush_i || restore_valid_i) begin
       end
 
       // ----------------------------------------------------------------------
@@ -412,28 +441,23 @@ module reorder_buffer (
               scan_entry0.complete = 1'b1;
           end
 
-          if (entry_q[complete0_i.rob_id].is_csr ||
-              complete0_i.exception_valid ||
-              (!scan_restore_q &&
-               (rob_id_row(complete0_i.rob_id) == scan_row_q))) begin
-            alloc_tmp = entry_q[complete0_i.rob_id];
-            if (entry_q[complete0_i.rob_id].is_csr)
-              alloc_tmp.csr_operand = complete0_i.data;
-            if (complete0_i.exception_valid) begin
-              alloc_tmp.exception_valid = 1'b1;
-              alloc_tmp.exception_cause = complete0_i.exception_cause;
-              alloc_tmp.exception_tval = complete0_i.exception_tval;
-            end
-            if (!scan_restore_q &&
-                (rob_id_row(complete0_i.rob_id) == scan_row_q))
-              alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
-            entry_q[complete0_i.rob_id] <= alloc_tmp;
-            if (rob_id_row(complete0_i.rob_id) == scan_row_q) begin
-              if (rob_id_bank(complete0_i.rob_id))
-                scan_entry1.entry = alloc_tmp;
-              else
-                scan_entry0.entry = alloc_tmp;
-            end
+          alloc_tmp = entry_q[complete0_i.rob_id];
+          if (entry_q[complete0_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete0_i.data;
+          if (complete0_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete0_i.exception_cause;
+            alloc_tmp.exception_tval = complete0_i.exception_tval;
+          end
+          if (!scan_restore_q &&
+              (rob_id_row(complete0_i.rob_id) == scan_row_q))
+            alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
+          entry_q[complete0_i.rob_id] <= alloc_tmp;
+          if (rob_id_row(complete0_i.rob_id) == scan_row_q) begin
+            if (rob_id_bank(complete0_i.rob_id))
+              scan_entry1.entry = alloc_tmp;
+            else
+              scan_entry0.entry = alloc_tmp;
           end
         end
 
@@ -449,28 +473,23 @@ module reorder_buffer (
               scan_entry0.complete = 1'b1;
           end
 
-          if (entry_q[complete1_i.rob_id].is_csr ||
-              complete1_i.exception_valid ||
-              (!scan_restore_q &&
-               (rob_id_row(complete1_i.rob_id) == scan_row_q))) begin
-            alloc_tmp = entry_q[complete1_i.rob_id];
-            if (entry_q[complete1_i.rob_id].is_csr)
-              alloc_tmp.csr_operand = complete1_i.data;
-            if (complete1_i.exception_valid) begin
-              alloc_tmp.exception_valid = 1'b1;
-              alloc_tmp.exception_cause = complete1_i.exception_cause;
-              alloc_tmp.exception_tval = complete1_i.exception_tval;
-            end
-            if (!scan_restore_q &&
-                (rob_id_row(complete1_i.rob_id) == scan_row_q))
-              alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
-            entry_q[complete1_i.rob_id] <= alloc_tmp;
-            if (rob_id_row(complete1_i.rob_id) == scan_row_q) begin
-              if (rob_id_bank(complete1_i.rob_id))
-                scan_entry1.entry = alloc_tmp;
-              else
-                scan_entry0.entry = alloc_tmp;
-            end
+          alloc_tmp = entry_q[complete1_i.rob_id];
+          if (entry_q[complete1_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete1_i.data;
+          if (complete1_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete1_i.exception_cause;
+            alloc_tmp.exception_tval = complete1_i.exception_tval;
+          end
+          if (!scan_restore_q &&
+              (rob_id_row(complete1_i.rob_id) == scan_row_q))
+            alloc_tmp.branch_mask = alloc_tmp.branch_mask & clear_mask;
+          entry_q[complete1_i.rob_id] <= alloc_tmp;
+          if (rob_id_row(complete1_i.rob_id) == scan_row_q) begin
+            if (rob_id_bank(complete1_i.rob_id))
+              scan_entry1.entry = alloc_tmp;
+            else
+              scan_entry0.entry = alloc_tmp;
           end
         end
 
@@ -519,35 +538,29 @@ module reorder_buffer (
         // 1. 写回通道 0 完成记录 (直接寻址更新)
         if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
           complete_q[complete0_i.rob_id] <= 1'b1;
-          if (entry_q[complete0_i.rob_id].is_csr ||
-              complete0_i.exception_valid) begin
-            alloc_tmp = entry_q[complete0_i.rob_id];
-            if (entry_q[complete0_i.rob_id].is_csr)
-              alloc_tmp.csr_operand = complete0_i.data;
-            if (complete0_i.exception_valid) begin
-              alloc_tmp.exception_valid = 1'b1;
-              alloc_tmp.exception_cause = complete0_i.exception_cause;
-              alloc_tmp.exception_tval = complete0_i.exception_tval;
-            end
-            entry_q[complete0_i.rob_id] <= alloc_tmp;
+          alloc_tmp = entry_q[complete0_i.rob_id];
+          if (entry_q[complete0_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete0_i.data;
+          if (complete0_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete0_i.exception_cause;
+            alloc_tmp.exception_tval = complete0_i.exception_tval;
           end
+          entry_q[complete0_i.rob_id] <= alloc_tmp;
         end
 
         // 2. 写回通道 1 完成记录 (直接寻址更新)
         if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
           complete_q[complete1_i.rob_id] <= 1'b1;
-          if (entry_q[complete1_i.rob_id].is_csr ||
-              complete1_i.exception_valid) begin
-            alloc_tmp = entry_q[complete1_i.rob_id];
-            if (entry_q[complete1_i.rob_id].is_csr)
-              alloc_tmp.csr_operand = complete1_i.data;
-            if (complete1_i.exception_valid) begin
-              alloc_tmp.exception_valid = 1'b1;
-              alloc_tmp.exception_cause = complete1_i.exception_cause;
-              alloc_tmp.exception_tval = complete1_i.exception_tval;
-            end
-            entry_q[complete1_i.rob_id] <= alloc_tmp;
+          alloc_tmp = entry_q[complete1_i.rob_id];
+          if (entry_q[complete1_i.rob_id].is_csr)
+            alloc_tmp.csr_operand = complete1_i.data;
+          if (complete1_i.exception_valid) begin
+            alloc_tmp.exception_valid = 1'b1;
+            alloc_tmp.exception_cause = complete1_i.exception_cause;
+            alloc_tmp.exception_tval = complete1_i.exception_tval;
           end
+          entry_q[complete1_i.rob_id] <= alloc_tmp;
         end
 
         // 3. 指令提交行出队 (Retire)

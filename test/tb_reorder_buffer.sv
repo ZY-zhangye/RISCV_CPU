@@ -226,6 +226,7 @@ module tb_reorder_buffer;
     exception_flush_i = 1'b1;
     @(posedge clk_i); #1;
     exception_flush_i = 1'b0;
+    @(posedge clk_i); #1;
     if (!exception_flush_done_o || busy_o || !empty_o ||
         occupancy_o != 0 || head_valid_o != 2'b00)
       $fatal(1, "exception flush did not reset ROB state");

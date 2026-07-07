@@ -33,6 +33,8 @@ module tb_commit_recovery_cluster;
   logic [1:0][PRD_W-1:0] wb_prd_i = '0;
   logic [1:0][XLEN-1:0] wb_data_i = '0;
   logic [PHYS_REGS-1:0] prf_ready_bits_o;
+  logic [1:0] wakeup_valid_o;
+  logic [1:0][PRD_W-1:0] wakeup_prd_o;
   logic store_commit_valid_o;
   logic [SQ_ID_W-1:0] store_commit_sq_id_o;
   logic store_commit_ready_i = 1'b0;
