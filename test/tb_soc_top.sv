@@ -20,6 +20,7 @@ module tb_soc_top;
   logic periph_resp_valid_i = 1'b0;
   logic [XLEN-1:0] periph_resp_rdata_i = '0;
   logic periph_resp_error_i = 1'b0;
+  logic [7:0] led_o;
 
   logic imem_init_write_valid_i = 1'b0;
   logic [XLEN-1:0] imem_init_write_addr_i = '0;
@@ -69,7 +70,8 @@ module tb_soc_top;
 
   soc_top #(
       .RAM_BYTES(1024),
-      .MMIO_BYTES(4096)
+      .MMIO_BYTES(4096),
+      .POWER_ON_RESET_CYCLES(4)
   ) dut (.*);
 
   always #5 clk_i = ~clk_i;
@@ -198,6 +200,8 @@ module tb_soc_top;
     repeat (2) @(posedge clk_i);
     @(negedge clk_i);
     rst_i = 1'b0;
+    repeat (6) @(posedge clk_i);
+    #1;
 
     ext_irq_i = 1'b1;
     #1;
@@ -214,7 +218,7 @@ module tb_soc_top;
     if (free_lq_count_o != 8 || free_sq_count_o != 8 ||
         lq_occupancy_o != 0 || sq_occupancy_o != 0)
       $fatal(1, "SoC LSU resources did not drain");
-    if (periph_req_valid_o || mmio_busy_o || data_store_error_o ||
+    if (led_o != 8'h00 || periph_req_valid_o || mmio_busy_o || data_store_error_o ||
         imem_resp_error_o)
       $fatal(1, "unexpected SoC error/mmio activity");
 

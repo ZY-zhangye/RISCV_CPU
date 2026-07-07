@@ -20,6 +20,7 @@ SoC wrapper 内引入复杂总线协议。
 
 `soc_top` 是 FPGA/板级可综合顶层：
 
+- 接收板级 clock/reset，并在外部 reset 释放后生成一段内部上电计数复位。
 - 实例化 `core_top`。
 - 实例化 instruction ROM/RAM wrapper。
 - 实例化 data RAM wrapper。
@@ -32,6 +33,20 @@ SoC wrapper 内引入复杂总线协议。
 外设模块不直接连接 CPU LSU。所有外设访问先进入 `soc_addr_router`，由地址窗口选择
 目标外设。外设可逐步增加，不要求一次完成。
 
+### 1.4 Reset
+
+`soc_top` 的外部 `rst_i` 为高有效同步 reset。内部增加参数化上电计数复位：
+
+- 参数：`POWER_ON_RESET_CYCLES`，默认 `64`。
+- 内部 reset：`soc_rst = rst_i || !power_on_reset_done_q`。
+- 每次 `rst_i` 拉高都会清零计数器；`rst_i` 释放后，SoC 继续保持 reset
+  `POWER_ON_RESET_CYCLES` 个 `clk_i` 周期。
+- FPGA 上电配置后，计数器初值为 0，确保即使板级临时没有独立 reset 按键，也会自动
+  产生一段内部复位窗口。
+
+后续板级 wrapper 接差分时钟和 PLL 时，建议将 PLL `locked` 同步/取反后送入 `rst_i`，
+并保留该计数复位作为二级保护。若后续引出实体 reset 按键，也接入同一路 `rst_i`。
+
 ## 2. 建议地址空间
 
 V1 采用固定地址窗口和简单高位译码。地址未命中返回 bus error，后续由 LSU/commit
@@ -40,7 +55,8 @@ V1 采用固定地址窗口和简单高位译码。地址未命中返回 bus err
 | 地址范围 | 大小 | 目标 | 说明 |
 |---|---:|---|---|
 | `0x0000_0000` - `0x0000_FFFF` | 64 KiB | Boot ROM / IROM alias | 可选启动 ROM |
-| `0x1000_0000` - `0x1000_0FFF` | 4 KiB | UART0 | 后续预留 |
+| `0x1000_0000` - `0x1000_0003` | 4 B | LED | 当前实现 |
+| `0x1000_0004` - `0x1000_0FFF` | 4092 B | External peripheral bus | 后续 UART0 等 |
 | `0x1000_1000` - `0x1000_1FFF` | 4 KiB | GPIO0 | 后续预留 |
 | `0x1000_2000` - `0x1000_2FFF` | 4 KiB | Timer/mtime/mtimecmp | 后续预留 |
 | `0x1000_3000` - `0x1000_3FFF` | 4 KiB | Software IRQ / scratch | 后续预留 |
@@ -144,8 +160,10 @@ RAM load/store 可并行。MMIO V1 采用单在途串行通道：
 | input | `periph_resp_valid_i` | 1 | read 或 write ack |
 | input | `periph_resp_rdata_i` | 32 | read data |
 | input | `periph_resp_error_i` | 1 | 外设错误 |
+| output | `led_o` | `LED_WIDTH` | 板级 LED 输出，默认 8 bit |
 
-后续若外设数量增加，可在 SoC 内部增加 `periph_decode`，把该总线拆成
+当前已增加 `soc_periph_decode`，先解码 `0x1000_0000` LED 寄存器；未命中的 MMIO
+访问继续通过该总线透出。后续若外设数量增加，可继续在 SoC 内部把该总线拆成
 `uart0/gpio0/timer/software_irq` 等子端口。
 
 ## 6. 中断预留
@@ -174,13 +192,18 @@ SoC 级中断汇总后接入 `core_top`：
    `tb_soc_data_ram` 通过，5 ns OOC WNS `+2.747 ns`，Vivado 推断 64 个 BRAM，冻结。
 5. 新建 `soc_top`，连接 core、IROM/Data RAM/router 和空外设接口。已完成
    `rtl/soc/soc_top.sv`：实例化 `core_top`、`soc_imem`、`soc_addr_router` 和
-   `soc_data_ram`，MMIO peripheral bus 直接暴露到顶层以便后续外设 decode。
+   `soc_data_ram`，MMIO peripheral bus 经过 `soc_periph_decode` 后再暴露到顶层以便
+   后续外设扩展。
    `tb_soc_top` smoke 已通过，覆盖 IMem 初始化、core 取指、INT/MUL/DIV 写回和顶层
    interrupt/error 预留线。全系统 load/store 指令 smoke 后续再加；当前 RAM/router
    load/store 行为由各自 directed test 覆盖。
-6. 为 `soc_top` 增加 smoke test：从 memory 启动，执行普通 ALU/MUL/DIV/load/store，
+6. 新建 `soc_periph_decode`，在 `MMIO_BASE + 0x0` 提供 32-bit LED 寄存器，低
+   `LED_WIDTH` 位输出到 `led_o`，其他 MMIO 地址继续透出到顶层扩展总线。当前
+   `soc_top` OOC WNS 为 `-0.196 ns`，最差路径仍在既有 `u_issue_arbiter`
+   proposal 寄存路径，非 LED/MMIO decode。
+7. 为 `soc_top` 增加 smoke test：从 memory 启动，执行普通 ALU/MUL/DIV/load/store，
    观察写回和 store side effect。
-7. 后续逐个接入 UART、GPIO、Timer，每接一个外设先做 Questa directed test，再做
+8. 后续逐个接入 UART、GPIO、Timer，每接一个外设先做 Questa directed test，再做
    5 ns OOC。
 
 ## 8. 时序原则

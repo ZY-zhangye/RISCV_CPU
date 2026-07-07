@@ -1,8 +1,8 @@
 // Minimal SoC integration top.
 //
 // V1 wires core_top to instruction memory, data RAM and the simple address
-// router. Peripheral MMIO is exposed as a single ready-valid bus for later
-// UART/GPIO/timer decode.
+// router. Peripheral MMIO first hits a small internal decode block for simple
+// board I/O, then falls through to the external expansion bus.
 import core_types_pkg::*;
 
 module soc_top #(
@@ -12,6 +12,8 @@ module soc_top #(
     parameter int unsigned     RAM_BYTES = 262144,
     parameter logic [XLEN-1:0] MMIO_BASE = 32'h1000_0000,
     parameter int unsigned     MMIO_BYTES = 16384,
+    parameter int unsigned     LED_WIDTH = 8,
+    parameter int unsigned     POWER_ON_RESET_CYCLES = 64,
     parameter string           IMEM_INIT_FILE = "",
     parameter string           DMEM_INIT_FILE = ""
 ) (
@@ -31,6 +33,8 @@ module soc_top #(
     input  logic                         periph_resp_valid_i,
     input  logic [XLEN-1:0]              periph_resp_rdata_i,
     input  logic                         periph_resp_error_i,
+
+    output logic [LED_WIDTH-1:0]         led_o,
 
     input  logic                         imem_init_write_valid_i,
     input  logic [XLEN-1:0]              imem_init_write_addr_i,
@@ -85,6 +89,13 @@ module soc_top #(
     output logic                         mmio_busy_o
 );
 
+  localparam int unsigned POR_COUNT_W =
+      (POWER_ON_RESET_CYCLES <= 1) ? 1 : $clog2(POWER_ON_RESET_CYCLES);
+
+  logic [POR_COUNT_W-1:0] power_on_reset_count_q = '0;
+  logic power_on_reset_done_q = 1'b0;
+  logic soc_rst;
+
   logic imem_req_valid;
   logic [XLEN-1:0] imem_req_addr;
   logic imem_resp_valid;
@@ -104,12 +115,38 @@ module soc_top #(
   store_mem_req_t ram_store_req;
   logic ram_store_req_ready;
 
+  logic router_periph_req_valid;
+  logic router_periph_req_ready;
+  logic router_periph_req_write;
+  logic [XLEN-1:0] router_periph_req_addr;
+  logic [XLEN-1:0] router_periph_req_wdata;
+  logic [3:0] router_periph_req_wstrb;
+  logic router_periph_resp_valid;
+  logic [XLEN-1:0] router_periph_resp_rdata;
+  logic router_periph_resp_error;
+
+  assign soc_rst = rst_i || !power_on_reset_done_q;
+
+  always_ff @(posedge clk_i) begin
+    if (rst_i) begin
+      power_on_reset_count_q <= '0;
+      power_on_reset_done_q <= (POWER_ON_RESET_CYCLES == 0);
+    end else if (!power_on_reset_done_q) begin
+      if ((POWER_ON_RESET_CYCLES <= 1) ||
+          (power_on_reset_count_q == POWER_ON_RESET_CYCLES[POR_COUNT_W-1:0] - 1'b1)) begin
+        power_on_reset_done_q <= 1'b1;
+      end else begin
+        power_on_reset_count_q <= power_on_reset_count_q + 1'b1;
+      end
+    end
+  end
+
   core_top #(
       .HART_ID(HART_ID),
       .RESET_MTVEC(RESET_MTVEC)
   ) u_core (
       .clk_i,
-      .rst_i,
+      .rst_i(soc_rst),
       .ext_irq_i,
       .timer_irq_i,
       .software_irq_i,
@@ -160,7 +197,7 @@ module soc_top #(
       .INIT_FILE(IMEM_INIT_FILE)
   ) u_imem (
       .clk_i,
-      .rst_i,
+      .rst_i(soc_rst),
       .imem_req_valid_i(imem_req_valid),
       .imem_req_addr_i(imem_req_addr),
       .imem_resp_valid_o(imem_resp_valid),
@@ -180,7 +217,7 @@ module soc_top #(
       .MMIO_SIZE(MMIO_BYTES[XLEN-1:0])
   ) u_addr_router (
       .clk_i,
-      .rst_i,
+      .rst_i(soc_rst),
       .core_load_req_i(core_load_req),
       .core_load_req_ready_o(core_load_req_ready),
       .core_load_resp_o(core_load_resp),
@@ -193,17 +230,45 @@ module soc_top #(
       .ram_load_resp_ready_o(ram_load_resp_ready),
       .ram_store_req_o(ram_store_req),
       .ram_store_req_ready_i(ram_store_req_ready),
-      .periph_req_valid_o,
-      .periph_req_ready_i,
-      .periph_req_write_o,
-      .periph_req_addr_o,
-      .periph_req_wdata_o,
-      .periph_req_wstrb_o,
-      .periph_resp_valid_i,
-      .periph_resp_rdata_i,
-      .periph_resp_error_i,
+      .periph_req_valid_o(router_periph_req_valid),
+      .periph_req_ready_i(router_periph_req_ready),
+      .periph_req_write_o(router_periph_req_write),
+      .periph_req_addr_o(router_periph_req_addr),
+      .periph_req_wdata_o(router_periph_req_wdata),
+      .periph_req_wstrb_o(router_periph_req_wstrb),
+      .periph_resp_valid_i(router_periph_resp_valid),
+      .periph_resp_rdata_i(router_periph_resp_rdata),
+      .periph_resp_error_i(router_periph_resp_error),
       .sticky_store_error_o(data_store_error_o),
       .mmio_busy_o
+  );
+
+  soc_periph_decode #(
+      .MMIO_BASE(MMIO_BASE),
+      .LED_OFFSET(32'h0000_0000),
+      .LED_WIDTH(LED_WIDTH)
+  ) u_periph_decode (
+      .clk_i,
+      .rst_i(soc_rst),
+      .req_valid_i(router_periph_req_valid),
+      .req_ready_o(router_periph_req_ready),
+      .req_write_i(router_periph_req_write),
+      .req_addr_i(router_periph_req_addr),
+      .req_wdata_i(router_periph_req_wdata),
+      .req_wstrb_i(router_periph_req_wstrb),
+      .resp_valid_o(router_periph_resp_valid),
+      .resp_rdata_o(router_periph_resp_rdata),
+      .resp_error_o(router_periph_resp_error),
+      .ext_req_valid_o(periph_req_valid_o),
+      .ext_req_ready_i(periph_req_ready_i),
+      .ext_req_write_o(periph_req_write_o),
+      .ext_req_addr_o(periph_req_addr_o),
+      .ext_req_wdata_o(periph_req_wdata_o),
+      .ext_req_wstrb_o(periph_req_wstrb_o),
+      .ext_resp_valid_i(periph_resp_valid_i),
+      .ext_resp_rdata_i(periph_resp_rdata_i),
+      .ext_resp_error_i(periph_resp_error_i),
+      .led_o
   );
 
   soc_data_ram #(
@@ -212,7 +277,7 @@ module soc_top #(
       .INIT_FILE(DMEM_INIT_FILE)
   ) u_data_ram (
       .clk_i,
-      .rst_i,
+      .rst_i(soc_rst),
       .load_req_i(ram_load_req),
       .load_req_ready_o(ram_load_req_ready),
       .load_resp_o(ram_load_resp),
@@ -229,7 +294,7 @@ module soc_top #(
 
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
-    if (!rst_i) begin
+    if (!soc_rst) begin
       if (imem_req_valid)
         assert (imem_req_addr[3:0] == 4'b0000)
           else $error("soc_top saw unaligned imem request");
