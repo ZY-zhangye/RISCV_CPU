@@ -9,7 +9,8 @@ import core_types_pkg::*;
 //    在周期末更新 ready bit。新唤醒的 uop 最早在周期 N+1 参与 Select 仲裁，打断单周期组合环路；
 // 4. 双级流水发射选择（Two-Stage Pipelined Selection）：
 //    - 队列容量划分为 `GROUPS` 个组（如 12 项划分为 3 个组，每组 4 项），每组独立发射最多 1 条指令；
-//    - Stage S0（第一级）：将各组内的 slots 两两配对（Pair），选出每对中 ready 且最老的 winner，将其锁存入 `pair_valid_q` 等寄存器；
+//    - Stage S0a：先把 grant/wakeup/checkpoint 后可参与选择的槽位压成 `issue_eligible_q` 位图；
+//    - Stage S0b：将各组内的 slots 两两配对（Pair），选出每对中 eligible 且最老的 winner，将其锁存入 `pair_valid_q` 等寄存器；
 //    - Stage S1（第二级）：从每组的各对 winner 中选出最老的 winner 锁存入全局候选 `candidate_valid_q`；
 //    - 候选人保持锁死（Candidate Holding）：一旦锁存，该候选人必须一直保持在输出端，直到收到全局仲裁器的 `issue_grant_i` 授权，
 //      这允许全局仲裁器（Issue Arbiter）跨周期计算而不会因为候选人变化导致冲突；
@@ -83,6 +84,9 @@ module issue_queue #(
   logic [PAIR_COUNT-1:0] pair_valid_q;
   logic [SLOT_W-1:0] pair_slot_q [0:PAIR_COUNT-1];
   logic [ROB_ID_W-1:0] pair_rob_id_q [0:PAIR_COUNT-1];
+  logic [ENTRIES-1:0] issue_eligible_q;
+  logic [ENTRIES-1:0] issue_eligible_d;
+  logic [ENTRIES-1:0] grant_kill_d;
 
   // Stage S1 寄存器：锁存每组的发射候选人
   logic [GROUPS-1:0] candidate_valid_q;
@@ -194,6 +198,46 @@ module issue_queue #(
   assign candidate_slot1_o = (GROUPS > 1) ? candidate_slot_q[1] : '0;
   assign candidate_slot2_o = (GROUPS > 2) ? candidate_slot_q[2] : '0;
 
+  // Keep the S0a eligible bitmap independent from the main queue update
+  // network.  This prevents push-slot search, count update and branch-mask
+  // writeback logic from being pulled into the eligible register D path.
+  always_comb begin : issue_eligible_comb
+    integer idx;
+    integer group_idx;
+    logic [CHECKPOINTS-1:0] visible_branch_mask;
+
+    grant_kill_d = '0;
+    for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
+      if (issue_grant_i[group_idx] && candidate_valid_q[group_idx])
+        grant_kill_d[candidate_slot_q[group_idx]] = 1'b1;
+    end
+
+    issue_eligible_d = '0;
+    for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
+      visible_branch_mask = branch_mask_q[idx];
+      if (checkpoint_clear_i)
+        visible_branch_mask = clear_checkpoint(visible_branch_mask,
+                                               checkpoint_clear_id_i);
+      if (recovery_i.valid && (recovery_i.cause == REC_BRANCH))
+        visible_branch_mask = clear_checkpoint(visible_branch_mask,
+                                               recovery_i.checkpoint_id);
+
+      issue_eligible_d[idx] =
+          valid_q[idx] &&
+          !grant_kill_d[idx] &&
+          !(recovery_i.valid && (recovery_i.cause == REC_EXCEPT)) &&
+          !(recovery_i.valid && (recovery_i.cause == REC_BRANCH) &&
+            branch_mask_q[idx][recovery_i.checkpoint_id]) &&
+          control_ready_for_issue(payload_q[idx], visible_branch_mask) &&
+          (!need_rs1_q[idx] || wake_src(src1_ready_q[idx],
+                                        need_rs1_q[idx],
+                                        prs1_q[idx])) &&
+          (!need_rs2_q[idx] || wake_src(src2_ready_q[idx],
+                                        need_rs2_q[idx],
+                                        prs2_q[idx]));
+    end
+  end
+
   // ==========================================================================
   // 发射队列主时序块 (Sequential Queue State & Selection Logic)
   // ==========================================================================
@@ -206,11 +250,12 @@ module issue_queue #(
     integer local_idx;
     integer slot_idx;
     logic [ENTRIES-1:0] valid_next;
-    logic [ENTRIES-1:0] select_valid;
     logic [ENTRIES-1:0] src1_ready_next;
     logic [ENTRIES-1:0] src2_ready_next;
-    logic [CHECKPOINTS-1:0] branch_mask_next [0:ENTRIES-1];
+    logic [ENTRIES-1:0] branch_mask_we;
+    logic [CHECKPOINTS-1:0] branch_mask_wdata [0:ENTRIES-1];
     logic [COUNT_W-1:0] count_next;
+    logic [ENTRIES-1:0] alloc_search_valid;
     logic [SLOT_W-1:0] push_slot0;
     logic [SLOT_W-1:0] push_slot1;
     logic found0;
@@ -236,6 +281,7 @@ module issue_queue #(
       end
       count_q <= '0;
       pair_valid_q <= '0;
+      issue_eligible_q <= '0;
       candidate_valid_q <= '0;
       clear_valid_q <= '0;
       for (pair_idx = 0; pair_idx < PAIR_COUNT; pair_idx = pair_idx + 1) begin
@@ -248,12 +294,13 @@ module issue_queue #(
       end
     end else begin
       valid_next = valid_q;
-      select_valid = valid_q;
       src1_ready_next = src1_ready_q;
       src2_ready_next = src2_ready_q;
+      branch_mask_we = '0;
       for (idx = 0; idx < ENTRIES; idx = idx + 1)
-        branch_mask_next[idx] = branch_mask_q[idx];
+        branch_mask_wdata[idx] = branch_mask_q[idx];
       count_next = count_q;
+      alloc_search_valid = valid_q;
 
       // ----------------------------------------------------------------------
       // 1. 全局恢复与冲刷判定 (Recovery & Flush logic)
@@ -271,11 +318,12 @@ module issue_queue #(
           count_next = '0;
           clear_valid_q <= '0;
           for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
-            if (valid_next[idx] && branch_mask_next[idx][recovery_i.checkpoint_id]) begin
+            if (valid_next[idx] && branch_mask_q[idx][recovery_i.checkpoint_id]) begin
               valid_next[idx] = 1'b0;
             end else if (valid_next[idx]) begin
               // 保留的幸存指令，剔除对应的分支有效位
-              branch_mask_next[idx] = branch_mask_next[idx] & clear_mask;
+              branch_mask_wdata[idx] = branch_mask_q[idx] & clear_mask;
+              branch_mask_we[idx] = 1'b1;
               count_next = count_next + 1'b1;
             end
           end
@@ -288,10 +336,12 @@ module issue_queue #(
       else begin
         if (checkpoint_clear_i) begin
           for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
-            if (valid_next[idx])
-              branch_mask_next[idx] = clear_checkpoint(
-                  branch_mask_next[idx],
+            if (valid_q[idx]) begin
+              branch_mask_wdata[idx] = clear_checkpoint(
+                  branch_mask_q[idx],
                   checkpoint_clear_id_i);
+              branch_mask_we[idx] = 1'b1;
+            end
           end
         end
 
@@ -320,11 +370,6 @@ module issue_queue #(
           end
         end
 
-        // Selection sees the queue after clear/grant/wakeup, but before
-        // this cycle's enqueue. Newly enqueued payload registers are not
-        // visible until the next edge.
-        select_valid = valid_next;
-
         // C. 指令入队逻辑 (Enqueue)
         if (push_fire) begin
           found0 = 1'b0;
@@ -332,15 +377,18 @@ module issue_queue #(
           push_slot0 = '0;
           push_slot1 = '0;
 
-          // 查找空位：使用已经应用延迟清除和当前 grant 的有效图，
-          // 避免计数器已释放但位图仍按周期初始状态搜索导致槽位选择失真。
+          // 查找空位：只使用周期开始时的有效图，不同拍复用刚被 grant
+          // 清除的 slot。这样 candidate_slot_q 不会进入入队写使能/branch_mask
+          // CE 路径；push_ready_o 本身也只基于周期开始的 free_count。
           for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
-            if (!found0 && !valid_next[idx]) begin
+            if (!found0 && !alloc_search_valid[idx]) begin
               found0 = 1'b1;
               push_slot0 = idx[SLOT_W-1:0];
-            end else if (!found1 && !valid_next[idx]) begin
+              alloc_search_valid[idx] = 1'b1;
+            end else if (!found1 && !alloc_search_valid[idx]) begin
               found1 = 1'b1;
               push_slot1 = idx[SLOT_W-1:0];
+              alloc_search_valid[idx] = 1'b1;
             end
           end
 
@@ -352,11 +400,11 @@ module issue_queue #(
           prs2_q[push_slot0] <= push_uop0_i.prs2;
           need_rs1_q[push_slot0] <= push_uop0_i.need_rs1;
           need_rs2_q[push_slot0] <= push_uop0_i.need_rs2;
-          branch_mask_next[push_slot0] = checkpoint_clear_i ?
+          branch_mask_wdata[push_slot0] = checkpoint_clear_i ?
               clear_checkpoint(push_uop0_i.branch_mask,
                                checkpoint_clear_id_i) :
               push_uop0_i.branch_mask;
-          branch_mask_q[push_slot0] <= branch_mask_next[push_slot0];
+          branch_mask_we[push_slot0] = push_valid_i[0];
           // 新入队 uop 可能会与本周期正在写回的 tag 发生写回旁路唤醒比较
           src1_ready_next[push_slot0] = wake_src(push_uop0_i.src1_ready,
                                                  push_uop0_i.need_rs1,
@@ -374,11 +422,11 @@ module issue_queue #(
             prs2_q[push_slot1] <= push_uop1_i.prs2;
             need_rs1_q[push_slot1] <= push_uop1_i.need_rs1;
             need_rs2_q[push_slot1] <= push_uop1_i.need_rs2;
-            branch_mask_next[push_slot1] = checkpoint_clear_i ?
+            branch_mask_wdata[push_slot1] = checkpoint_clear_i ?
                 clear_checkpoint(push_uop1_i.branch_mask,
                                  checkpoint_clear_id_i) :
                 push_uop1_i.branch_mask;
-            branch_mask_q[push_slot1] <= branch_mask_next[push_slot1];
+            branch_mask_we[push_slot1] = 1'b1;
             src1_ready_next[push_slot1] = wake_src(push_uop1_i.src1_ready,
                                                    push_uop1_i.need_rs1,
                                                    push_uop1_i.prs1);
@@ -396,6 +444,7 @@ module issue_queue #(
       if (recovery_i.valid) begin
         candidate_valid_q <= '0;
         pair_valid_q <= '0;
+        issue_eligible_q <= '0;
         for (pair_idx = 0; pair_idx < PAIR_COUNT; pair_idx = pair_idx + 1) begin
           pair_slot_q[pair_idx] <= '0;
           pair_rob_id_q[pair_idx] <= '0;
@@ -415,7 +464,9 @@ module issue_queue #(
           for (pair_idx = 0; pair_idx < PAIRS_PER_GROUP; pair_idx = pair_idx + 1) begin
             pair_linear_idx = group_idx * PAIRS_PER_GROUP + pair_idx;
             if (pair_valid_q[pair_linear_idx] &&
-                select_valid[pair_slot_q[pair_linear_idx]] &&
+                issue_eligible_q[pair_slot_q[pair_linear_idx]] &&
+                (rob_id_q[pair_slot_q[pair_linear_idx]] ==
+                 pair_rob_id_q[pair_linear_idx]) &&
                 !(clear_valid_q[group_idx] &&
                   (clear_slot_q[group_idx] == pair_slot_q[pair_linear_idx])) &&
                 (!selected ||
@@ -445,7 +496,8 @@ module issue_queue #(
 
         // --- Stage S0: 配对局部选拔逻辑 (Pairs reduction) ---
         // 将组内所有槽位两两配对（如每组 4 项分成 2 对），并在每对内选出 ready 且最老的 winner。
-        // 这一打拍过程避免了直接遍历整组 4 项对源操作数 ready 位进行庞杂多路选择的组合路径开销。
+        // S0 只消费上一拍锁存的 issue_eligible_q，避免 valid/wakeup/control-ready 的宽组合路径
+        // 直接落到 pair_* 寄存器。
         // 选择时只排除上周期已被 grant 但仍在清有效位过程中的 slot 标志。
         // 当前 grant 只清 S1 candidate，不反馈进 S0 pair 选择，避免 IQ->arbiter->IQ 的组合时序回路。
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
@@ -459,13 +511,9 @@ module issue_queue #(
               local_idx = pair_idx * 2 + pair_local_idx;
               if (local_idx < GROUP_SIZE) begin
                 slot_idx = group_idx * GROUP_SIZE + local_idx;
-                slot_ready = select_valid[slot_idx] &&
+                slot_ready = issue_eligible_q[slot_idx] &&
                              !(clear_valid_q[group_idx] &&
-                               (clear_slot_q[group_idx] == slot_idx[SLOT_W-1:0])) &&
-                             control_ready_for_issue(payload_q[slot_idx],
-                                                     branch_mask_next[slot_idx]) &&
-                             (!need_rs1_q[slot_idx] || src1_ready_next[slot_idx]) &&
-                             (!need_rs2_q[slot_idx] || src2_ready_next[slot_idx]);
+                               (clear_slot_q[group_idx] == slot_idx[SLOT_W-1:0]));
 
                 if (slot_ready && (!selected ||
                     is_older(rob_id_q[slot_idx], selected_rob_id))) begin
@@ -484,11 +532,14 @@ module issue_queue #(
       end
 
       // 时钟沿写入状态向量
+      issue_eligible_q <= recovery_i.valid ? '0 : issue_eligible_d;
       valid_q <= valid_next;
       src1_ready_q <= src1_ready_next;
       src2_ready_q <= src2_ready_next;
-      for (idx = 0; idx < ENTRIES; idx = idx + 1)
-        branch_mask_q[idx] <= branch_mask_next[idx];
+      for (idx = 0; idx < ENTRIES; idx = idx + 1) begin
+        if (branch_mask_we[idx])
+          branch_mask_q[idx] <= branch_mask_wdata[idx];
+      end
       count_q <= count_next;
     end
   end

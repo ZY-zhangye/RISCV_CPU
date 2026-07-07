@@ -614,6 +614,48 @@ module tb_soc_custom_instr;
             dut.u_core.u_core_cluster.u_backend.sq_commit_done,
             dut.u_core.u_core_cluster.u_backend.commit_busy);
         $display(
+            "TRACE_IIQ cycle=%0d valid=%b elig=%b s1=%b s2=%b need1=%b need2=%b candv=%b grant=%b cslot0=%0d cslot1=%0d cslot2=%0d pairv=%b pairslot0=%0d pairslot1=%0d pairslot2=%0d pairslot3=%0d pairslot4=%0d pairslot5=%0d",
+            cycles,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.valid_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.issue_eligible_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.src1_ready_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.src2_ready_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.need_rs1_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.need_rs2_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.candidate_valid_q,
+            dut.u_core.u_core_cluster.u_backend.int_issue_grant,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.candidate_slot_q[0],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.candidate_slot_q[1],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.candidate_slot_q[2],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_valid_q,
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[0],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[1],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[2],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[3],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[4],
+            dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.pair_slot_q[5]);
+        for (int dbg_iiq_slot = 0; dbg_iiq_slot < IQ_INT_ENTRIES; dbg_iiq_slot++) begin
+          if (dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.valid_q[dbg_iiq_slot]) begin
+            $display(
+                "TRACE_IIQ_SLOT cycle=%0d slot=%0d pc=%08h id=%0d prd=%0d prs1=%0d prs2=%0d s1=%0b s2=%0b need1=%0b need2=%0b fu=%0d alu=%0d bm=%b elig=%0b",
+                cycles,
+                dbg_iiq_slot,
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.payload_q[dbg_iiq_slot].pc,
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.rob_id_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.payload_q[dbg_iiq_slot].prd,
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.prs1_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.prs2_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.src1_ready_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.src2_ready_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.need_rs1_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.need_rs2_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.payload_q[dbg_iiq_slot].fu_type,
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.payload_q[dbg_iiq_slot].alu_op,
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.branch_mask_q[dbg_iiq_slot],
+                dut.u_core.u_core_cluster.u_backend.u_int_issue_queue.issue_eligible_q[dbg_iiq_slot]);
+          end
+        end
+        $display(
             "TRACE_MIQ_STATE cycle=%0d valid=%b s1=%b s2=%b need1=%b need2=%b candv=%b cslot0=%0d cslot1=%0d pairv=%b pairslot0=%0d pairslot1=%0d pairslot2=%0d pairslot3=%0d",
             cycles,
             dut.u_core.u_core_cluster.u_backend.u_mem_issue_queue.valid_q,

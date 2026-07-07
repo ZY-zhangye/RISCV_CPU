@@ -15,6 +15,7 @@ module tb_issue_queue;
 
   logic [1:0] wb_valid_i = 2'b00;
   logic [1:0][PRD_W-1:0] wb_prd_i = '0;
+  logic [PHYS_REGS-1:0] prf_ready_bits_i = '0;
 
   logic [GROUPS-1:0] candidate_valid_o;
   issue_uop_t candidate_uop0_o;
@@ -25,6 +26,8 @@ module tb_issue_queue;
   logic [SLOT_W-1:0] candidate_slot2_o;
   logic [GROUPS-1:0] issue_grant_i = '0;
   logic [GROUPS-1:0] candidate_reselect_i = '0;
+  logic checkpoint_clear_i = 1'b0;
+  logic [CP_W-1:0] checkpoint_clear_id_i = '0;
 
   recovery_t recovery_i = '0;
   logic empty_o;
@@ -105,7 +108,7 @@ module tb_issue_queue;
     @(negedge clk_i);
     wb_valid_i = 2'b00;
     wb_prd_i = '0;
-    repeat (2) @(negedge clk_i);
+    repeat (3) @(negedge clk_i);
     if (!candidate_valid_o[0] || candidate_uop0_o.rob_id != 5'd4)
       $fatal(1, "wakeup did not produce candidate");
 
@@ -121,7 +124,7 @@ module tb_issue_queue;
     // Dual push fills deterministic free slots; oldest ready in group wins.
     push_two(make_uop(5'd8, 6'd1, 6'd2, 1'b1, 1'b1, 4'b0010),
              make_uop(5'd7, 6'd3, 6'd4, 1'b1, 1'b1, 4'b0010));
-    repeat (2) @(negedge clk_i);
+    repeat (3) @(negedge clk_i);
     if (!candidate_valid_o[0] || candidate_uop0_o.rob_id != 5'd7)
       $fatal(1, "oldest ready candidate selection mismatch valid=%b rob=%0d occ=%0d",
              candidate_valid_o, candidate_uop0_o.rob_id, occupancy_o);
@@ -130,7 +133,7 @@ module tb_issue_queue;
     // selected older entry must not replace it before the arbiter grants it;
     // this permits a pipelined global arbitration stage.
     push_one(make_uop(5'd6, 6'd9, 6'd10, 1'b1, 1'b1, 4'b0010));
-    repeat (2) @(negedge clk_i);
+    repeat (3) @(negedge clk_i);
     if (!candidate_valid_o[0] || candidate_uop0_o.rob_id != 5'd7)
       $fatal(1, "ungranted candidate was not held stable");
 
