@@ -43,8 +43,13 @@ module soc_data_ram #(
   load_mem_resp_t load_resp_q;
   logic load_pipe_valid_q;
   logic [LQ_ID_W-1:0] load_pipe_lq_id_q;
-  logic [XLEN-1:0] load_pipe_data_q;
+  logic [1:0] load_pipe_lane_q;
   logic load_pipe_error_q;
+
+  logic [7:0] read_data_b0_q;
+  logic [7:0] read_data_b1_q;
+  logic [7:0] read_data_b2_q;
+  logic [7:0] read_data_b3_q;
 
   logic load_hit;
   logic store_hit;
@@ -52,6 +57,26 @@ module soc_data_ram #(
   logic load_fire;
   logic store_fire;
   logic init_fire;
+  logic ram_read_fire;
+
+  logic [WORD_INDEX_W-1:0] load_base_index;
+  logic [WORD_INDEX_W-1:0] store_base_index;
+  logic [WORD_INDEX_W-1:0] init_base_index;
+  logic [1:0] load_base_lane;
+  logic [1:0] store_base_lane;
+
+  logic write_en_b0;
+  logic write_en_b1;
+  logic write_en_b2;
+  logic write_en_b3;
+  logic [WORD_INDEX_W-1:0] write_index_b0;
+  logic [WORD_INDEX_W-1:0] write_index_b1;
+  logic [WORD_INDEX_W-1:0] write_index_b2;
+  logic [WORD_INDEX_W-1:0] write_index_b3;
+  logic [7:0] write_data_b0;
+  logic [7:0] write_data_b1;
+  logic [7:0] write_data_b2;
+  logic [7:0] write_data_b3;
 
   function automatic logic in_range(input logic [XLEN-1:0] addr);
     logic [XLEN-1:0] offset;
@@ -110,6 +135,78 @@ module soc_data_ram #(
   assign load_fire = load_req_i.valid && load_req_ready_o;
   assign store_fire = store_req_i.valid && store_req_ready_o;
   assign init_fire = init_write_valid_i && init_hit;
+  assign ram_read_fire = load_fire && load_hit;
+
+  assign load_base_index = word_index(load_req_i.address);
+  assign store_base_index = word_index(store_req_i.address);
+  assign init_base_index = word_index(init_write_addr_i);
+  assign load_base_lane = byte_lane(load_req_i.address);
+  assign store_base_lane = byte_lane(store_req_i.address);
+
+  always_comb begin
+    write_en_b0 = 1'b0;
+    write_en_b1 = 1'b0;
+    write_en_b2 = 1'b0;
+    write_en_b3 = 1'b0;
+    write_index_b0 = '0;
+    write_index_b1 = '0;
+    write_index_b2 = '0;
+    write_index_b3 = '0;
+    write_data_b0 = '0;
+    write_data_b1 = '0;
+    write_data_b2 = '0;
+    write_data_b3 = '0;
+
+    if (init_fire) begin
+      write_en_b0 = init_write_wstrb_i[0];
+      write_en_b1 = init_write_wstrb_i[1];
+      write_en_b2 = init_write_wstrb_i[2];
+      write_en_b3 = init_write_wstrb_i[3];
+      write_index_b0 = init_base_index;
+      write_index_b1 = init_base_index;
+      write_index_b2 = init_base_index;
+      write_index_b3 = init_base_index;
+      write_data_b0 = init_write_data_i[7:0];
+      write_data_b1 = init_write_data_i[15:8];
+      write_data_b2 = init_write_data_i[23:16];
+      write_data_b3 = init_write_data_i[31:24];
+    end else if (store_fire && store_hit) begin
+      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
+        logic [2:0] lane_sum;
+        logic [1:0] target_lane;
+        logic [WORD_INDEX_W-1:0] target_index;
+
+        lane_sum = {1'b0, store_base_lane} + byte_idx[2:0];
+        target_lane = lane_sum[1:0];
+        target_index = store_base_index + WORD_INDEX_W'(lane_sum[2]);
+
+        if (store_req_i.byte_enable[byte_idx]) begin
+          unique case (target_lane)
+            2'd0: begin
+              write_en_b0 = 1'b1;
+              write_index_b0 = target_index;
+              write_data_b0 = store_req_i.data[byte_idx * 8 +: 8];
+            end
+            2'd1: begin
+              write_en_b1 = 1'b1;
+              write_index_b1 = target_index;
+              write_data_b1 = store_req_i.data[byte_idx * 8 +: 8];
+            end
+            2'd2: begin
+              write_en_b2 = 1'b1;
+              write_index_b2 = target_index;
+              write_data_b2 = store_req_i.data[byte_idx * 8 +: 8];
+            end
+            default: begin
+              write_en_b3 = 1'b1;
+              write_index_b3 = target_index;
+              write_data_b3 = store_req_i.data[byte_idx * 8 +: 8];
+            end
+          endcase
+        end
+      end
+    end
+  end
 
 `ifndef SYNTHESIS
   initial begin
@@ -119,47 +216,32 @@ module soc_data_ram #(
 `endif
 
   always_ff @(posedge clk_i) begin
-    logic [XLEN-1:0] write_addr;
-    logic [XLEN-1:0] load_addr;
-    logic [WORD_INDEX_W-1:0] access_index;
-    logic [1:0] access_lane;
+    if (write_en_b0)
+      mem_b0_q[write_index_b0] <= write_data_b0;
+    if (write_en_b1)
+      mem_b1_q[write_index_b1] <= write_data_b1;
+    if (write_en_b2)
+      mem_b2_q[write_index_b2] <= write_data_b2;
+    if (write_en_b3)
+      mem_b3_q[write_index_b3] <= write_data_b3;
 
-    if (init_fire) begin
-      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
-        if (init_write_wstrb_i[byte_idx]) begin
-          write_addr = init_write_addr_i + byte_idx;
-          access_index = word_index(write_addr);
-          access_lane = byte_lane(write_addr);
-          unique case (access_lane)
-            2'd0: mem_b0_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
-            2'd1: mem_b1_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
-            2'd2: mem_b2_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
-            default: mem_b3_q[access_index] <= init_write_data_i[byte_idx * 8 +: 8];
-          endcase
-        end
-      end
-    end else if (store_fire && store_hit) begin
-      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
-        if (store_req_i.byte_enable[byte_idx]) begin
-          write_addr = store_req_i.address + byte_idx;
-          access_index = word_index(write_addr);
-          access_lane = byte_lane(write_addr);
-          unique case (access_lane)
-            2'd0: mem_b0_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
-            2'd1: mem_b1_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
-            2'd2: mem_b2_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
-            default: mem_b3_q[access_index] <= store_req_i.data[byte_idx * 8 +: 8];
-          endcase
-        end
-      end
+    if (ram_read_fire) begin
+      read_data_b0_q <= mem_b0_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0)];
+      read_data_b1_q <= mem_b1_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1)];
+      read_data_b2_q <= mem_b2_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2)];
+      read_data_b3_q <= mem_b3_q[load_base_index];
     end
 
     if (rst_i) begin
       load_resp_q <= '0;
       load_pipe_valid_q <= 1'b0;
       load_pipe_lq_id_q <= '0;
-      load_pipe_data_q <= '0;
+      load_pipe_lane_q <= '0;
       load_pipe_error_q <= 1'b0;
+      read_data_b0_q <= '0;
+      read_data_b1_q <= '0;
+      read_data_b2_q <= '0;
+      read_data_b3_q <= '0;
     end else begin
       if (load_resp_q.valid && load_resp_ready_i)
         load_resp_q <= '0;
@@ -167,22 +249,8 @@ module soc_data_ram #(
       if (load_fire) begin
         load_pipe_valid_q <= 1'b1;
         load_pipe_lq_id_q <= load_req_i.lq_id;
+        load_pipe_lane_q <= load_base_lane;
         load_pipe_error_q <= !load_hit;
-        load_pipe_data_q <= '0;
-
-        if (load_hit) begin
-          for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
-            load_addr = load_req_i.address + byte_idx;
-            access_index = word_index(load_addr);
-            access_lane = byte_lane(load_addr);
-            unique case (access_lane)
-              2'd0: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b0_q[access_index];
-              2'd1: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b1_q[access_index];
-              2'd2: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b2_q[access_index];
-              default: load_pipe_data_q[byte_idx * 8 +: 8] <= mem_b3_q[access_index];
-            endcase
-          end
-        end
       end
 
       if (load_pipe_valid_q) begin
@@ -190,7 +258,20 @@ module soc_data_ram #(
         load_resp_q.valid <= 1'b1;
         load_resp_q.lq_id <= load_pipe_lq_id_q;
         load_resp_q.error <= load_pipe_error_q;
-        load_resp_q.data <= load_pipe_data_q;
+        if (load_pipe_error_q) begin
+          load_resp_q.data <= '0;
+        end else begin
+          unique case (load_pipe_lane_q)
+            2'd0: load_resp_q.data <= {read_data_b3_q, read_data_b2_q,
+                                       read_data_b1_q, read_data_b0_q};
+            2'd1: load_resp_q.data <= {read_data_b0_q, read_data_b3_q,
+                                       read_data_b2_q, read_data_b1_q};
+            2'd2: load_resp_q.data <= {read_data_b1_q, read_data_b0_q,
+                                       read_data_b3_q, read_data_b2_q};
+            default: load_resp_q.data <= {read_data_b2_q, read_data_b1_q,
+                                          read_data_b0_q, read_data_b3_q};
+          endcase
+        end
       end
     end
   end
@@ -198,10 +279,6 @@ module soc_data_ram #(
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin
-      if (load_req_i.valid)
-        assert (byte_window_in_range(load_req_i.address, 4'b1111))
-          else $error("soc_data_ram load address window is out of range");
-
       if (store_req_i.valid) begin
         assert (store_req_i.byte_enable != 4'b0000)
           else $error("soc_data_ram store byte_enable is zero");

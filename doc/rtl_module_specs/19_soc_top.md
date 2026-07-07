@@ -189,7 +189,8 @@ SoC 级中断汇总后接入 `core_top`：
 4. 新建 data RAM wrapper，对接 `load_mem_req_t/store_mem_req_t/load_mem_resp_t`。已完成
    `soc_data_ram` V1：4 个 8-bit byte-lane RAM array、load 一拍响应与 holding、
    store/init 仲裁后的单一 lane 写入口，且不在 BRAM 输出寄存器前做同拍写直通；
-   `tb_soc_data_ram` 通过，5 ns OOC WNS `+2.747 ns`，Vivado 推断 64 个 BRAM，冻结。
+   每个 lane RAM 保持单写口/同步读模板。`tb_soc_data_ram` 通过，5 ns OOC WNS
+   `+1.029 ns`，Vivado 推断 64 个 BRAM，冻结。
 5. 新建 `soc_top`，连接 core、IROM/Data RAM/router 和空外设接口。已完成
    `rtl/soc/soc_top.sv`：实例化 `core_top`、`soc_imem`、`soc_addr_router` 和
    `soc_data_ram`，MMIO peripheral bus 经过 `soc_periph_decode` 后再暴露到顶层以便

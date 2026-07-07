@@ -123,7 +123,7 @@ BRAM/DSP 和最差路径端点。
 | Core Top | frontend_backend_cluster wrapper + typed memory boundary + irq pins | Questa 通过 | `tb_core_top` 与 `tb_frontend_backend_cluster` 通过，OOC 待 SoC wrapper 前统一测 |
 | SoC Addr Router | typed load/store 到 RAM/MMIO 固定地址路由 | +1.828 ns | `tb_soc_addr_router` 通过，OOC 时序健康并冻结；进入 instruction memory wrapper |
 | SoC IMem | 128-bit instruction block memory wrapper | +2.380 ns | `tb_soc_imem` 通过，OOC 时序健康并冻结；进入 data RAM wrapper |
-| SoC Data RAM | typed data RAM wrapper | +2.747 ns | 4 个 8-bit byte-lane RAM array，init/store 仲裁成单一写地址端口，load 使用唯一同步读地址端口，且移除 BRAM 输出寄存器前写直通 bypass；Vivado 推断 64 个 BRAM，`tb_soc_data_ram` 通过，冻结 |
+| SoC Data RAM | typed data RAM wrapper | +1.029 ns | 4 个 8-bit byte-lane RAM array；每个 lane RAM 每拍最多 1 个写地址和 1 个同步读，非对齐访问在 RAM 外做 byte/lane 旋转；Vivado 推断 64 个 BRAM，`tb_soc_data_ram` 与 SoC/官方访存代表用例通过，冻结 |
 | SoC LED Periph | MMIO LED register + external bus fallthrough | -0.196 ns | `soc_periph_decode` 在 `0x1000_0000` 提供 32-bit LED 寄存器，低 `LED_WIDTH` 位输出到 `led_o`；其他 MMIO 地址透出到外设扩展总线。OOC 最差路径仍落在既有 `u_issue_arbiter` proposal 寄存路径，非 LED/MMIO decode |
 | SoC Top Reset | power-on counted reset | 待复综合 | `soc_top` 新增 `POWER_ON_RESET_CYCLES`，外部 `rst_i` 释放后继续保持内部 `soc_rst`；`tb_soc_top` 已用 4-cycle 配置复测通过 |
 | SoC Custom Instr | 自编逐条 SoC 指令回归 | Questa 39/39 PASS | `tb_soc_custom_instr` 直接初始化 SoC IMem/DMem，按小程序逐项检查 writeback、commit PC 和 DMem 结果，覆盖 RV32I、LSU、M 扩展与最小 CSR/FENCE 提交流 |
