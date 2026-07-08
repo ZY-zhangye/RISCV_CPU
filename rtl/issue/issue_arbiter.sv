@@ -102,6 +102,9 @@ module issue_arbiter (
   logic selected_mdu_group_q [0:PROPOSALS-1];
 
   // P2 发射输出寄存器驱动线
+  logic [2:0] int_issue_grant_d;
+  logic [1:0] mem_issue_grant_d;
+  logic mdu_issue_grant_d;
   logic [2:0] issue_valid_d;
   issue_port_t issue_port_d [0:2];
   issue_uop_t issue_uop_d [0:2];
@@ -443,7 +446,9 @@ module issue_arbiter (
   // ==========================================================================
   // 由于指令在前两拍计算中在途停留，如果在此期间发生了分支恢复或 Flush，指令可能变 stale。
   // 此处将最终筛选出的 entries 与各 IQ 输出的最新有效指令进行 ROB ID 比较，安全匹配且执行端口就绪时正式授权。
-  // 仲裁后的 final outputs 包含 3 路发射通道信息，时钟沿打拍寄存输出。
+  // 仲裁后的 final outputs 包含 3 路发射通道信息和 IQ grant，时钟沿打拍寄存输出。
+  // grant 会比原组合路径晚一拍清 IQ；上一拍 grant 高时屏蔽对应组的 live candidate，
+  // 防止 held candidate 在清除落地前被重复发射。
   always @* begin : finalize
     integer idx;
     logic [3:0] fire;
@@ -452,12 +457,18 @@ module issue_arbiter (
     logic [1:0] slot0_index;
     logic [1:0] slot1_index;
     logic [1:0] slot2_index;
+    logic [2:0] int_live_valid;
+    logic [1:0] mem_live_valid;
+    logic mdu_live_valid;
 
     fire = '0;
-    int_issue_grant_o = '0;
-    mem_issue_grant_o = '0;
-    mdu_issue_grant_o = 1'b0;
+    int_issue_grant_d = '0;
+    mem_issue_grant_d = '0;
+    mdu_issue_grant_d = 1'b0;
     issue_valid_d = '0;
+    int_live_valid = int_candidate_valid_i & ~int_issue_grant_o;
+    mem_live_valid = mem_candidate_valid_i & ~mem_issue_grant_o;
+    mdu_live_valid = mdu_candidate_valid_i && !mdu_issue_grant_o;
     for (idx = 0; idx < 3; idx = idx + 1) begin
       issue_port_d[idx] = ISSUE_INT0;
       issue_uop_d[idx] = '0;
@@ -468,17 +479,17 @@ module issue_arbiter (
         // 与 IQ 实时送来的候选身份进行多路比较匹配。ROB ID 会环回，
         // 仅比较 ROB ID 可能让旧 proposal 在 ID 复用后错误发射。
         source_match =
-            (selected_int_group_q[idx][0] && int_candidate_valid_i[0] &&
+            (selected_int_group_q[idx][0] && int_live_valid[0] &&
              same_issue_identity(int_candidate_uop0_i, selected_uop_q[idx])) ||
-            (selected_int_group_q[idx][1] && int_candidate_valid_i[1] &&
+            (selected_int_group_q[idx][1] && int_live_valid[1] &&
              same_issue_identity(int_candidate_uop1_i, selected_uop_q[idx])) ||
-            (selected_int_group_q[idx][2] && int_candidate_valid_i[2] &&
+            (selected_int_group_q[idx][2] && int_live_valid[2] &&
              same_issue_identity(int_candidate_uop2_i, selected_uop_q[idx])) ||
-            (selected_mem_group_q[idx][0] && mem_candidate_valid_i[0] &&
+            (selected_mem_group_q[idx][0] && mem_live_valid[0] &&
              same_issue_identity(mem_candidate_uop0_i, selected_uop_q[idx])) ||
-            (selected_mem_group_q[idx][1] && mem_candidate_valid_i[1] &&
+            (selected_mem_group_q[idx][1] && mem_live_valid[1] &&
              same_issue_identity(mem_candidate_uop1_i, selected_uop_q[idx])) ||
-            (selected_mdu_group_q[idx] && mdu_candidate_valid_i &&
+            (selected_mdu_group_q[idx] && mdu_live_valid &&
              same_issue_identity(mdu_candidate_uop_i, selected_uop_q[idx]));
 
         case (selected_port_q[idx])
@@ -492,18 +503,18 @@ module issue_arbiter (
         fire[idx] = selected_valid_q[idx] && source_match && endpoint_ready;
       end
 
-      // 组合生成给各 IQ 槽位的 Grant 授权信号，用于将其从队列中清除 (延迟清除)
-      int_issue_grant_o =
+      // 生成给各 IQ 组的 grant，下一拍寄存输出并清除被发射候选。
+      int_issue_grant_d =
           ({3{fire[0]}} & selected_int_group_q[0]) |
           ({3{fire[1]}} & selected_int_group_q[1]) |
           ({3{fire[2]}} & selected_int_group_q[2]) |
           ({3{fire[3]}} & selected_int_group_q[3]);
-      mem_issue_grant_o =
+      mem_issue_grant_d =
           ({2{fire[0]}} & selected_mem_group_q[0]) |
           ({2{fire[1]}} & selected_mem_group_q[1]) |
           ({2{fire[2]}} & selected_mem_group_q[2]) |
           ({2{fire[3]}} & selected_mem_group_q[3]);
-      mdu_issue_grant_o =
+      mdu_issue_grant_d =
           (fire[0] && selected_mdu_group_q[0]) ||
           (fire[1] && selected_mdu_group_q[1]) ||
           (fire[2] && selected_mdu_group_q[2]) ||
@@ -635,6 +646,9 @@ module issue_arbiter (
   // ==========================================================================
   always_ff @(posedge clk_i) begin : issue_registers
     if (rst_i || recovery_i.valid) begin
+      int_issue_grant_o <= '0;
+      mem_issue_grant_o <= '0;
+      mdu_issue_grant_o <= 1'b0;
       issue_valid_o <= '0;
       issue_port0_o <= ISSUE_INT0;
       issue_port1_o <= ISSUE_INT0;
@@ -643,6 +657,9 @@ module issue_arbiter (
       issue_uop1_o <= '0;
       issue_uop2_o <= '0;
     end else begin
+      int_issue_grant_o <= int_issue_grant_d;
+      mem_issue_grant_o <= mem_issue_grant_d;
+      mdu_issue_grant_o <= mdu_issue_grant_d;
       issue_valid_o <= issue_valid_d;
       issue_port0_o <= issue_port_d[0];
       issue_port1_o <= issue_port_d[1];

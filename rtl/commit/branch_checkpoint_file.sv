@@ -46,6 +46,10 @@ module branch_checkpoint_file (
   logic recovery_pending_q;
   logic [CP_W-1:0] recovery_id_q;
   logic [CHECKPOINTS-1:0] recovery_release_mask_q;
+  logic save_pending_q;
+  logic [CP_W-1:0] save_id_q;
+  logic [ROB_ID_W-1:0] save_rob_tail_q;
+  logic [CHECKPOINTS-1:0] save_parent_mask_q;
 
   logic candidate_valid;
   logic [CP_W-1:0] candidate_id;
@@ -57,6 +61,8 @@ module branch_checkpoint_file (
     unavailable_mask = active_q;
     if (reservation_valid_q)
       unavailable_mask[reservation_id_q] = 1'b1;
+    if (save_pending_q)
+      unavailable_mask[save_id_q] = 1'b1;
 
     for (int idx = 0; idx < CHECKPOINTS; idx = idx + 1) begin
       if (!candidate_valid && !unavailable_mask[idx]) begin
@@ -94,6 +100,10 @@ module branch_checkpoint_file (
       recovery_pending_q <= 1'b0;
       recovery_id_q <= '0;
       recovery_release_mask_q <= '0;
+      save_pending_q <= 1'b0;
+      save_id_q <= '0;
+      save_rob_tail_q <= '0;
+      save_parent_mask_q <= '0;
       for (idx = 0; idx < CHECKPOINTS; idx = idx + 1) begin
         parent_mask_q[idx] <= '0;
         rob_tail_q[idx] <= '0;
@@ -103,9 +113,17 @@ module branch_checkpoint_file (
       reservation_valid_q <= 1'b0;
       recovery_pending_q <= 1'b0;
       recovery_release_mask_q <= '0;
+      save_pending_q <= 1'b0;
       for (idx = 0; idx < CHECKPOINTS; idx = idx + 1)
         parent_mask_q[idx] <= '0;
     end else begin
+      if (save_pending_q && !recovery_i.valid) begin
+        active_q[save_id_q] <= 1'b1;
+        parent_mask_q[save_id_q] <= save_parent_mask_q;
+        rob_tail_q[save_id_q] <= save_rob_tail_q;
+        save_pending_q <= 1'b0;
+      end
+
       if (branch_recovery_complete_i && recovery_pending_q) begin
         active_q <= active_q & ~recovery_release_mask_q;
         recovery_pending_q <= 1'b0;
@@ -116,6 +134,7 @@ module branch_checkpoint_file (
         end
       end else if (branch_restore_valid_o) begin
         release_mask = '0;
+        save_pending_q <= 1'b0;
         for (idx = 0; idx < CHECKPOINTS; idx = idx + 1) begin
           if (active_q[idx] &&
               ((CP_W'(idx) == recovery_i.checkpoint_id) ||
@@ -137,9 +156,12 @@ module branch_checkpoint_file (
         if (alloc_cancel_i) begin
           reservation_valid_q <= 1'b0;
         end else if (alloc_fire_i && reservation_valid_q) begin
-          active_q[reservation_id_q] <= 1'b1;
-          parent_mask_q[reservation_id_q] <= save_parent_mask_i;
-          rob_tail_q[reservation_id_q] <= save_rob_tail_i;
+          save_pending_q <= 1'b1;
+          save_id_q <= reservation_id_q;
+          save_rob_tail_q <= save_rob_tail_i;
+          save_parent_mask_q <= save_parent_mask_i;
+          if (checkpoint_clear_i)
+            save_parent_mask_q[checkpoint_clear_id_i] <= 1'b0;
           reservation_valid_q <= 1'b0;
         end else if (!reservation_valid_q && alloc_req_i && candidate_valid) begin
           reservation_valid_q <= 1'b1;

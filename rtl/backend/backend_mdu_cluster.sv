@@ -64,6 +64,10 @@ module backend_mdu_cluster #(
   renamed_uop_t dispatch_uop0;
   renamed_uop_t dispatch_uop1;
   logic dispatch_fire;
+  logic [1:0] dispatch_alloc_valid;
+  renamed_uop_t dispatch_alloc_uop0;
+  renamed_uop_t dispatch_alloc_uop1;
+  logic dispatch_alloc_fire;
 
   logic [1:0] int_push_valid_raw;
   logic [1:0] int_push_ready;
@@ -502,37 +506,37 @@ module backend_mdu_cluster #(
     sq_alloc_rob_id = '0;
     sq_alloc_branch_mask = '0;
 
-    if (dispatch_fire && dispatch_valid[0]) begin
-      if (is_load_renamed(dispatch_uop0)) begin
+    if (dispatch_alloc_fire && dispatch_alloc_valid[0]) begin
+      if (is_load_renamed(dispatch_alloc_uop0)) begin
         lq_alloc_valid[0] = 1'b1;
-        lq_alloc_id[0] = dispatch_uop0.lq_id;
-        lq_alloc_rob_id[0] = dispatch_uop0.rob_id;
-        lq_alloc_prd[0] = dispatch_uop0.prd;
-        lq_alloc_mem_op[0] = dispatch_uop0.dec.mem_op;
-        lq_alloc_branch_mask[0] = dispatch_uop0.branch_mask;
+        lq_alloc_id[0] = dispatch_alloc_uop0.lq_id;
+        lq_alloc_rob_id[0] = dispatch_alloc_uop0.rob_id;
+        lq_alloc_prd[0] = dispatch_alloc_uop0.prd;
+        lq_alloc_mem_op[0] = dispatch_alloc_uop0.dec.mem_op;
+        lq_alloc_branch_mask[0] = dispatch_alloc_uop0.branch_mask;
       end
-      if (is_store_renamed(dispatch_uop0)) begin
+      if (is_store_renamed(dispatch_alloc_uop0)) begin
         sq_alloc_valid[0] = 1'b1;
-        sq_alloc_id[0] = dispatch_uop0.sq_id;
-        sq_alloc_rob_id[0] = dispatch_uop0.rob_id;
-        sq_alloc_branch_mask[0] = dispatch_uop0.branch_mask;
+        sq_alloc_id[0] = dispatch_alloc_uop0.sq_id;
+        sq_alloc_rob_id[0] = dispatch_alloc_uop0.rob_id;
+        sq_alloc_branch_mask[0] = dispatch_alloc_uop0.branch_mask;
       end
     end
 
-    if (dispatch_fire && dispatch_valid[1]) begin
-      if (is_load_renamed(dispatch_uop1)) begin
+    if (dispatch_alloc_fire && dispatch_alloc_valid[1]) begin
+      if (is_load_renamed(dispatch_alloc_uop1)) begin
         lq_alloc_valid[1] = 1'b1;
-        lq_alloc_id[1] = dispatch_uop1.lq_id;
-        lq_alloc_rob_id[1] = dispatch_uop1.rob_id;
-        lq_alloc_prd[1] = dispatch_uop1.prd;
-        lq_alloc_mem_op[1] = dispatch_uop1.dec.mem_op;
-        lq_alloc_branch_mask[1] = dispatch_uop1.branch_mask;
+        lq_alloc_id[1] = dispatch_alloc_uop1.lq_id;
+        lq_alloc_rob_id[1] = dispatch_alloc_uop1.rob_id;
+        lq_alloc_prd[1] = dispatch_alloc_uop1.prd;
+        lq_alloc_mem_op[1] = dispatch_alloc_uop1.dec.mem_op;
+        lq_alloc_branch_mask[1] = dispatch_alloc_uop1.branch_mask;
       end
-      if (is_store_renamed(dispatch_uop1)) begin
+      if (is_store_renamed(dispatch_alloc_uop1)) begin
         sq_alloc_valid[1] = 1'b1;
-        sq_alloc_id[1] = dispatch_uop1.sq_id;
-        sq_alloc_rob_id[1] = dispatch_uop1.rob_id;
-        sq_alloc_branch_mask[1] = dispatch_uop1.branch_mask;
+        sq_alloc_id[1] = dispatch_alloc_uop1.sq_id;
+        sq_alloc_rob_id[1] = dispatch_alloc_uop1.rob_id;
+        sq_alloc_branch_mask[1] = dispatch_alloc_uop1.branch_mask;
       end
     end
   end
@@ -552,6 +556,10 @@ module backend_mdu_cluster #(
       .dispatch_uop0_o(dispatch_uop0),
       .dispatch_uop1_o(dispatch_uop1),
       .dispatch_fire_o(dispatch_fire),
+      .dispatch_alloc_valid_o(dispatch_alloc_valid),
+      .dispatch_alloc_uop0_o(dispatch_alloc_uop0),
+      .dispatch_alloc_uop1_o(dispatch_alloc_uop1),
+      .dispatch_alloc_fire_o(dispatch_alloc_fire),
       .complete0_i(rob_complete[0]),
       .complete1_i(rob_complete[1]),
       .lq_release_valid_i(lq_release_valid),

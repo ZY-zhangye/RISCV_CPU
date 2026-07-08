@@ -21,6 +21,10 @@ module commit_recovery_cluster #(
     output renamed_uop_t                 dispatch_uop0_o,
     output renamed_uop_t                 dispatch_uop1_o,
     output logic                         dispatch_fire_o,
+    output logic [1:0]                   dispatch_alloc_valid_o,
+    output renamed_uop_t                 dispatch_alloc_uop0_o,
+    output renamed_uop_t                 dispatch_alloc_uop1_o,
+    output logic                         dispatch_alloc_fire_o,
 
     input  completion_t                  complete0_i,
     input  completion_t                  complete1_i,
@@ -112,13 +116,39 @@ module commit_recovery_cluster #(
   logic [1:0][PRD_W-1:0] alloc_clear_prd;
   recovery_cause_t active_recovery_cause_q;
   logic branch_recovery_complete;
+  logic [1:0] rr_dispatch_valid;
+  logic rr_dispatch_ready;
+  renamed_uop_t rr_dispatch_uop0;
+  renamed_uop_t rr_dispatch_uop1;
+  logic rr_dispatch_fire;
+  logic [1:0] dispatch_valid_q;
+  renamed_uop_t dispatch_uop0_q;
+  renamed_uop_t dispatch_uop1_q;
+  logic dispatch_stage_pop;
+  logic dispatch_stage_ready;
+  logic dispatch_stage_pending;
 
-  assign alloc_clear_valid[0] = dispatch_fire_o && dispatch_valid_o[0] &&
-      dispatch_uop0_o.dec.write_rd && (dispatch_uop0_o.prd != '0);
-  assign alloc_clear_valid[1] = dispatch_fire_o && dispatch_valid_o[1] &&
-      dispatch_uop1_o.dec.write_rd && (dispatch_uop1_o.prd != '0);
-  assign alloc_clear_prd[0] = dispatch_uop0_o.prd;
-  assign alloc_clear_prd[1] = dispatch_uop1_o.prd;
+  assign dispatch_stage_pending = (dispatch_valid_q != 2'b00);
+  assign dispatch_stage_pop = dispatch_stage_pending && dispatch_ready_i &&
+                              !recovery_o.valid;
+  assign dispatch_stage_ready = !dispatch_stage_pending || dispatch_stage_pop;
+  assign rr_dispatch_ready = dispatch_stage_ready && !recovery_o.valid;
+
+  assign dispatch_valid_o = dispatch_valid_q;
+  assign dispatch_uop0_o = dispatch_uop0_q;
+  assign dispatch_uop1_o = dispatch_uop1_q;
+  assign dispatch_fire_o = dispatch_stage_pop;
+  assign dispatch_alloc_valid_o = rr_dispatch_valid;
+  assign dispatch_alloc_uop0_o = rr_dispatch_uop0;
+  assign dispatch_alloc_uop1_o = rr_dispatch_uop1;
+  assign dispatch_alloc_fire_o = rr_dispatch_fire;
+
+  assign alloc_clear_valid[0] = rr_dispatch_fire && rr_dispatch_valid[0] &&
+      rr_dispatch_uop0.dec.write_rd && (rr_dispatch_uop0.prd != '0);
+  assign alloc_clear_valid[1] = rr_dispatch_fire && rr_dispatch_valid[1] &&
+      rr_dispatch_uop1.dec.write_rd && (rr_dispatch_uop1.prd != '0);
+  assign alloc_clear_prd[0] = rr_dispatch_uop0.prd;
+  assign alloc_clear_prd[1] = rr_dispatch_uop1.prd;
 
   assign branch_recovery_complete = redirect_valid_o &&
       (active_recovery_cause_q == REC_BRANCH);
@@ -144,10 +174,33 @@ module commit_recovery_cluster #(
   assign commit_hold = recovery_busy_o || branch_mispredict_pending ||
                        commit_txn_pending_q || commit_recovery_q.valid ||
                        csr_wb_pending;
-  assign busy_o = rename_busy || recovery_busy_o || commit_txn_pending_q ||
+  assign busy_o = rename_busy || dispatch_stage_pending ||
+                  recovery_busy_o || commit_txn_pending_q ||
                   reclaim_drain_pending_q ||
                   commit_recovery_q.valid || csr_wb_pending ||
                   store_pending;
+
+  always_ff @(posedge clk_i) begin : dispatch_output_slice
+    if (rst_i || recovery_o.valid) begin
+      dispatch_valid_q <= 2'b00;
+      dispatch_uop0_q <= '0;
+      dispatch_uop1_q <= '0;
+    end else begin
+      if (dispatch_stage_pop)
+        dispatch_valid_q <= 2'b00;
+
+      if (rr_dispatch_fire) begin
+        dispatch_valid_q <= rr_dispatch_valid;
+        dispatch_uop0_q <= rr_dispatch_uop0;
+        dispatch_uop1_q <= rr_dispatch_uop1;
+      end
+
+      if (checkpoint_clear_valid_o) begin
+        dispatch_uop0_q.branch_mask[checkpoint_clear_id_o] <= 1'b0;
+        dispatch_uop1_q.branch_mask[checkpoint_clear_id_o] <= 1'b0;
+      end
+    end
+  end
 
   // Commit decisions are captured first; the registered transaction updates
   // AMT/reclaim and advances ROB together on the following cycle.
@@ -224,11 +277,11 @@ module commit_recovery_cluster #(
       .dec_ready_o,
       .dec_uop0_i,
       .dec_uop1_i,
-      .dispatch_valid_o,
-      .dispatch_ready_i,
-      .dispatch_uop0_o,
-      .dispatch_uop1_o,
-      .dispatch_fire_o,
+      .dispatch_valid_o(rr_dispatch_valid),
+      .dispatch_ready_i(rr_dispatch_ready),
+      .dispatch_uop0_o(rr_dispatch_uop0),
+      .dispatch_uop1_o(rr_dispatch_uop1),
+      .dispatch_fire_o(rr_dispatch_fire),
       .commit_map0_i(commit_map0_commit),
       .commit_map1_i(commit_map1_commit),
       .reclaim_valid_i(reclaim_valid_offer),

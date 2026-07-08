@@ -92,6 +92,12 @@ module reorder_buffer (
   logic exception_flush_pending_q;
   logic restore_pending_q;
   logic [ROB_ID_W-1:0] restore_tail_pending_q;
+  logic alloc_pending_q;
+  logic [1:0] alloc_pending_valid_q;
+  logic [ROB_ID_W-1:0] alloc_pending_id0_q;
+  logic [ROB_ID_W-1:0] alloc_pending_id1_q;
+  rob_alloc_t alloc_pending_entry0_q;
+  rob_alloc_t alloc_pending_entry1_q;
 
   logic alloc_fire;
   logic retire_row_fire;
@@ -168,6 +174,7 @@ module reorder_buffer (
   // Ready 只表示本地容量/扫描状态，不能反向依赖 alloc_valid，否则与上游
   // ready->valid 协调逻辑形成组合环。非法 2'b10 不满足 lane0，因此不会 fire。
   assign alloc_ready_o = !scan_busy_q &&
+                         !alloc_pending_q &&
                          !exception_flush_pending_q &&
                          !restore_pending_q &&
                          !exception_flush_i &&
@@ -253,10 +260,25 @@ module reorder_buffer (
       exception_flush_pending_q <= 1'b0;
       restore_pending_q <= 1'b0;
       restore_tail_pending_q <= '0;
+      alloc_pending_q <= 1'b0;
+      alloc_pending_valid_q <= '0;
+      alloc_pending_id0_q <= '0;
+      alloc_pending_id1_q <= '0;
+      alloc_pending_entry0_q <= '0;
+      alloc_pending_entry1_q <= '0;
     end else begin
       branch_clear_done_q <= 1'b0;
       restore_done_q <= 1'b0;
       exception_flush_done_q <= 1'b0;
+
+      if (alloc_fire) begin
+        alloc_pending_q <= 1'b1;
+        alloc_pending_valid_q <= alloc_valid_i;
+        alloc_pending_id0_q <= alloc_rob_id0_o;
+        alloc_pending_id1_q <= alloc_rob_id1_o;
+        alloc_pending_entry0_q <= alloc_entry0_i;
+        alloc_pending_entry1_q <= alloc_entry1_i;
+      end
 
       // Raw recovery requests are captured first and applied on the following
       // cycle.  This keeps the global recovery controller state off the wide
@@ -292,6 +314,8 @@ module reorder_buffer (
         scan_occupancy_q <= '0;
         exception_flush_pending_q <= 1'b0;
         restore_pending_q <= 1'b0;
+        alloc_pending_q <= 1'b0;
+        alloc_pending_valid_q <= '0;
         exception_flush_done_q <= 1'b1;
       end
 
@@ -303,10 +327,28 @@ module reorder_buffer (
         scan_restore_q <= 1'b1;
         scan_row_q <= '0;
         scan_restore_tail_q <= restore_tail_pending_q;
-        scan_old_tail_row_q <= tail_row_q;
         scan_used_rows_q <= '0;
         scan_occupancy_q <= '0;
         restore_pending_q <= 1'b0;
+
+        if (alloc_pending_q) begin
+          valid_q[alloc_pending_id0_q] <= alloc_pending_valid_q[0];
+          complete_q[alloc_pending_id0_q] <=
+              alloc_pending_entry0_q.exception_valid;
+          entry_q[alloc_pending_id0_q] <= alloc_pending_entry0_q;
+
+          valid_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1];
+          complete_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1] &&
+                                             alloc_pending_entry1_q.exception_valid;
+          entry_q[alloc_pending_id1_q] <= alloc_pending_entry1_q;
+
+          scan_old_tail_row_q <= next_row(tail_row_q);
+          tail_row_q <= next_row(tail_row_q);
+          alloc_pending_q <= 1'b0;
+          alloc_pending_valid_q <= '0;
+        end else begin
+          scan_old_tail_row_q <= tail_row_q;
+        end
 
         // A restore scan starts one cycle after the raw recovery request. Keep
         // one-cycle completion pulses while normal ROB mutation is paused; the
@@ -379,6 +421,26 @@ module reorder_buffer (
         scan_restore_q <= 1'b0;
         scan_row_q <= '0;
         scan_branch_id_q <= branch_clear_id_i;
+
+        if (alloc_pending_q) begin
+          valid_q[alloc_pending_id0_q] <= alloc_pending_valid_q[0];
+          complete_q[alloc_pending_id0_q] <=
+              alloc_pending_entry0_q.exception_valid;
+          entry_q[alloc_pending_id0_q] <= alloc_pending_entry0_q;
+
+          valid_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1];
+          complete_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1] &&
+                                             alloc_pending_entry1_q.exception_valid;
+          entry_q[alloc_pending_id1_q] <= alloc_pending_entry1_q;
+
+          tail_row_q <= next_row(tail_row_q);
+          used_rows_q <= used_rows_q + 1'b1;
+          full_q <= ((used_rows_q + 1'b1) == ROB_ROWS);
+          occupancy_q <= occupancy_q +
+              {4'd0, lane_count(alloc_pending_valid_q)};
+          alloc_pending_q <= 1'b0;
+          alloc_pending_valid_q <= '0;
+        end
 
         // A correct-branch clear scan starts while younger work may still be
         // completing. The scan will clear branch masks on following cycles, but
@@ -595,6 +657,25 @@ module reorder_buffer (
         occupancy_next = occupancy_q;
         head_row_next = head_row_q;
 
+        if (alloc_pending_q) begin
+          valid_q[alloc_pending_id0_q] <= alloc_pending_valid_q[0];
+          complete_q[alloc_pending_id0_q] <=
+              alloc_pending_entry0_q.exception_valid;
+          entry_q[alloc_pending_id0_q] <= alloc_pending_entry0_q;
+
+          valid_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1];
+          complete_q[alloc_pending_id1_q] <= alloc_pending_valid_q[1] &&
+                                             alloc_pending_entry1_q.exception_valid;
+          entry_q[alloc_pending_id1_q] <= alloc_pending_entry1_q;
+
+          tail_row_q <= next_row(tail_row_q);
+          used_rows_next = used_rows_next + 1'b1;
+          occupancy_next = occupancy_next +
+              {4'd0, lane_count(alloc_pending_valid_q)};
+          alloc_pending_q <= 1'b0;
+          alloc_pending_valid_q <= '0;
+        end
+
         // 1. 写回通道 0 完成记录 (直接寻址更新)
         if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
           complete_q[complete0_i.rob_id] <= 1'b1;
@@ -643,22 +724,6 @@ module reorder_buffer (
           complete_q[head_id0] <= 1'b0;
           head_bank_q <= 1'b1;
           occupancy_next = occupancy_next - 6'd1;
-        end
-
-        // 4. 指令分配入队 (Alloc)
-        if (alloc_fire) begin
-          valid_q[alloc_rob_id0_o] <= alloc_valid_i[0];
-          complete_q[alloc_rob_id0_o] <= alloc_entry0_i.exception_valid;
-          entry_q[alloc_rob_id0_o] <= alloc_entry0_i;
-
-          valid_q[alloc_rob_id1_o] <= alloc_valid_i[1];
-          complete_q[alloc_rob_id1_o] <= alloc_valid_i[1] &&
-                                         alloc_entry1_i.exception_valid;
-          entry_q[alloc_rob_id1_o] <= alloc_entry1_i;
-
-          tail_row_q <= next_row(tail_row_q);
-          used_rows_next = used_rows_next + 1'b1;
-          occupancy_next = occupancy_next + {4'd0, lane_count(alloc_valid_i)};
         end
 
         used_rows_q <= used_rows_next;

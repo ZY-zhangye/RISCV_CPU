@@ -58,6 +58,16 @@ module store_queue (
   logic commit_capture;
   logic mem_fire;
 
+  task automatic invalidate_entry(input int idx);
+    begin
+      entry_q[idx].valid <= 1'b0;
+      entry_q[idx].address_valid <= 1'b0;
+      entry_q[idx].data_valid <= 1'b0;
+      entry_q[idx].exception_valid <= 1'b0;
+      entry_q[idx].branch_mask <= '0;
+    end
+  endtask
+
   function automatic logic [CHECKPOINTS-1:0] clear_checkpoint(
       input logic [CHECKPOINTS-1:0] mask,
       input logic [CP_W-1:0] checkpoint_id
@@ -128,18 +138,18 @@ module store_queue (
         commit_done_q <= 1'b1;
         sq_release_valid_q <= 1'b1;
         sq_release_id_q <= commit_buffer_q.sq_id;
-        entry_q[commit_buffer_q.sq_id] <= '0;
+        invalidate_entry(commit_buffer_q.sq_id);
       end
 
       if (recovery_i.valid) begin
         if (recovery_i.cause == REC_EXCEPT) begin
           for (idx = 0; idx < SQ_ENTRIES; idx = idx + 1)
-            entry_q[idx] <= '0;
+            invalidate_entry(idx);
         end else if (recovery_i.cause == REC_BRANCH) begin
           for (idx = 0; idx < SQ_ENTRIES; idx = idx + 1) begin
             if (entry_q[idx].valid &&
                 entry_q[idx].branch_mask[recovery_i.checkpoint_id]) begin
-              entry_q[idx] <= '0;
+              invalidate_entry(idx);
             end else if (entry_q[idx].valid) begin
               entry_q[idx].branch_mask <= clear_checkpoint(
                   entry_q[idx].branch_mask,
@@ -172,15 +182,19 @@ module store_queue (
         end
 
         if (alloc_valid_i[0]) begin
-          entry_q[alloc_sq_id_i[0]] <= '0;
           entry_q[alloc_sq_id_i[0]].valid <= 1'b1;
           entry_q[alloc_sq_id_i[0]].rob_id <= alloc_rob_id_i[0];
+          entry_q[alloc_sq_id_i[0]].address_valid <= 1'b0;
+          entry_q[alloc_sq_id_i[0]].data_valid <= 1'b0;
+          entry_q[alloc_sq_id_i[0]].exception_valid <= 1'b0;
           entry_q[alloc_sq_id_i[0]].branch_mask <= alloc_branch_mask_i[0];
         end
         if (alloc_valid_i[1]) begin
-          entry_q[alloc_sq_id_i[1]] <= '0;
           entry_q[alloc_sq_id_i[1]].valid <= 1'b1;
           entry_q[alloc_sq_id_i[1]].rob_id <= alloc_rob_id_i[1];
+          entry_q[alloc_sq_id_i[1]].address_valid <= 1'b0;
+          entry_q[alloc_sq_id_i[1]].data_valid <= 1'b0;
+          entry_q[alloc_sq_id_i[1]].exception_valid <= 1'b0;
           entry_q[alloc_sq_id_i[1]].branch_mask <= alloc_branch_mask_i[1];
         end
 

@@ -89,6 +89,10 @@ module rename_allocation_cluster (
   logic [1:0] checkpoint_keep_sq_count;
   logic branch_restore_start;
   logic exception_recovery;
+  logic checkpoint_clear_pending_q;
+  logic [CP_W-1:0] checkpoint_clear_id_q;
+  logic checkpoint_clear_children;
+  logic allocation_recovery_busy;
 
   function automatic logic is_load(input renamed_uop_t uop);
     is_load = (uop.dec.fu_type == FU_LSU) && (uop.dec.mem_op <= MEM_LHU);
@@ -137,6 +141,25 @@ module rename_allocation_cluster (
                               (recovery_i.cause == REC_EXCEPT);
   assign branch_restore_start = branch_restore_valid_o;
   assign busy_o = manager_busy || free_list_busy || lsq_busy || checkpoint_busy;
+  assign allocation_recovery_busy = recovery_i.valid || free_list_busy ||
+                                    lsq_busy || checkpoint_busy ||
+                                    exception_recovery;
+  assign checkpoint_clear_children = checkpoint_clear_pending_q &&
+                                     !allocation_recovery_busy;
+
+  always_ff @(posedge clk_i) begin
+    if (rst_i || exception_recovery) begin
+      checkpoint_clear_pending_q <= 1'b0;
+      checkpoint_clear_id_q <= '0;
+    end else begin
+      if (checkpoint_clear_children)
+        checkpoint_clear_pending_q <= 1'b0;
+      if (checkpoint_clear_i) begin
+        checkpoint_clear_pending_q <= 1'b1;
+        checkpoint_clear_id_q <= checkpoint_clear_id_i;
+      end
+    end
+  end
 
   rename_resource_manager u_resource_manager (
       .clk_i,
@@ -187,8 +210,8 @@ module rename_allocation_cluster (
       .checkpoint_save_i(branch_checkpoint_save),
       .checkpoint_id_i(branch_checkpoint_id),
       .checkpoint_keep_count_i(checkpoint_keep_prd_count),
-      .checkpoint_clear_i,
-      .checkpoint_clear_id_i,
+      .checkpoint_clear_i(checkpoint_clear_children),
+      .checkpoint_clear_id_i(checkpoint_clear_id_q),
       .branch_restore_i(branch_restore_start),
       .branch_restore_id_i(recovery_i.checkpoint_id),
       .branch_restore_done_o(free_list_branch_done_o),
@@ -217,8 +240,8 @@ module rename_allocation_cluster (
       .checkpoint_id_i(branch_checkpoint_id),
       .checkpoint_keep_lq_count_i(checkpoint_keep_lq_count),
       .checkpoint_keep_sq_count_i(checkpoint_keep_sq_count),
-      .checkpoint_clear_i,
-      .checkpoint_clear_id_i,
+      .checkpoint_clear_i(checkpoint_clear_children),
+      .checkpoint_clear_id_i(checkpoint_clear_id_q),
       .branch_restore_i(branch_restore_start),
       .branch_restore_id_i(recovery_i.checkpoint_id),
       .branch_restore_done_o(lsq_branch_done_o),
@@ -239,8 +262,8 @@ module rename_allocation_cluster (
       .alloc_cancel_i(checkpoint_alloc_cancel),
       .save_rob_tail_i(branch_rob_tail),
       .save_parent_mask_i(branch_parent_mask),
-      .checkpoint_clear_i,
-      .checkpoint_clear_id_i,
+      .checkpoint_clear_i(checkpoint_clear_children),
+      .checkpoint_clear_id_i(checkpoint_clear_id_q),
       .recovery_i,
       .branch_restore_valid_o,
       .branch_restore_rob_tail_o,

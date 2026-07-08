@@ -59,6 +59,10 @@ module backend_lsu_cluster #(
   renamed_uop_t dispatch_uop0;
   renamed_uop_t dispatch_uop1;
   logic dispatch_fire;
+  logic [1:0] dispatch_alloc_valid;
+  renamed_uop_t dispatch_alloc_uop0;
+  renamed_uop_t dispatch_alloc_uop1;
+  logic dispatch_alloc_fire;
 
   logic [1:0] int_push_valid_raw;
   logic [1:0] int_push_ready;
@@ -159,7 +163,7 @@ module backend_lsu_cluster #(
   logic [XLEN-1:0] sq_update_exception_tval;
   branch_resolve_t branch_event_raw;
   branch_resolve_t branch_event_q;
-  branch_resolve_t branch_event_to_commit;
+  branch_resolve_t branch_event_to_commit_q;
   logic branch_event_pending_q;
   logic branch_event_complete_match;
   logic branch_event_fire;
@@ -189,6 +193,12 @@ module backend_lsu_cluster #(
   logic [1:0][PRD_W-1:0] lq_alloc_prd;
   mem_op_t lq_alloc_mem_op [0:1];
   logic [1:0][CHECKPOINTS-1:0] lq_alloc_branch_mask;
+  logic [1:0] lq_alloc_valid_q;
+  logic [1:0][LQ_ID_W-1:0] lq_alloc_id_q;
+  logic [1:0][ROB_ID_W-1:0] lq_alloc_rob_id_q;
+  logic [1:0][PRD_W-1:0] lq_alloc_prd_q;
+  mem_op_t lq_alloc_mem_op_q [0:1];
+  logic [1:0][CHECKPOINTS-1:0] lq_alloc_branch_mask_q;
   logic [1:0] lq_retire_valid;
   logic [1:0][LQ_ID_W-1:0] lq_retire_id;
   logic [1:0] lq_release_valid;
@@ -200,6 +210,10 @@ module backend_lsu_cluster #(
   logic [1:0][SQ_ID_W-1:0] sq_alloc_id;
   logic [1:0][ROB_ID_W-1:0] sq_alloc_rob_id;
   logic [1:0][CHECKPOINTS-1:0] sq_alloc_branch_mask;
+  logic [1:0] sq_alloc_valid_q;
+  logic [1:0][SQ_ID_W-1:0] sq_alloc_id_q;
+  logic [1:0][ROB_ID_W-1:0] sq_alloc_rob_id_q;
+  logic [1:0][CHECKPOINTS-1:0] sq_alloc_branch_mask_q;
   logic sq_update_ready;
   logic sq_commit_valid;
   logic [SQ_ID_W-1:0] sq_commit_id;
@@ -219,7 +233,6 @@ module backend_lsu_cluster #(
         (rob_complete[1].rob_id == branch_event_q.rob_id)));
   assign branch_event_fire = branch_event_pending_q &&
                              branch_event_complete_match;
-  assign branch_event_to_commit = branch_event_fire ? branch_event_q : '0;
 
   assign int_push_stage_pop = (int_push_valid_q != 2'b00) &&
                               int_iq_push_ready;
@@ -329,37 +342,73 @@ module backend_lsu_cluster #(
     sq_alloc_rob_id = '0;
     sq_alloc_branch_mask = '0;
 
-    if (dispatch_fire && dispatch_valid[0]) begin
-      if (is_load_renamed(dispatch_uop0)) begin
+    if (dispatch_alloc_fire && dispatch_alloc_valid[0]) begin
+      if (is_load_renamed(dispatch_alloc_uop0)) begin
         lq_alloc_valid[0] = 1'b1;
-        lq_alloc_id[0] = dispatch_uop0.lq_id;
-        lq_alloc_rob_id[0] = dispatch_uop0.rob_id;
-        lq_alloc_prd[0] = dispatch_uop0.prd;
-        lq_alloc_mem_op[0] = dispatch_uop0.dec.mem_op;
-        lq_alloc_branch_mask[0] = dispatch_uop0.branch_mask;
+        lq_alloc_id[0] = dispatch_alloc_uop0.lq_id;
+        lq_alloc_rob_id[0] = dispatch_alloc_uop0.rob_id;
+        lq_alloc_prd[0] = dispatch_alloc_uop0.prd;
+        lq_alloc_mem_op[0] = dispatch_alloc_uop0.dec.mem_op;
+        lq_alloc_branch_mask[0] = dispatch_alloc_uop0.branch_mask;
       end
-      if (is_store_renamed(dispatch_uop0)) begin
+      if (is_store_renamed(dispatch_alloc_uop0)) begin
         sq_alloc_valid[0] = 1'b1;
-        sq_alloc_id[0] = dispatch_uop0.sq_id;
-        sq_alloc_rob_id[0] = dispatch_uop0.rob_id;
-        sq_alloc_branch_mask[0] = dispatch_uop0.branch_mask;
+        sq_alloc_id[0] = dispatch_alloc_uop0.sq_id;
+        sq_alloc_rob_id[0] = dispatch_alloc_uop0.rob_id;
+        sq_alloc_branch_mask[0] = dispatch_alloc_uop0.branch_mask;
       end
     end
 
-    if (dispatch_fire && dispatch_valid[1]) begin
-      if (is_load_renamed(dispatch_uop1)) begin
+    if (dispatch_alloc_fire && dispatch_alloc_valid[1]) begin
+      if (is_load_renamed(dispatch_alloc_uop1)) begin
         lq_alloc_valid[1] = 1'b1;
-        lq_alloc_id[1] = dispatch_uop1.lq_id;
-        lq_alloc_rob_id[1] = dispatch_uop1.rob_id;
-        lq_alloc_prd[1] = dispatch_uop1.prd;
-        lq_alloc_mem_op[1] = dispatch_uop1.dec.mem_op;
-        lq_alloc_branch_mask[1] = dispatch_uop1.branch_mask;
+        lq_alloc_id[1] = dispatch_alloc_uop1.lq_id;
+        lq_alloc_rob_id[1] = dispatch_alloc_uop1.rob_id;
+        lq_alloc_prd[1] = dispatch_alloc_uop1.prd;
+        lq_alloc_mem_op[1] = dispatch_alloc_uop1.dec.mem_op;
+        lq_alloc_branch_mask[1] = dispatch_alloc_uop1.branch_mask;
       end
-      if (is_store_renamed(dispatch_uop1)) begin
+      if (is_store_renamed(dispatch_alloc_uop1)) begin
         sq_alloc_valid[1] = 1'b1;
-        sq_alloc_id[1] = dispatch_uop1.sq_id;
-        sq_alloc_rob_id[1] = dispatch_uop1.rob_id;
-        sq_alloc_branch_mask[1] = dispatch_uop1.branch_mask;
+        sq_alloc_id[1] = dispatch_alloc_uop1.sq_id;
+        sq_alloc_rob_id[1] = dispatch_alloc_uop1.rob_id;
+        sq_alloc_branch_mask[1] = dispatch_alloc_uop1.branch_mask;
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i) begin : lsq_alloc_input_slice
+    integer lane;
+    if (rst_i || recovery_o.valid) begin
+      lq_alloc_valid_q <= '0;
+      lq_alloc_id_q <= '0;
+      lq_alloc_rob_id_q <= '0;
+      lq_alloc_prd_q <= '0;
+      lq_alloc_mem_op_q[0] <= MEM_LB;
+      lq_alloc_mem_op_q[1] <= MEM_LB;
+      lq_alloc_branch_mask_q <= '0;
+      sq_alloc_valid_q <= '0;
+      sq_alloc_id_q <= '0;
+      sq_alloc_rob_id_q <= '0;
+      sq_alloc_branch_mask_q <= '0;
+    end else begin
+      lq_alloc_valid_q <= lq_alloc_valid;
+      lq_alloc_id_q <= lq_alloc_id;
+      lq_alloc_rob_id_q <= lq_alloc_rob_id;
+      lq_alloc_prd_q <= lq_alloc_prd;
+      lq_alloc_mem_op_q[0] <= lq_alloc_mem_op[0];
+      lq_alloc_mem_op_q[1] <= lq_alloc_mem_op[1];
+      lq_alloc_branch_mask_q <= lq_alloc_branch_mask;
+      sq_alloc_valid_q <= sq_alloc_valid;
+      sq_alloc_id_q <= sq_alloc_id;
+      sq_alloc_rob_id_q <= sq_alloc_rob_id;
+      sq_alloc_branch_mask_q <= sq_alloc_branch_mask;
+
+      if (checkpoint_clear_valid_o) begin
+        for (lane = 0; lane < 2; lane = lane + 1) begin
+          lq_alloc_branch_mask_q[lane][checkpoint_clear_id_o] <= 1'b0;
+          sq_alloc_branch_mask_q[lane][checkpoint_clear_id_o] <= 1'b0;
+        end
       end
     end
   end
@@ -379,13 +428,17 @@ module backend_lsu_cluster #(
       .dispatch_uop0_o(dispatch_uop0),
       .dispatch_uop1_o(dispatch_uop1),
       .dispatch_fire_o(dispatch_fire),
+      .dispatch_alloc_valid_o(dispatch_alloc_valid),
+      .dispatch_alloc_uop0_o(dispatch_alloc_uop0),
+      .dispatch_alloc_uop1_o(dispatch_alloc_uop1),
+      .dispatch_alloc_fire_o(dispatch_alloc_fire),
       .complete0_i(rob_complete[0]),
       .complete1_i(rob_complete[1]),
       .lq_release_valid_i(lq_release_valid),
       .lq_release_id_i(lq_release_id),
       .sq_release_valid_i({1'b0, sq_release_valid}),
       .sq_release_id_i({{SQ_ID_W{1'b0}}, sq_release_id}),
-      .branch_i(branch_event_to_commit),
+      .branch_i(branch_event_to_commit_q),
       .recovery_o,
       .checkpoint_clear_valid_o,
       .checkpoint_clear_id_o,
@@ -530,8 +583,8 @@ module backend_lsu_cluster #(
       .int1_ready_i(int1_issue_ready),
       .lsu_ready_i(lsu_issue_ready),
       .mdu_ready_i(1'b0),
-      .issue_block_i(branch_event_to_commit.valid &&
-                     branch_event_to_commit.mispredict),
+      .issue_block_i(branch_event_to_commit_q.valid &&
+                     branch_event_to_commit_q.mispredict),
       .recovery_i(recovery_o),
       .int_issue_grant_o(int_issue_grant),
       .mem_issue_grant_o(mem_issue_grant),
@@ -650,12 +703,12 @@ module backend_lsu_cluster #(
   load_queue u_load_queue (
       .clk_i,
       .rst_i,
-      .alloc_valid_i(lq_alloc_valid),
-      .alloc_lq_id_i(lq_alloc_id),
-      .alloc_rob_id_i(lq_alloc_rob_id),
-      .alloc_prd_i(lq_alloc_prd),
-      .alloc_mem_op_i(lq_alloc_mem_op),
-      .alloc_branch_mask_i(lq_alloc_branch_mask),
+      .alloc_valid_i(lq_alloc_valid_q),
+      .alloc_lq_id_i(lq_alloc_id_q),
+      .alloc_rob_id_i(lq_alloc_rob_id_q),
+      .alloc_prd_i(lq_alloc_prd_q),
+      .alloc_mem_op_i(lq_alloc_mem_op_q),
+      .alloc_branch_mask_i(lq_alloc_branch_mask_q),
       .address_valid_i(lq_address_valid),
       .address_ready_o(lq_address_ready),
       .address_lq_id_i(lq_address_id),
@@ -681,10 +734,10 @@ module backend_lsu_cluster #(
   store_queue u_store_queue (
       .clk_i,
       .rst_i,
-      .alloc_valid_i(sq_alloc_valid),
-      .alloc_sq_id_i(sq_alloc_id),
-      .alloc_rob_id_i(sq_alloc_rob_id),
-      .alloc_branch_mask_i(sq_alloc_branch_mask),
+      .alloc_valid_i(sq_alloc_valid_q),
+      .alloc_sq_id_i(sq_alloc_id_q),
+      .alloc_rob_id_i(sq_alloc_rob_id_q),
+      .alloc_branch_mask_i(sq_alloc_branch_mask_q),
       .execute_valid_i(sq_update_valid),
       .execute_ready_o(sq_update_ready),
       .execute_sq_id_i(sq_update_id),
@@ -743,10 +796,16 @@ module backend_lsu_cluster #(
     if (rst_i) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else if (recovery_o.valid) begin
       branch_event_pending_q <= 1'b0;
       branch_event_q <= '0;
+      branch_event_to_commit_q <= '0;
     end else begin
+      branch_event_to_commit_q <= '0;
+      if (branch_event_fire)
+        branch_event_to_commit_q <= branch_event_q;
+
       unique case ({branch_event_fire, branch_event_raw.valid})
         2'b00: begin
         end

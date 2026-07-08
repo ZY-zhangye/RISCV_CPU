@@ -227,20 +227,20 @@ module rename_stage (
   assign dec_ready_o = !recovery_i.valid && !rat_restore_busy &&
                        (r0_valid_q == 2'b00);
 
-  // 只有当重命名结果成功发射给 Dispatch 阶段后，才允许 Speculative 更新 speculative RAT 映射表
-  assign spec_write_valid[0] = rn_fire && r1_valid_q[0] &&
-                               r1_uop0_q.dec.write_rd;
-  assign spec_write_valid[1] = rn_fire && r1_valid_q[1] &&
-                               r1_uop1_q.dec.write_rd;
+  // Allocation response is consumed into R1 before any younger instruction can
+  // enter R0, so RAT can be updated at r1_load without exposing stale mappings.
+  assign spec_write_valid[0] = r1_load && granted_lanes[0] &&
+                               r0_uop0_q.write_rd;
+  assign spec_write_valid[1] = r1_load && granted_lanes[1] &&
+                               r0_uop1_q.write_rd;
 
   // 检查点备份控制
-  assign checkpoint_save = rn_fire &&
-      ((r1_valid_q[0] && (r1_uop0_q.dec.fu_type == FU_BRANCH)) ||
-       (r1_valid_q[1] && (r1_uop1_q.dec.fu_type == FU_BRANCH)));
-  assign checkpoint_after_lane1 = r1_valid_q[1] &&
-                                  (r1_uop1_q.dec.fu_type == FU_BRANCH);
-  assign checkpoint_save_id = checkpoint_after_lane1 ?
-                               r1_uop1_q.checkpoint_id : r1_uop0_q.checkpoint_id;
+  assign checkpoint_save = r1_load &&
+      ((granted_lanes[0] && (r0_uop0_q.fu_type == FU_BRANCH)) ||
+       (granted_lanes[1] && (r0_uop1_q.fu_type == FU_BRANCH)));
+  assign checkpoint_after_lane1 = granted_lanes[1] &&
+                                  (r0_uop1_q.fu_type == FU_BRANCH);
+  assign checkpoint_save_id = alloc_resp_i.checkpoint_id;
 
   // ==========================================================================
   // 实例化寄存器别名表/活跃映射表 (RAT/AMT) 物理模块
@@ -272,10 +272,10 @@ module rename_stage (
       .lane1_src2_ready_o(lane1_src2_ready_base),
 
       .spec_write_valid_i(spec_write_valid),
-      .spec_write_rd0_i(r1_uop0_q.dec.rd),
-      .spec_write_rd1_i(r1_uop1_q.dec.rd),
-      .spec_write_prd0_i(r1_uop0_q.prd),
-      .spec_write_prd1_i(r1_uop1_q.prd),
+      .spec_write_rd0_i(r0_uop0_q.rd),
+      .spec_write_rd1_i(r0_uop1_q.rd),
+      .spec_write_prd0_i(alloc_resp_i.prd[0]),
+      .spec_write_prd1_i(alloc_resp_i.prd[1]),
 
       .commit_map0_i,
       .commit_map1_i,

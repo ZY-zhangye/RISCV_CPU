@@ -60,6 +60,9 @@ module commit_csr_prf_cluster #(
   logic csr_wb_buffer_ready;
   logic prf_commit_ready;
   logic prf_commit_fire;
+  logic [1:0] alloc_clear_valid_q;
+  logic [1:0][PRD_W-1:0] alloc_clear_prd_q;
+  logic [PHYS_REGS-1:0] prf_ready_bits_raw;
 
   assign csr_wb_pending_o = csr_wb_pending_q;
   assign csr_wb_buffer_ready = !csr_wb_pending_q && prf_commit_ready;
@@ -81,6 +84,33 @@ module commit_csr_prf_cluster #(
         csr_wb_data_q <= csr_wb_raw_data;
       end
     end
+  end
+
+  always_ff @(posedge clk_i) begin
+    if (rst_i) begin
+      alloc_clear_valid_q <= '0;
+      alloc_clear_prd_q <= '0;
+    end else begin
+      alloc_clear_valid_q[0] <= alloc_clear_valid_i[0] &&
+                                (alloc_clear_prd_i[0] != '0);
+      alloc_clear_valid_q[1] <= alloc_clear_valid_i[1] &&
+                                (alloc_clear_prd_i[1] != '0);
+      alloc_clear_prd_q <= alloc_clear_prd_i;
+    end
+  end
+
+  always_comb begin
+    prf_ready_bits_o = prf_ready_bits_raw;
+
+    // PRF ready_q is cleared with the registered alloc-clear below.  Keep the
+    // same registered clear visible on the ready bitmap because consumers
+    // sample the old ready_q value on that edge.
+    if (alloc_clear_valid_q[0])
+      prf_ready_bits_o[alloc_clear_prd_q[0]] = 1'b0;
+    if (alloc_clear_valid_q[1])
+      prf_ready_bits_o[alloc_clear_prd_q[1]] = 1'b0;
+
+    prf_ready_bits_o[0] = 1'b1;
   end
 
   commit_csr_cluster #(
@@ -130,9 +160,9 @@ module commit_csr_prf_cluster #(
       .commit_prd_i(csr_wb_prd_q),
       .commit_data_i(csr_wb_data_q),
       .commit_ready_o(prf_commit_ready),
-      .alloc_clear_valid_i,
-      .alloc_clear_prd_i,
-      .ready_bits_o(prf_ready_bits_o)
+      .alloc_clear_valid_i(alloc_clear_valid_q),
+      .alloc_clear_prd_i(alloc_clear_prd_q),
+      .ready_bits_o(prf_ready_bits_raw)
   );
 
 endmodule
