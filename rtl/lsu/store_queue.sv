@@ -57,6 +57,7 @@ module store_queue (
   logic [SQ_ID_W-1:0] sq_release_id_q;
   logic commit_capture;
   logic mem_fire;
+  store_mem_req_t mem_req_masked;
 
   task automatic invalidate_entry(input int idx);
     begin
@@ -108,8 +109,12 @@ module store_queue (
                           !entry_q[commit_sq_id_i].exception_valid;
   assign commit_capture = commit_valid_i && commit_ready_o;
 
-  assign mem_req_o = (!recovery_i.valid && commit_buffer_valid_q) ?
-                     commit_buffer_q : '0;
+  always_comb begin
+    mem_req_masked = commit_buffer_q;
+    mem_req_masked.valid = commit_buffer_valid_q && !recovery_i.valid;
+  end
+
+  assign mem_req_o = mem_req_masked;
   assign mem_fire = !recovery_i.valid && commit_buffer_valid_q &&
                     mem_req_ready_i;
 

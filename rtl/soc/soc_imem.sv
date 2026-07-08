@@ -32,7 +32,7 @@ module soc_imem #(
       (BLOCK_COUNT <= 1) ? 1 : $clog2(BLOCK_COUNT);
   localparam logic [127:0] NOP_BLOCK = {4{32'h0000_0013}};
 
-  logic [127:0] mem_q [0:BLOCK_COUNT-1];
+  (* ram_style = "block" *) logic [127:0] mem_q [0:BLOCK_COUNT-1];
 
   logic resp_valid_q;
   logic [127:0] resp_data_q;

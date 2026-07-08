@@ -94,6 +94,7 @@ module rename_rob_cluster (
   logic rob_restore_done;
   logic rob_exception_done;
 
+  recovery_t recovery_local_q;
   recovery_cause_t recovery_cause_q;
   logic [3:0] recovery_ack_q;
   logic [3:0] selected_recovery_done;
@@ -150,8 +151,8 @@ module rename_rob_cluster (
   assign dispatch_fire_o = (rename_valid != 2'b00) && rename_ready;
   assign rob_alloc_entry0 = make_rob_entry(dispatch_uop0_o);
   assign rob_alloc_entry1 = make_rob_entry(dispatch_uop1_o);
-  assign exception_recovery = recovery_i.valid &&
-                              (recovery_i.cause == REC_EXCEPT);
+  assign exception_recovery = recovery_local_q.valid &&
+                              (recovery_local_q.cause == REC_EXCEPT);
   assign rob_alloc_ready_for_alloc = rob_alloc_ready && !checkpoint_clear_i;
   assign busy_o = allocation_busy || rob_busy;
   assign rob_busy_o = rob_busy;
@@ -171,6 +172,15 @@ module rename_rob_cluster (
   end
 
   assign recovery_done_o = recovery_ack_q | selected_recovery_done;
+
+  always_ff @(posedge clk_i) begin : recovery_input_slice
+    if (rst_i)
+      recovery_local_q <= '0;
+    else if (recovery_i.valid)
+      recovery_local_q <= recovery_i;
+    else
+      recovery_local_q <= '0;
+  end
 
   always_ff @(posedge clk_i) begin : recovery_ack_state
     if (rst_i) begin
@@ -220,7 +230,7 @@ module rename_rob_cluster (
       .amt_map_o(amt_map),
       .checkpoint_clear_i,
       .checkpoint_clear_id_i,
-      .recovery_i,
+      .recovery_i(recovery_local_q),
       .recovery_done_o(rename_recovery_done)
   );
 
@@ -249,7 +259,7 @@ module rename_rob_cluster (
       .sq_release_id_i,
       .checkpoint_clear_i,
       .checkpoint_clear_id_i,
-      .recovery_i,
+      .recovery_i(recovery_local_q),
       .branch_recovery_complete_i,
       .amt_map_i(amt_map),
       .branch_restore_valid_o(branch_restore_valid),

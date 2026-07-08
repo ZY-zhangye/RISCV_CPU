@@ -170,7 +170,7 @@ module soc_data_ram #(
       write_data_b1 = init_write_data_i[15:8];
       write_data_b2 = init_write_data_i[23:16];
       write_data_b3 = init_write_data_i[31:24];
-    end else if (store_fire && store_hit) begin
+    end else begin
       for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
         logic [2:0] lane_sum;
         logic [1:0] target_lane;
@@ -183,22 +183,22 @@ module soc_data_ram #(
         if (store_req_i.byte_enable[byte_idx]) begin
           unique case (target_lane)
             2'd0: begin
-              write_en_b0 = 1'b1;
+              write_en_b0 = store_fire && store_hit;
               write_index_b0 = target_index;
               write_data_b0 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd1: begin
-              write_en_b1 = 1'b1;
+              write_en_b1 = store_fire && store_hit;
               write_index_b1 = target_index;
               write_data_b1 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd2: begin
-              write_en_b2 = 1'b1;
+              write_en_b2 = store_fire && store_hit;
               write_index_b2 = target_index;
               write_data_b2 = store_req_i.data[byte_idx * 8 +: 8];
             end
             default: begin
-              write_en_b3 = 1'b1;
+              write_en_b3 = store_fire && store_hit;
               write_index_b3 = target_index;
               write_data_b3 = store_req_i.data[byte_idx * 8 +: 8];
             end

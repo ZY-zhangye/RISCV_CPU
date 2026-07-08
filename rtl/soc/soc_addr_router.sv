@@ -125,7 +125,8 @@ module soc_addr_router #(
 
   always_comb begin
     ram_load_req_o = '0;
-    ram_store_req_o = '0;
+    ram_store_req_o = core_store_req_i;
+    ram_store_req_o.valid = 1'b0;
     core_load_req_ready_o = 1'b0;
     core_store_req_ready_o = 1'b0;
     ram_load_resp_ready_o = 1'b0;
@@ -142,7 +143,7 @@ module soc_addr_router #(
     end
 
     if (core_store_is_ram) begin
-      ram_store_req_o = core_store_req_i;
+      ram_store_req_o.valid = 1'b1;
       core_store_req_ready_o = ram_store_req_ready_i;
     end else if (core_store_is_mmio) begin
       core_store_req_ready_o = take_mmio_store;
