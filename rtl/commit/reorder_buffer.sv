@@ -504,21 +504,6 @@ module reorder_buffer (
         capture_completion(complete1_i);
       end
 
-      // Request capture bubble. Allocation is already back-pressured
-      // combinationally by the raw request inputs; skip normal ROB mutation
-      // until the registered recovery/checkpoint operation starts next cycle.
-      else if (exception_flush_i || restore_valid_i || branch_clear_valid_i) begin
-        if (restore_valid_i || branch_clear_valid_i) begin
-          if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
-            capture_completion(complete0_i);
-          end
-
-          if (complete1_i.valid && valid_q[complete1_i.rob_id]) begin
-            capture_completion(complete1_i);
-          end
-        end
-      end
-
       // ----------------------------------------------------------------------
       // 模式 C. 分支正确解析扫描初始化 (Branch resolve clean)
       // ----------------------------------------------------------------------
