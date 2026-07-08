@@ -92,6 +92,8 @@ module reorder_buffer (
   logic exception_flush_pending_q;
   logic restore_pending_q;
   logic [ROB_ID_W-1:0] restore_tail_pending_q;
+  logic branch_clear_pending_q;
+  logic [CP_W-1:0] branch_clear_id_pending_q;
   logic alloc_pending_q;
   logic [1:0] alloc_pending_valid_q;
   logic [ROB_ID_W-1:0] alloc_pending_id0_q;
@@ -177,8 +179,10 @@ module reorder_buffer (
                          !alloc_pending_q &&
                          !exception_flush_pending_q &&
                          !restore_pending_q &&
+                         !branch_clear_pending_q &&
                          !exception_flush_i &&
                          !restore_valid_i &&
+                         !branch_clear_valid_i &&
                          !full_q;
   assign alloc_fire = alloc_ready_o && alloc_valid_i[0];
 
@@ -201,7 +205,7 @@ module reorder_buffer (
   assign head_entry1_o = head_entry1_q;
 
   assign busy_o = scan_busy_q || exception_flush_pending_q ||
-                  restore_pending_q;
+                  restore_pending_q || branch_clear_pending_q;
   assign empty_o = (used_rows_q == '0);
   assign full_o = full_q;
   assign occupancy_o = occupancy_q;
@@ -260,6 +264,8 @@ module reorder_buffer (
       exception_flush_pending_q <= 1'b0;
       restore_pending_q <= 1'b0;
       restore_tail_pending_q <= '0;
+      branch_clear_pending_q <= 1'b0;
+      branch_clear_id_pending_q <= '0;
       alloc_pending_q <= 1'b0;
       alloc_pending_valid_q <= '0;
       alloc_pending_id0_q <= '0;
@@ -280,15 +286,20 @@ module reorder_buffer (
         alloc_pending_entry1_q <= alloc_entry1_i;
       end
 
-      // Raw recovery requests are captured first and applied on the following
-      // cycle.  This keeps the global recovery controller state off the wide
-      // ROB entry/valid/complete write-enable network.
+      // Raw recovery/checkpoint requests are captured first and applied on the
+      // following cycle. This keeps global recovery controller state off the
+      // wide ROB entry/valid/complete write-enable network.
       if (exception_flush_i) begin
         exception_flush_pending_q <= 1'b1;
         restore_pending_q <= 1'b0;
+        branch_clear_pending_q <= 1'b0;
       end else if (restore_valid_i) begin
         restore_pending_q <= 1'b1;
         restore_tail_pending_q <= restore_tail_i;
+        branch_clear_pending_q <= 1'b0;
+      end else if (branch_clear_valid_i && !branch_clear_pending_q) begin
+        branch_clear_pending_q <= 1'b1;
+        branch_clear_id_pending_q <= branch_clear_id_i;
       end
 
       // 模式 A. 精确异常清空。Entry payload 可保留，valid/complete 全清后不可见。
@@ -314,6 +325,7 @@ module reorder_buffer (
         scan_occupancy_q <= '0;
         exception_flush_pending_q <= 1'b0;
         restore_pending_q <= 1'b0;
+        branch_clear_pending_q <= 1'b0;
         alloc_pending_q <= 1'b0;
         alloc_pending_valid_q <= '0;
         exception_flush_done_q <= 1'b1;
@@ -380,11 +392,11 @@ module reorder_buffer (
         end
       end
 
-      // Recovery request capture bubble.  Allocation is already back-pressured
+      // Request capture bubble. Allocation is already back-pressured
       // combinationally by the raw request inputs; skip normal ROB mutation
-      // until the registered recovery operation starts next cycle.
-      else if (exception_flush_i || restore_valid_i) begin
-        if (restore_valid_i) begin
+      // until the registered recovery/checkpoint operation starts next cycle.
+      else if (exception_flush_i || restore_valid_i || branch_clear_valid_i) begin
+        if (restore_valid_i || branch_clear_valid_i) begin
           if (complete0_i.valid && valid_q[complete0_i.rob_id]) begin
             complete_q[complete0_i.rob_id] <= 1'b1;
             alloc_tmp = entry_q[complete0_i.rob_id];
@@ -416,11 +428,12 @@ module reorder_buffer (
       // ----------------------------------------------------------------------
       // 模式 C. 分支正确解析扫描初始化 (Branch resolve clean)
       // ----------------------------------------------------------------------
-      else if (branch_clear_valid_i && !scan_busy_q) begin
+      else if (branch_clear_pending_q && !scan_busy_q) begin
         scan_busy_q <= 1'b1;
         scan_restore_q <= 1'b0;
         scan_row_q <= '0;
-        scan_branch_id_q <= branch_clear_id_i;
+        scan_branch_id_q <= branch_clear_id_pending_q;
+        branch_clear_pending_q <= 1'b0;
 
         if (alloc_pending_q) begin
           valid_q[alloc_pending_id0_q] <= alloc_pending_valid_q[0];
