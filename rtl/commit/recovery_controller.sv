@@ -39,6 +39,8 @@ module recovery_controller #(
 
   recovery_state_t state_q;
   recovery_t latched_recovery_q;
+  logic checkpoint_clear_valid_q;
+  logic [CP_W-1:0] checkpoint_clear_id_q;
 
   logic request_valid;
   recovery_t request_recovery;
@@ -67,20 +69,26 @@ module recovery_controller #(
   assign redirect_valid_o = (state_q == ST_REDIRECT);
   assign redirect_pc_o = latched_recovery_q.redirect_pc;
 
-  assign checkpoint_clear_valid_o = (state_q == ST_IDLE) &&
-      !commit_recovery_i.valid && branch_i.valid && !branch_i.mispredict;
-  assign checkpoint_clear_id_o = branch_i.checkpoint_id;
+  assign checkpoint_clear_valid_o = checkpoint_clear_valid_q;
+  assign checkpoint_clear_id_o = checkpoint_clear_id_q;
 
   always_ff @(posedge clk_i) begin : recovery_fsm
     if (rst_i) begin
       state_q <= ST_IDLE;
       latched_recovery_q <= '0;
+      checkpoint_clear_valid_q <= 1'b0;
+      checkpoint_clear_id_q <= '0;
     end else begin
+      checkpoint_clear_valid_q <= 1'b0;
+
       unique case (state_q)
         ST_IDLE: begin
           if (request_valid) begin
             latched_recovery_q <= request_recovery;
             state_q <= ST_BROADCAST;
+          end else if (branch_i.valid && !branch_i.mispredict) begin
+            checkpoint_clear_valid_q <= 1'b1;
+            checkpoint_clear_id_q <= branch_i.checkpoint_id;
           end
         end
 
