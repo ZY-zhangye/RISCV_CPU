@@ -92,6 +92,10 @@ module issue_queue #(
   // Stage S1 寄存器：锁存每组的发射候选人
   logic [GROUPS-1:0] candidate_valid_q;
   logic [SLOT_W-1:0] candidate_slot_q [0:GROUPS-1];
+  // Registered candidate payload: load on fill/reselect, hold static fields
+  // while the candidate is sticky. This removes the combo
+  // payload_q[candidate_slot] MUX from the IQ → arbiter timing path.
+  issue_uop_t candidate_uop_q [0:GROUPS-1];
 
   // 清除寄存器仅保留给组合输出屏蔽和调试可见性。当前 grant 会在
   // 本拍直接从 valid_next 中移除，避免 slot 被同拍复用后又被下一拍清掉。
@@ -190,14 +194,13 @@ module issue_queue #(
   assign full_o = (count_q == ENTRIES[COUNT_W-1:0]);
   assign occupancy_o = count_q;
 
-  // 发射候选直连输出
+  // 发射候选直连输出：valid/slot 与已寄存 payload，不再组合读 payload 阵列。
   assign candidate_valid_o = candidate_valid_q & ~clear_valid_q;
-  assign candidate_uop0_o = candidate_valid_o[0] ?
-                             candidate_from_slot(candidate_slot_q[0]) : '0;
+  assign candidate_uop0_o = candidate_valid_o[0] ? candidate_uop_q[0] : '0;
   assign candidate_uop1_o = ((GROUPS > 1) && candidate_valid_o[1]) ?
-                             candidate_from_slot(candidate_slot_q[1]) : '0;
+                             candidate_uop_q[1] : '0;
   assign candidate_uop2_o = ((GROUPS > 2) && candidate_valid_o[2]) ?
-                             candidate_from_slot(candidate_slot_q[2]) : '0;
+                             candidate_uop_q[2] : '0;
   assign candidate_slot0_o = candidate_slot_q[0];
   assign candidate_slot1_o = (GROUPS > 1) ? candidate_slot_q[1] : '0;
   assign candidate_slot2_o = (GROUPS > 2) ? candidate_slot_q[2] : '0;
@@ -294,6 +297,7 @@ module issue_queue #(
       end
       for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
         candidate_slot_q[group_idx] <= '0;
+        candidate_uop_q[group_idx] <= '0;
         clear_slot_q[group_idx] <= '0;
       end
     end else begin
@@ -455,12 +459,14 @@ module issue_queue #(
         end
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           candidate_slot_q[group_idx] <= '0;
+          candidate_uop_q[group_idx] <= '0;
         end
       end else begin
         // --- Stage S1: 组候选选拔与保持逻辑 (Select group candidates from S0 winners) ---
         // 从 S0 寄存的配对胜出者（pair winner）中，选择年龄最老（oldest）的一个作为本组候选人。
         // 该候选人在没有被 global arbiter 真正 grant 时，其 valid 状态会被锁定（Hold），
         // 从而提供给全局仲裁一个完全稳定的信号源，利于跨周期仲裁。
+        // 宽 payload 在装载/重选时一并锁存；hold 期间只刷新 ready/mask 动态位。
         for (group_idx = 0; group_idx < GROUPS; group_idx = group_idx + 1) begin
           selected = 1'b0;
           selected_slot = '0;
@@ -485,16 +491,32 @@ module issue_queue #(
             // 获得授权：清空候选标志，允许下个候选人浮现
             candidate_valid_q[group_idx] <= 1'b0;
             candidate_slot_q[group_idx] <= '0;
+            candidate_uop_q[group_idx] <= '0;
           end else if (candidate_reselect_i[group_idx] &&
                        candidate_valid_q[group_idx]) begin
             // 当前候选被 IQ 外部的约束长期阻塞时，不清除队列项，只允许
             // 用最新 S0 winner 重新装载候选，避免 held younger uop 阻塞 older ready uop。
             candidate_valid_q[group_idx] <= selected;
             candidate_slot_q[group_idx] <= selected_slot;
+            candidate_uop_q[group_idx] <= selected ?
+                candidate_from_slot(selected_slot) : '0;
           end else if (!candidate_valid_q[group_idx]) begin
             // 空闲状态：装载最新选出的候选人并锁定输出
             candidate_valid_q[group_idx] <= selected;
             candidate_slot_q[group_idx] <= selected_slot;
+            candidate_uop_q[group_idx] <= selected ?
+                candidate_from_slot(selected_slot) : '0;
+          end else begin
+            // Hold: keep static payload; refresh only live ready/mask bits so
+            // wakeup/checkpoint clear still reach the arbiter without a full
+            // payload array read on the critical path. Use the same-cycle next
+            // state so ready visibility stays aligned with src*_ready_q.
+            candidate_uop_q[group_idx].src1_ready <=
+                src1_ready_next[candidate_slot_q[group_idx]];
+            candidate_uop_q[group_idx].src2_ready <=
+                src2_ready_next[candidate_slot_q[group_idx]];
+            candidate_uop_q[group_idx].branch_mask <=
+                branch_mask_wdata[candidate_slot_q[group_idx]];
           end
         end
 

@@ -107,7 +107,10 @@ module backend_lsu_cluster #(
   logic [$clog2(IQ_MEM_ENTRIES)-1:0] unused_mem_slot0;
   logic [$clog2(IQ_MEM_ENTRIES)-1:0] unused_mem_slot1;
   logic [1:0] mem_issue_grant;
-  logic [1:0] mem_issue_allowed;
+  // Combo older-store check, then register before the issue arbiter so the
+  // mem IQ rob_id/candidate path cannot fan combinationally into grant/payload.
+  logic [1:0] mem_issue_allowed_d;
+  logic [1:0] mem_issue_allowed_q;
   logic [1:0] mem_candidate_reselect_q;
 
   logic [2:0] issue_valid;
@@ -331,20 +334,25 @@ module backend_lsu_cluster #(
   endfunction
 
   always_comb begin
-    mem_issue_allowed = 2'b11;
+    mem_issue_allowed_d = 2'b11;
     if (mem_candidate_valid[0] &&
         load_waits_for_older_store(mem_candidate_uop0))
-      mem_issue_allowed[0] = 1'b0;
+      mem_issue_allowed_d[0] = 1'b0;
     if (mem_candidate_valid[1] &&
         load_waits_for_older_store(mem_candidate_uop1))
-      mem_issue_allowed[1] = 1'b0;
+      mem_issue_allowed_d[1] = 1'b0;
   end
 
-  always_ff @(posedge clk_i) begin : mem_reselect_timing_slice
-    if (rst_i || recovery_o.valid)
+  always_ff @(posedge clk_i) begin : mem_allowed_reselect_timing_slice
+    if (rst_i || recovery_o.valid) begin
+      mem_issue_allowed_q <= '0;
       mem_candidate_reselect_q <= '0;
-    else
-      mem_candidate_reselect_q <= mem_candidate_valid & ~mem_issue_allowed;
+    end else begin
+      // Reselect tracks the fresh check so a blocked held candidate can be
+      // replaced next cycle; the arbiter only sees the registered allow mask.
+      mem_issue_allowed_q <= mem_issue_allowed_d;
+      mem_candidate_reselect_q <= mem_candidate_valid & ~mem_issue_allowed_d;
+    end
   end
 
   always_comb begin
@@ -596,7 +604,7 @@ module backend_lsu_cluster #(
       .mem_candidate_valid_i(mem_candidate_valid),
       .mem_candidate_uop0_i(mem_candidate_uop0),
       .mem_candidate_uop1_i(mem_candidate_uop1),
-      .mem_issue_allowed_i(mem_issue_allowed),
+      .mem_issue_allowed_i(mem_issue_allowed_q),
       .mdu_candidate_valid_i(1'b0),
       .mdu_candidate_uop_i('0),
       .mdu_accept_i(1'b0),

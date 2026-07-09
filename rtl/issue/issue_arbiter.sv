@@ -533,8 +533,13 @@ module issue_arbiter (
         case (selected_port_q[idx])
           ISSUE_INT0: endpoint_ready = int0_ready_i;
           ISSUE_INT1: endpoint_ready = int1_ready_i;
+          // Use the C0-registered allow mask, not the live cluster input.
+          // After the cluster also registers mem_issue_allowed, this keeps the
+          // older-store check off the P2 fire → issue_valid/grant path.
+          // Stale allow=0 only inserts a bubble; allow is monotonic 0→1 for a
+          // held load once all older stores have addresses.
           ISSUE_LSU: endpoint_ready = lsu_ready_i &&
-              (|(selected_mem_group_q[idx] & mem_issue_allowed_i));
+              (|(selected_mem_group_q[idx] & mem_issue_allowed_q));
           default: endpoint_ready = mdu_ready_i && mdu_accept_i;
         endcase
 

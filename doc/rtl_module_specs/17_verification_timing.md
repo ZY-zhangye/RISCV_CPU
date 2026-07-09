@@ -87,6 +87,27 @@
 - 只看 WB monitor 时，Store、Branch、Jump 等无 GPR 写回指令不会出现。调试“PC 停住”
   必须同时看 retire head、DRAM/SQ 端口和控制流指令上下文。
 
+#### 5.0.1 2026-07-09 mem-issue 关键路径再切分（进行中）
+
+基于 `soc_board_full_impl_91f9c06_175mhz_bit` post-route：WNS −0.644 ns @ 175 MHz，
+主类路径为 mem IQ `rob_id/candidate` → older-store allow → arbiter select → 宽
+`issue_uop`。分支 `timing/mem-issue-allowed-and-candidate-cut` 已落地：
+
+- `mem_issue_allowed` 改为 cluster 侧寄存后再进 arbiter；
+- arbiter P2 LSU allow 只看 C0 寄存值，不再吃 live combo；
+- IQ S1 寄存 `candidate_uop_q`，去掉 candidate 出口组合 payload MUX。
+
+本轮功能门禁复测：
+
+- 官方支持回归 `51/51 PASS`（排除 `rv32ui-p-fence_i`）。
+- JYD2025 COE smoke PASS，`LED=0x0002_0001`。
+- 自定义 SoC 指令 `39/39 PASS`。
+- `tb_issue_queue` / `tb_issue_arbiter` / backend INT·LSU·MDU cluster PASS。
+
+完整核 5.000 ns route 时序尚未在本机复跑；合入前须重新保存
+`report_timing_summary` 与 `report_high_fanout_nets`，确认 Top path 不再是上述 mem
+issue 组合锥。
+
 | 模块路径 | 最低目标 |
 |---|---:|
 | RAT + lane dependency | 250 MHz |

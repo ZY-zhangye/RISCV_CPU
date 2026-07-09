@@ -568,7 +568,7 @@ module tb_soc_custom_instr;
             dut.u_core.u_core_cluster.u_backend.mem_iq_occupancy,
             dut.u_core.u_core_cluster.u_backend.mem_candidate_valid,
             dut.u_core.u_core_cluster.u_backend.mem_issue_grant,
-            dut.u_core.u_core_cluster.u_backend.mem_issue_allowed,
+            dut.u_core.u_core_cluster.u_backend.mem_issue_allowed_q,
             dut.u_core.u_core_cluster.u_backend.mem_candidate_uop0.rob_id,
             dut.u_core.u_core_cluster.u_backend.mem_candidate_uop0.pc,
             dut.u_core.u_core_cluster.u_backend.mem_candidate_uop0.src1_ready,

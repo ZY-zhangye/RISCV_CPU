@@ -1,0 +1,12 @@
+# Local Claude tooling
+.claude/
+
+# Questa / ModelSim intermediate products
+modelsim.ini
+transcript
+vsim.wlf
+wlft*
+*.vstf
+questa_*/
+work/
+*_work/

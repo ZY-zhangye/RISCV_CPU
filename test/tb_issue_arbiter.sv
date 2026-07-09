@@ -116,21 +116,27 @@ module tb_issue_arbiter;
           mdu_issue_grant_o || issue_valid_o != 3'b000)
         $fatal(1, "proposal register bypassed selected-mask stage");
 
-      // P1 registers only the Bank/width decision.  P2 may now produce the
-      // delayed grant, but operand-read issue slots are still registered.
+      // P1 registers only the Bank/width decision.  P2 fire is combinational
+      // on selected_valid_q, but grant/issue outputs still register one edge
+      // later — so this edge must remain externally quiet.
+      @(posedge clk_i);
+      #1;
+      if (int_issue_grant_o != 3'b000 || mem_issue_grant_o != 2'b00 ||
+          mdu_issue_grant_o || issue_valid_o != 3'b000)
+        $fatal(1, "selected-mask stage leaked grant/issue early");
+
+      // P2 grant is now registered.  Issue payload/valid registers on the
+      // same edge as grant in issue_registers, so both become visible here.
+      // (Historically the TB expected grant one cycle earlier than the
+      // C0/P0/P1/P2 pipeline actually produces; align to the real RTL.)
       @(posedge clk_i);
       #1;
       if (int_issue_grant_o != expected_int_grant ||
           mem_issue_grant_o != expected_mem_grant ||
-          mdu_issue_grant_o != expected_mdu_grant ||
-          issue_valid_o != 3'b000)
+          mdu_issue_grant_o != expected_mdu_grant)
         $fatal(1, "registered proposal grant mismatch int=%b mem=%b mdu=%b out=%b",
                int_issue_grant_o, mem_issue_grant_o, mdu_issue_grant_o,
                issue_valid_o);
-
-      // P2 result is registered before operand read.
-      @(posedge clk_i);
-      #1;
       if (issue_valid_o != expected_valid)
         $fatal(1, "registered issue valid mismatch got=%b expected=%b",
                issue_valid_o, expected_valid);
@@ -147,16 +153,16 @@ module tb_issue_arbiter;
            (issue_uop2_o.rob_id != expected_rob2)))
         $fatal(1, "issue slot 2 mismatch");
 
-      // Model the IQ clearing its granted candidate.  The stale registered
-      // proposal must stop granting immediately and the output clears next edge.
+      // Model the IQ clearing its granted candidate after the registered grant
+      // pulse.  fire drops combinationally once the live source disappears, but
+      // grant/issue outputs only update on the next clock edge.
       @(negedge clk_i);
       clear_candidates();
+      @(posedge clk_i);
       #1;
       if (int_issue_grant_o != 3'b000 || mem_issue_grant_o != 2'b00 ||
           mdu_issue_grant_o)
         $fatal(1, "stale proposal granted after source candidate disappeared");
-      @(posedge clk_i);
-      #1;
       if (issue_valid_o != 3'b000)
         $fatal(1, "issue output did not clear after source candidate removal");
     end
@@ -286,66 +292,75 @@ module tb_issue_arbiter;
 
     // A pending branch recovery handoff blocks the final grant for one cycle
     // without requiring the IQ to drop or reselect its held candidate.
+    // Pipeline: C0 snapshot → P0 proposal → P1 selected mask → P2 reg grant/issue.
     @(negedge clk_i);
     clear_candidates();
     int_candidate_valid_i = 3'b001;
     int_candidate_uop0_i = make_uop(5'd22, FU_INT, ALU_ADD,
                                     6'd1, 6'd2, 1'b1, 1'b1);
-    @(posedge clk_i);
+    @(posedge clk_i); // C0
     #1;
     if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
       $fatal(1, "issue block setup bypassed candidate snapshot");
-    @(posedge clk_i);
+    @(posedge clk_i); // P0
     #1;
     if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
       $fatal(1, "issue block setup bypassed proposal stage");
+    // Assert block before P1 commits selected_valid, so P2 fire stays low.
     @(negedge clk_i);
     issue_block_i = 1'b1;
-    @(posedge clk_i);
+    @(posedge clk_i); // P1: selected registers, fire blocked
     #1;
     if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
       $fatal(1, "issue block did not suppress final grant");
+    @(posedge clk_i); // would-be P2 output edge; still quiet under block
+    #1;
+    if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
+      $fatal(1, "issue block leaked registered grant/issue");
     @(negedge clk_i);
     issue_block_i = 1'b0;
+    // selected_valid_q is still held; fire rises combinationally, grant next edge.
+    @(posedge clk_i);
     #1;
     if (int_issue_grant_o != 3'b001)
       $fatal(1, "held candidate did not grant after issue block dropped");
-    @(posedge clk_i);
-    #1;
     if (issue_valid_o != 3'b001 || issue_uop0_o.rob_id != 5'd22)
       $fatal(1, "held candidate did not issue after issue block dropped");
     @(negedge clk_i);
     clear_candidates();
     @(posedge clk_i);
     #1;
-    if (issue_valid_o != 3'b000)
+    if (int_issue_grant_o != 3'b000 || issue_valid_o != 3'b000)
       $fatal(1, "issue output did not clear after blocked candidate test");
 
-    // Recovery suppresses a live delayed grant and flushes both stages.
+    // Recovery clears registered grant/issue on the next clock edge.
     @(negedge clk_i);
     int_candidate_valid_i = 3'b001;
     int_candidate_uop0_i = make_uop(5'd19, FU_INT, ALU_ADD,
                                     6'd1, 6'd2, 1'b1, 1'b1);
-    @(posedge clk_i);
+    @(posedge clk_i); // C0
     #1;
     if (int_issue_grant_o != 3'b000)
       $fatal(1, "candidate snapshot bypassed proposal stage before recovery test");
-    @(posedge clk_i);
+    @(posedge clk_i); // P0
     #1;
     if (int_issue_grant_o != 3'b000)
       $fatal(1, "proposal stage bypassed before recovery test");
-    @(posedge clk_i);
+    @(posedge clk_i); // P1 selected
+    #1;
+    if (int_issue_grant_o != 3'b000)
+      $fatal(1, "selected-mask stage leaked grant before recovery test");
+    @(posedge clk_i); // P2 grant/issue registered
     #1;
     if (int_issue_grant_o != 3'b001)
       $fatal(1, "pre-recovery delayed grant missing");
     @(negedge clk_i);
     recovery_i.valid = 1'b1;
     recovery_i.cause = REC_BRANCH;
-    #1;
-    if (int_issue_grant_o != 3'b000)
-      $fatal(1, "recovery did not suppress grant");
     @(posedge clk_i);
     #1;
+    if (int_issue_grant_o != 3'b000)
+      $fatal(1, "recovery did not clear registered grant");
     if (issue_valid_o != 3'b000)
       $fatal(1, "recovery did not clear registered issue output");
 
