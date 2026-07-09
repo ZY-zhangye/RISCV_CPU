@@ -283,7 +283,8 @@ module soc_top #(
   soc_data_ram #(
       .BASE_ADDR(RAM_BASE),
       .MEM_BYTES(RAM_BYTES),
-      .INIT_FILE(DMEM_INIT_FILE)
+      .INIT_FILE(DMEM_INIT_FILE),
+      .TRUST_ROUTED_ADDR(1'b1)
   ) u_data_ram (
       .clk_i,
       .rst_i(soc_rst),

@@ -9,7 +9,8 @@ import core_types_pkg::*;
 module soc_data_ram #(
     parameter logic [XLEN-1:0] BASE_ADDR = 32'h8010_0000,
     parameter int unsigned     MEM_BYTES = 262144,
-    parameter string           INIT_FILE = ""
+    parameter string           INIT_FILE = "",
+    parameter bit              TRUST_ROUTED_ADDR = 1'b0
 ) (
     input  logic                         clk_i,
     input  logic                         rst_i,
@@ -53,6 +54,7 @@ module soc_data_ram #(
 
   logic load_hit;
   logic store_hit;
+  logic store_write_ok;
   logic init_hit;
   logic load_fire;
   logic store_fire;
@@ -62,6 +64,10 @@ module soc_data_ram #(
   logic [WORD_INDEX_W-1:0] load_base_index;
   logic [WORD_INDEX_W-1:0] store_base_index;
   logic [WORD_INDEX_W-1:0] init_base_index;
+  logic [WORD_INDEX_W-1:0] load_read_index_b0;
+  logic [WORD_INDEX_W-1:0] load_read_index_b1;
+  logic [WORD_INDEX_W-1:0] load_read_index_b2;
+  logic [WORD_INDEX_W-1:0] load_read_index_b3;
   logic [1:0] load_base_lane;
   logic [1:0] store_base_lane;
 
@@ -122,6 +128,7 @@ module soc_data_ram #(
   assign store_hit = store_req_i.valid &&
                      byte_window_in_range(store_req_i.address,
                                           store_req_i.byte_enable);
+  assign store_write_ok = TRUST_ROUTED_ADDR ? store_req_i.valid : store_hit;
   assign init_hit = init_write_valid_i &&
                     byte_window_in_range(init_write_addr_i,
                                          init_write_wstrb_i);
@@ -135,13 +142,31 @@ module soc_data_ram #(
   assign load_fire = load_req_i.valid && load_req_ready_o;
   assign store_fire = store_req_i.valid && store_req_ready_o;
   assign init_fire = init_write_valid_i && init_hit;
-  assign ram_read_fire = load_fire && load_hit;
+  // Keep BRAM read enable independent of the address range comparator.
+  assign ram_read_fire = load_fire;
 
   assign load_base_index = word_index(load_req_i.address);
   assign store_base_index = word_index(store_req_i.address);
   assign init_base_index = word_index(init_write_addr_i);
   assign load_base_lane = byte_lane(load_req_i.address);
   assign store_base_lane = byte_lane(store_req_i.address);
+`ifdef SYNTHESIS
+  assign load_read_index_b0 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0);
+  assign load_read_index_b1 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1);
+  assign load_read_index_b2 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2);
+  assign load_read_index_b3 = load_base_index;
+`else
+  assign load_read_index_b0 = load_hit ?
+                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0)) :
+                              '0;
+  assign load_read_index_b1 = load_hit ?
+                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1)) :
+                              '0;
+  assign load_read_index_b2 = load_hit ?
+                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2)) :
+                              '0;
+  assign load_read_index_b3 = load_hit ? load_base_index : '0;
+`endif
 
   always_comb begin
     write_en_b0 = 1'b0;
@@ -183,22 +208,22 @@ module soc_data_ram #(
         if (store_req_i.byte_enable[byte_idx]) begin
           unique case (target_lane)
             2'd0: begin
-              write_en_b0 = store_fire && store_hit;
+              write_en_b0 = store_fire && store_write_ok;
               write_index_b0 = target_index;
               write_data_b0 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd1: begin
-              write_en_b1 = store_fire && store_hit;
+              write_en_b1 = store_fire && store_write_ok;
               write_index_b1 = target_index;
               write_data_b1 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd2: begin
-              write_en_b2 = store_fire && store_hit;
+              write_en_b2 = store_fire && store_write_ok;
               write_index_b2 = target_index;
               write_data_b2 = store_req_i.data[byte_idx * 8 +: 8];
             end
             default: begin
-              write_en_b3 = store_fire && store_hit;
+              write_en_b3 = store_fire && store_write_ok;
               write_index_b3 = target_index;
               write_data_b3 = store_req_i.data[byte_idx * 8 +: 8];
             end
@@ -234,10 +259,10 @@ module soc_data_ram #(
       mem_b3_q[write_index_b3] <= write_data_b3;
 
     if (ram_read_fire) begin
-      read_data_b0_q <= mem_b0_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0)];
-      read_data_b1_q <= mem_b1_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1)];
-      read_data_b2_q <= mem_b2_q[load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2)];
-      read_data_b3_q <= mem_b3_q[load_base_index];
+      read_data_b0_q <= mem_b0_q[load_read_index_b0];
+      read_data_b1_q <= mem_b1_q[load_read_index_b1];
+      read_data_b2_q <= mem_b2_q[load_read_index_b2];
+      read_data_b3_q <= mem_b3_q[load_read_index_b3];
     end
 
     if (rst_i) begin

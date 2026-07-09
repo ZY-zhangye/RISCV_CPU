@@ -99,18 +99,34 @@ module tb_soc_addr_router;
       core_store_req_i.byte_enable = 4'b1100;
       ram_store_req_ready_i = 1'b0;
       #1;
-      if (core_store_req_ready_o || !ram_store_req_o.valid)
-        $fatal(1, "RAM store backpressure mismatch");
+      if (!core_store_req_ready_o || ram_store_req_o.valid)
+        $fatal(1, "RAM store buffer accept mismatch");
+      @(posedge clk_i); #1;
+      core_store_req_i = '0;
+      if (!ram_store_req_o.valid ||
+          ram_store_req_o.sq_id != 3'd2 ||
+          ram_store_req_o.address != 32'h8010_0104 ||
+          ram_store_req_o.data != 32'hcafe_beef ||
+          ram_store_req_o.byte_enable != 4'b1100)
+        $fatal(1, "RAM store request buffer mismatch");
+      core_load_req_i.valid = 1'b1;
+      core_load_req_i.lq_id = 3'd1;
+      core_load_req_i.address = 32'h8010_0200;
+      #1;
+      if (core_load_req_ready_o || ram_load_req_o.valid)
+        $fatal(1, "RAM load accepted while buffered Store is pending");
+      core_load_req_i = '0;
       ram_store_req_ready_i = 1'b1;
       #1;
-      if (!core_store_req_ready_o ||
+      if (!ram_store_req_o.valid ||
           ram_store_req_o.sq_id != 3'd2 ||
           ram_store_req_o.address != 32'h8010_0104 ||
           ram_store_req_o.data != 32'hcafe_beef ||
           ram_store_req_o.byte_enable != 4'b1100)
         $fatal(1, "RAM store request passthrough mismatch");
       @(posedge clk_i); #1;
-      core_store_req_i = '0;
+      if (ram_store_req_o.valid)
+        $fatal(1, "RAM store request did not drain");
       ram_store_req_ready_i = 1'b0;
     end
   endtask

@@ -76,6 +76,12 @@ module soc_addr_router #(
   logic take_mmio_store;
   logic held_resp_fire;
   logic mmio_req_fire;
+  store_mem_req_t ram_store_req_q;
+  logic ram_store_req_valid_q;
+  logic ram_store_fire;
+  logic ram_store_accept;
+  logic take_ram_store;
+  logic block_ram_load;
 
   function automatic logic in_window(
       input logic [XLEN-1:0] addr,
@@ -114,6 +120,10 @@ module soc_addr_router #(
                           !core_store_is_mmio;
   assign held_resp_fire = held_resp_valid_q && core_load_resp_ready_i;
   assign mmio_req_fire = mmio_req_valid_q && periph_req_ready_i;
+  assign ram_store_fire = ram_store_req_valid_q && ram_store_req_ready_i;
+  assign ram_store_accept = !ram_store_req_valid_q || ram_store_fire;
+  assign take_ram_store = core_store_is_ram && ram_store_accept;
+  assign block_ram_load = ram_store_req_valid_q;
 
   assign periph_req_valid_o = mmio_req_valid_q;
   assign periph_req_write_o = mmio_req_write_q;
@@ -125,26 +135,25 @@ module soc_addr_router #(
 
   always_comb begin
     ram_load_req_o = '0;
-    ram_store_req_o = core_store_req_i;
-    ram_store_req_o.valid = 1'b0;
+    ram_store_req_o = ram_store_req_q;
+    ram_store_req_o.valid = ram_store_req_valid_q;
     core_load_req_ready_o = 1'b0;
     core_store_req_ready_o = 1'b0;
     ram_load_resp_ready_o = 1'b0;
 
     core_load_resp_o = held_resp_valid_q ? held_resp_q : ram_load_resp_i;
 
-    if (core_load_is_ram) begin
+    if (core_load_is_ram && !block_ram_load) begin
       ram_load_req_o = core_load_req_i;
       core_load_req_ready_o = ram_load_req_ready_i && !held_resp_valid_q;
     end else if (core_load_is_mmio) begin
-      core_load_req_ready_o = take_mmio_load;
+      core_load_req_ready_o = take_mmio_load && !block_ram_load;
     end else if (core_load_is_bad) begin
-      core_load_req_ready_o = !held_resp_valid_q;
+      core_load_req_ready_o = !held_resp_valid_q && !block_ram_load;
     end
 
     if (core_store_is_ram) begin
-      ram_store_req_o.valid = 1'b1;
-      core_store_req_ready_o = ram_store_req_ready_i;
+      core_store_req_ready_o = ram_store_accept;
     end else if (core_store_is_mmio) begin
       core_store_req_ready_o = take_mmio_store;
     end else if (core_store_is_bad) begin
@@ -164,10 +173,20 @@ module soc_addr_router #(
       mmio_req_wdata_q <= '0;
       mmio_req_wstrb_q <= '0;
       mmio_req_lq_id_q <= '0;
+      ram_store_req_q <= '0;
+      ram_store_req_valid_q <= 1'b0;
       held_resp_q <= '0;
       held_resp_valid_q <= 1'b0;
       sticky_store_error_o <= 1'b0;
     end else begin
+      if (ram_store_fire)
+        ram_store_req_valid_q <= 1'b0;
+
+      if (take_ram_store) begin
+        ram_store_req_q <= core_store_req_i;
+        ram_store_req_valid_q <= 1'b1;
+      end
+
       if (held_resp_fire) begin
         held_resp_valid_q <= 1'b0;
         held_resp_q <= '0;
