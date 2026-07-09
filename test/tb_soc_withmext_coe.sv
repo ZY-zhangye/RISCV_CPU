@@ -24,7 +24,6 @@ module tb_soc_withmext_coe;
   logic [3:0] periph_req_wstrb_o;
   logic periph_resp_valid_i = 1'b0;
   logic [XLEN-1:0] periph_resp_rdata_i = '0;
-  logic periph_resp_error_i = 1'b1;
 
   logic [63:0] sw_i = 64'h0000_0000_0000_0000;
   logic [7:0] key_i = 8'h00;
@@ -179,11 +178,9 @@ module tb_soc_withmext_coe;
     if (rst_i) begin
       periph_resp_valid_i <= 1'b0;
       periph_resp_rdata_i <= '0;
-      periph_resp_error_i <= 1'b1;
     end else begin
       periph_resp_valid_i <= periph_req_valid_o;
       periph_resp_rdata_i <= '0;
-      periph_resp_error_i <= 1'b1;
     end
   end
 
@@ -324,8 +321,6 @@ module tb_soc_withmext_coe;
         $fatal(1, "LED monitor became X");
       if ($isunknown(seg_monitor))
         $fatal(1, "SEG monitor became X");
-      if (imem_resp_error_o)
-        $fatal(1, "instruction memory error");
     end
 
     $display("PASS: withmext COE boot smoke cycles=%0d led=%08h seg=%010h",

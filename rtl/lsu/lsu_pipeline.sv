@@ -530,10 +530,9 @@ module lsu_pipeline (
                                           mem_resp_i.data);
           completion_q <= make_completion(req_uop_q,
                                           loaded_data,
-                                          mem_resp_i.error,
-                                          mem_resp_i.error ? 4'd5 : '0,
-                                          mem_resp_i.error ?
-                                              req_address_q : '0);
+                                          1'b0,
+                                          '0,
+                                          '0);
           completion_valid_q <= 1'b1;
           completion_branch_mask_q <= req_uop_q.branch_mask;
           lq_complete_valid_q <= 1'b1;

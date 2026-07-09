@@ -17,20 +17,17 @@ module soc_imem #(
     input  logic [XLEN-1:0]              imem_req_addr_i,
     output logic                         imem_resp_valid_o,
     output logic [127:0]                 imem_resp_data_o,
-    output logic                         imem_resp_error_o,
 
     input  logic                         init_write_valid_i,
     input  logic [XLEN-1:0]              init_write_addr_i,
     input  logic [127:0]                 init_write_data_i,
-    output logic                         init_write_ready_o,
-    output logic                         init_write_error_o
+    output logic                         init_write_ready_o
 );
 
   localparam int unsigned BLOCK_BYTES = 16;
   localparam int unsigned BLOCK_COUNT = MEM_BYTES / BLOCK_BYTES;
   localparam int unsigned BLOCK_INDEX_W =
       (BLOCK_COUNT <= 1) ? 1 : $clog2(BLOCK_COUNT);
-  localparam logic [127:0] NOP_BLOCK = {4{32'h0000_0013}};
   localparam string XPM_INIT_FILE = (INIT_FILE == "") ? "none" : INIT_FILE;
   localparam int unsigned XPM_USE_MEM_INIT = (INIT_FILE == "") ? 0 : 1;
 
@@ -45,25 +42,14 @@ module soc_imem #(
 `ifndef SYNTHESIS
   logic [127:0] resp_data_q;
 `endif
-  logic resp_error_q;
 `ifdef SYNTHESIS
   logic [127:0] xpm_read_data;
   logic xpm_read_enable;
   logic [0:0] xpm_write_enable;
 `endif
 
-  logic req_hit;
-  logic init_hit;
   logic [BLOCK_INDEX_W-1:0] req_index;
   logic [BLOCK_INDEX_W-1:0] init_index;
-
-  function automatic logic in_range(input logic [XLEN-1:0] addr);
-    logic [XLEN-1:0] offset;
-    begin
-      offset = addr - BASE_ADDR;
-      in_range = (addr >= BASE_ADDR) && (offset < MEM_BYTES);
-    end
-  endfunction
 
   function automatic logic [BLOCK_INDEX_W-1:0] block_index(
       input logic [XLEN-1:0] addr
@@ -75,18 +61,14 @@ module soc_imem #(
     end
   endfunction
 
-  assign req_hit = imem_req_valid_i && in_range(imem_req_addr_i);
-  assign init_hit = init_write_valid_i && in_range(init_write_addr_i);
   assign req_index = block_index(imem_req_addr_i);
   assign init_index = block_index(init_write_addr_i);
   assign init_write_ready_o = 1'b1;
-  assign init_write_error_o = init_write_valid_i && !init_hit;
   assign imem_resp_valid_o = resp_valid_q;
-  assign imem_resp_error_o = resp_error_q;
 `ifdef SYNTHESIS
-  assign imem_resp_data_o = resp_error_q ? NOP_BLOCK : xpm_read_data;
-  assign xpm_read_enable = req_hit;
-  assign xpm_write_enable[0] = init_write_valid_i && init_hit;
+  assign imem_resp_data_o = xpm_read_data;
+  assign xpm_read_enable = imem_req_valid_i;
+  assign xpm_write_enable[0] = init_write_valid_i;
 `else
   assign imem_resp_data_o = resp_data_q;
 `endif
@@ -155,15 +137,13 @@ module soc_imem #(
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
       resp_valid_q <= 1'b0;
-      resp_error_q <= 1'b0;
     end else begin
       resp_valid_q <= imem_req_valid_i;
-      resp_error_q <= imem_req_valid_i && !req_hit;
     end
   end
 `else
   always @(posedge clk_i) begin
-    if (init_write_valid_i && init_hit) begin
+    if (init_write_valid_i) begin
       mem_b0_q[init_index] <= init_write_data_i[31:0];
       mem_b1_q[init_index] <= init_write_data_i[63:32];
       mem_b2_q[init_index] <= init_write_data_i[95:64];
@@ -173,18 +153,12 @@ module soc_imem #(
     if (rst_i) begin
       resp_valid_q <= 1'b0;
       resp_data_q <= '0;
-      resp_error_q <= 1'b0;
     end else begin
       resp_valid_q <= imem_req_valid_i;
-      resp_error_q <= imem_req_valid_i && !req_hit;
-      if (req_hit) begin
-        resp_data_q[31:0] <= mem_b0_q[req_index];
-        resp_data_q[63:32] <= mem_b1_q[req_index];
-        resp_data_q[95:64] <= mem_b2_q[req_index];
-        resp_data_q[127:96] <= mem_b3_q[req_index];
-      end else begin
-        resp_data_q <= NOP_BLOCK;
-      end
+      resp_data_q[31:0] <= mem_b0_q[req_index];
+      resp_data_q[63:32] <= mem_b1_q[req_index];
+      resp_data_q[95:64] <= mem_b2_q[req_index];
+      resp_data_q[127:96] <= mem_b3_q[req_index];
     end
   end
 `endif

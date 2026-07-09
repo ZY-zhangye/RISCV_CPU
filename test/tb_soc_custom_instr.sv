@@ -608,7 +608,6 @@ module tb_soc_custom_instr;
             dut.u_core.u_core_cluster.u_backend.load_mem_resp_i.valid,
             dut.u_core.u_core_cluster.u_backend.load_mem_resp_ready_o,
             dut.u_core.u_core_cluster.u_backend.load_mem_resp_i.data,
-            dut.u_core.u_core_cluster.u_backend.load_mem_resp_i.error,
             dut.u_core.u_core_cluster.u_backend.store_mem_req_o.valid,
             dut.u_core.u_core_cluster.u_backend.store_mem_req_ready_i,
             dut.u_core.u_core_cluster.u_backend.store_mem_req_o.address,

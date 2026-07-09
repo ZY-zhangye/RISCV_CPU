@@ -20,7 +20,6 @@ module tb_soc_data_ram;
   logic [XLEN-1:0] init_write_data_i = '0;
   logic [3:0] init_write_wstrb_i = '0;
   logic init_write_ready_o;
-  logic init_write_error_o;
 
   soc_data_ram #(
       .BASE_ADDR(32'h8010_0000),
@@ -41,7 +40,7 @@ module tb_soc_data_ram;
       init_write_data_i = data;
       init_write_wstrb_i = wstrb;
       #1;
-      if (!init_write_ready_o || init_write_error_o)
+      if (!init_write_ready_o)
         $fatal(1, "init write was not accepted addr=%h", addr);
       @(posedge clk_i); #1;
       init_write_valid_i = 1'b0;
@@ -91,18 +90,15 @@ module tb_soc_data_ram;
 
   task automatic expect_resp(
       input logic [LQ_ID_W-1:0] lq_id,
-      input logic [XLEN-1:0] data,
-      input logic error
+      input logic [XLEN-1:0] data
   );
     begin
       @(posedge clk_i); #1;
       if (!load_resp_o.valid ||
           load_resp_o.lq_id != lq_id ||
-          load_resp_o.data !== data ||
-          load_resp_o.error !== error)
-        $fatal(1, "load response mismatch id=%0d data=%h err=%0b expected id=%0d data=%h err=%0b",
-               load_resp_o.lq_id, load_resp_o.data, load_resp_o.error,
-               lq_id, data, error);
+          load_resp_o.data !== data)
+        $fatal(1, "load response mismatch id=%0d data=%h expected id=%0d data=%h",
+               load_resp_o.lq_id, load_resp_o.data, lq_id, data);
     end
   endtask
 
@@ -127,7 +123,7 @@ module tb_soc_data_ram;
     init_write(32'h8010_0004, 32'haabb_ccdd, 4'b1111);
 
     load_word(3'd1, 32'h8010_0000);
-    expect_resp(3'd1, 32'h1122_3344, 1'b0);
+    expect_resp(3'd1, 32'h1122_3344);
 
     // Response must hold under core/router backpressure, and new loads must
     // not be accepted until the held response drains.
@@ -146,7 +142,7 @@ module tb_soc_data_ram;
     // Byte store updates only selected lanes.
     store_word(3'd2, 32'h8010_0000, 32'h0000_aa00, 4'b0010);
     load_word(3'd2, 32'h8010_0000);
-    expect_resp(3'd2, 32'h1122_aa44, 1'b0);
+    expect_resp(3'd2, 32'h1122_aa44);
     drain_resp();
 
     // Load and Store can be accepted in the same cycle for independent words.
@@ -165,29 +161,11 @@ module tb_soc_data_ram;
     @(posedge clk_i); #1;
     load_req_i = '0;
     store_req_i = '0;
-    expect_resp(3'd3, 32'haabb_ccdd, 1'b0);
+    expect_resp(3'd3, 32'haabb_ccdd);
     drain_resp();
     load_word(3'd4, 32'h8010_0008);
-    expect_resp(3'd4, 32'h5566_7788, 1'b0);
+    expect_resp(3'd4, 32'h5566_7788);
     drain_resp();
-
-    load_word(3'd5, 32'h8010_0100);
-    expect_resp(3'd5, 32'h0000_0000, 1'b1);
-    drain_resp();
-
-    @(negedge clk_i);
-    init_write_valid_i = 1'b1;
-    init_write_addr_i = 32'h8010_0100;
-    init_write_data_i = 32'hdead_beef;
-    init_write_wstrb_i = 4'b1111;
-    #1;
-    if (!init_write_error_o || store_req_ready_o)
-      $fatal(1, "out-of-range init write/error or store arbitration mismatch");
-    @(posedge clk_i); #1;
-    init_write_valid_i = 1'b0;
-    init_write_addr_i = '0;
-    init_write_data_i = '0;
-    init_write_wstrb_i = '0;
 
     $display("PASS: soc_data_ram directed tests");
     $finish;

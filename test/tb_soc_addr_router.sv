@@ -75,13 +75,11 @@ module tb_soc_addr_router;
       ram_load_resp_i.valid = 1'b1;
       ram_load_resp_i.lq_id = 3'd3;
       ram_load_resp_i.data = 32'h1234_5678;
-      ram_load_resp_i.error = 1'b0;
       core_load_resp_ready_i = 1'b1;
       #1;
       if (!core_load_resp_o.valid || !ram_load_resp_ready_o ||
           core_load_resp_o.lq_id != 3'd3 ||
-          core_load_resp_o.data != 32'h1234_5678 ||
-          core_load_resp_o.error)
+          core_load_resp_o.data != 32'h1234_5678)
         $fatal(1, "RAM load response passthrough mismatch");
       @(posedge clk_i); #1;
       ram_load_resp_i = '0;
@@ -170,14 +168,12 @@ module tb_soc_addr_router;
       @(negedge clk_i);
       periph_resp_valid_i = 1'b1;
       periph_resp_rdata_i = 32'hfeed_1234;
-      periph_resp_error_i = 1'b0;
       core_load_resp_ready_i = 1'b0;
       @(posedge clk_i); #1;
       periph_resp_valid_i = 1'b0;
       if (!core_load_resp_o.valid ||
           core_load_resp_o.lq_id != 3'd5 ||
-          core_load_resp_o.data != 32'hfeed_1234 ||
-          core_load_resp_o.error)
+          core_load_resp_o.data != 32'hfeed_1234)
         $fatal(1, "MMIO load response latch mismatch");
 
       repeat (2) begin
@@ -273,7 +269,7 @@ module tb_soc_addr_router;
         $fatal(1, "invalid load was not accepted");
       @(posedge clk_i); #1;
       core_load_req_i = '0;
-      if (!core_load_resp_o.valid || !core_load_resp_o.error ||
+      if (!core_load_resp_o.valid ||
           core_load_resp_o.lq_id != 3'd6 ||
           core_load_resp_o.data != 32'h0000_0000)
         $fatal(1, "invalid load error response mismatch");

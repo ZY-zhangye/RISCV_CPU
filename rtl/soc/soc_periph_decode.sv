@@ -8,8 +8,8 @@
 // - 0x8020_0040: LED data  write-only
 // - 0x8020_0050: counter   read/write start/stop command
 //
-// All local peripheral accesses must be 4-byte aligned. Writes to 32-bit
-// registers must use a full-word write strobe.
+// Local accesses are acknowledged deterministically. Unsupported reads return
+// zero and unsupported writes have no side effects.
 import core_types_pkg::*;
 
 module soc_periph_decode #(
@@ -29,7 +29,6 @@ module soc_periph_decode #(
     input  logic [3:0]                   req_wstrb_i,
     output logic                         resp_valid_o,
     output logic [XLEN-1:0]              resp_rdata_o,
-    output logic                         resp_error_o,
 
     output logic                         ext_req_valid_o,
     input  logic                         ext_req_ready_i,
@@ -39,7 +38,6 @@ module soc_periph_decode #(
     output logic [3:0]                   ext_req_wstrb_o,
     input  logic                         ext_resp_valid_i,
     input  logic [XLEN-1:0]              ext_resp_rdata_i,
-    input  logic                         ext_resp_error_i,
 
     input  logic [63:0]                  sw_i,
     input  logic [7:0]                   key_i,
@@ -63,18 +61,11 @@ module soc_periph_decode #(
 
   logic local_selected;
   logic local_fire;
-  logic aligned_access;
   logic full_word_write;
-  logic read_only_addr;
-  logic write_only_addr;
-  logic read_write_addr;
-  logic known_addr;
-  logic access_error;
   logic [XLEN-1:0] read_data;
 
   logic resp_valid_q;
   logic [XLEN-1:0] resp_rdata_q;
-  logic resp_error_q;
 
   function automatic logic in_mmio(input logic [XLEN-1:0] addr);
     logic [XLEN-1:0] offset;
@@ -86,16 +77,7 @@ module soc_periph_decode #(
 
   assign local_selected = req_valid_i && in_mmio(req_addr_i);
   assign local_fire = local_selected && req_ready_o;
-  assign aligned_access = (req_addr_i[1:0] == 2'b00);
   assign full_word_write = (req_wstrb_i == 4'b1111);
-
-  assign read_only_addr = (req_addr_i == SW_LOW_ADDR) ||
-                          (req_addr_i == SW_HIGH_ADDR) ||
-                          (req_addr_i == KEY_ADDR);
-  assign write_only_addr = (req_addr_i == LED_ADDR);
-  assign read_write_addr = (req_addr_i == SEG_ADDR) ||
-                           (req_addr_i == CNT_ADDR);
-  assign known_addr = read_only_addr || write_only_addr || read_write_addr;
 
   always_comb begin
     read_data = '0;
@@ -109,19 +91,9 @@ module soc_periph_decode #(
     endcase
   end
 
-  always_comb begin
-    access_error = !aligned_access || !known_addr;
-    if (req_write_i) begin
-      access_error = access_error || read_only_addr || !full_word_write;
-    end else begin
-      access_error = access_error || write_only_addr;
-    end
-  end
-
   assign req_ready_o = local_selected ? !resp_valid_q : ext_req_ready_i;
   assign resp_valid_o = resp_valid_q || ext_resp_valid_i;
   assign resp_rdata_o = resp_valid_q ? resp_rdata_q : ext_resp_rdata_i;
-  assign resp_error_o = resp_valid_q ? resp_error_q : ext_resp_error_i;
 
   assign ext_req_valid_o = req_valid_i && !local_selected;
   assign ext_req_write_o = req_write_i;
@@ -154,19 +126,16 @@ module soc_periph_decode #(
       cnt_enable_q <= 1'b0;
       resp_valid_q <= 1'b0;
       resp_rdata_q <= '0;
-      resp_error_q <= 1'b0;
     end else begin
       resp_valid_q <= 1'b0;
       resp_rdata_q <= '0;
-      resp_error_q <= 1'b0;
 
       if (local_fire) begin
         resp_valid_q <= 1'b1;
-        resp_error_q <= access_error;
-        if (!access_error && !req_write_i)
+        if (!req_write_i)
           resp_rdata_q <= read_data;
 
-        if (!access_error && req_write_i) begin
+        if (req_write_i && full_word_write) begin
           unique case (req_addr_i)
             SEG_ADDR: seg_data_q <= req_wdata_i;
             LED_ADDR: led_q <= req_wdata_i;

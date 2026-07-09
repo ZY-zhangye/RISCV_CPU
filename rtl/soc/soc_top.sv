@@ -23,10 +23,6 @@ module soc_top #(
     input  logic                         clk_cnt_i,
     input  logic                         rst_i,
 
-    input  logic                         ext_irq_i,
-    input  logic                         timer_irq_i,
-    input  logic                         software_irq_i,
-
     output logic                         periph_req_valid_o,
     input  logic                         periph_req_ready_i,
     output logic                         periph_req_write_o,
@@ -35,7 +31,6 @@ module soc_top #(
     output logic [3:0]                   periph_req_wstrb_o,
     input  logic                         periph_resp_valid_i,
     input  logic [XLEN-1:0]              periph_resp_rdata_i,
-    input  logic                         periph_resp_error_i,
 
     input  logic [63:0]                  sw_i,
     input  logic [7:0]                   key_i,
@@ -46,53 +41,12 @@ module soc_top #(
     input  logic [XLEN-1:0]              imem_init_write_addr_i,
     input  logic [127:0]                 imem_init_write_data_i,
     output logic                         imem_init_write_ready_o,
-    output logic                         imem_init_write_error_o,
 
     input  logic                         dmem_init_write_valid_i,
     input  logic [XLEN-1:0]              dmem_init_write_addr_i,
     input  logic [XLEN-1:0]              dmem_init_write_data_i,
     input  logic [3:0]                   dmem_init_write_wstrb_i,
-    output logic                         dmem_init_write_ready_o,
-    output logic                         dmem_init_write_error_o,
-
-    output logic                         interrupt_pending_o,
-    output recovery_t                    recovery_o,
-    output logic                         checkpoint_clear_valid_o,
-    output logic [CP_W-1:0]              checkpoint_clear_id_o,
-    output logic                         redirect_valid_o,
-    output logic [XLEN-1:0]              redirect_pc_o,
-
-    output logic [1:0]                   retire_count_o,
-    output logic [5:0]                   rob_occupancy_o,
-    output logic                         rob_empty_o,
-    output logic                         rob_full_o,
-    output logic [6:0]                   free_prd_count_o,
-    output logic [3:0]                   free_lq_count_o,
-    output logic [3:0]                   free_sq_count_o,
-    output logic [$clog2(CHECKPOINTS+1)-1:0]
-                                             active_checkpoint_count_o,
-    output logic                         recovery_busy_o,
-    output logic                         busy_o,
-    output logic [3:0]                   ibuf_occupancy_o,
-    output logic [2:0]                   dispatch_buffer_occupancy_o,
-    output logic [$clog2(IQ_INT_ENTRIES+1)-1:0]
-                                             int_issue_occupancy_o,
-    output logic [$clog2(IQ_MEM_ENTRIES+1)-1:0]
-                                             mem_issue_occupancy_o,
-    output logic [$clog2(IQ_MDU_ENTRIES+1)-1:0]
-                                             mdu_issue_occupancy_o,
-    output logic [3:0]                   lq_occupancy_o,
-    output logic [3:0]                   sq_occupancy_o,
-    output logic [PHYS_REGS-1:0]         prf_ready_bits_o,
-    output logic [XLEN-1:0]              mstatus_o,
-    output logic [XLEN-1:0]              mtvec_o,
-    output logic [XLEN-1:0]              mepc_o,
-    output logic [XLEN-1:0]              mcause_o,
-    output logic [XLEN-1:0]              mtval_o,
-
-    output logic                         imem_resp_error_o,
-    output logic                         data_store_error_o,
-    output logic                         mmio_busy_o
+    output logic                         dmem_init_write_ready_o
 );
 
   localparam int unsigned POR_COUNT_W =
@@ -129,7 +83,6 @@ module soc_top #(
   logic [3:0] router_periph_req_wstrb;
   logic router_periph_resp_valid;
   logic [XLEN-1:0] router_periph_resp_rdata;
-  logic router_periph_resp_error;
 
   assign soc_rst = rst_i || !power_on_reset_done_q;
 
@@ -153,9 +106,6 @@ module soc_top #(
   ) u_core (
       .clk_i,
       .rst_i(soc_rst),
-      .ext_irq_i,
-      .timer_irq_i,
-      .software_irq_i,
       .imem_req_valid_o(imem_req_valid),
       .imem_req_addr_o(imem_req_addr),
       .imem_resp_valid_i(imem_resp_valid),
@@ -165,36 +115,7 @@ module soc_top #(
       .load_mem_resp_i(core_load_resp),
       .load_mem_resp_ready_o(core_load_resp_ready),
       .store_mem_req_o(core_store_req),
-      .store_mem_req_ready_i(core_store_req_ready),
-      .interrupt_pending_o,
-      .recovery_o,
-      .checkpoint_clear_valid_o,
-      .checkpoint_clear_id_o,
-      .redirect_valid_o,
-      .redirect_pc_o,
-      .retire_count_o,
-      .rob_occupancy_o,
-      .rob_empty_o,
-      .rob_full_o,
-      .free_prd_count_o,
-      .free_lq_count_o,
-      .free_sq_count_o,
-      .active_checkpoint_count_o,
-      .recovery_busy_o,
-      .busy_o,
-      .ibuf_occupancy_o,
-      .dispatch_buffer_occupancy_o,
-      .int_issue_occupancy_o,
-      .mem_issue_occupancy_o,
-      .mdu_issue_occupancy_o,
-      .lq_occupancy_o,
-      .sq_occupancy_o,
-      .prf_ready_bits_o,
-      .mstatus_o,
-      .mtvec_o,
-      .mepc_o,
-      .mcause_o,
-      .mtval_o
+      .store_mem_req_ready_i(core_store_req_ready)
   );
 
   soc_imem #(
@@ -208,12 +129,10 @@ module soc_top #(
       .imem_req_addr_i(imem_req_addr),
       .imem_resp_valid_o(imem_resp_valid),
       .imem_resp_data_o(imem_resp_data),
-      .imem_resp_error_o,
       .init_write_valid_i(imem_init_write_valid_i),
       .init_write_addr_i(imem_init_write_addr_i),
       .init_write_data_i(imem_init_write_data_i),
-      .init_write_ready_o(imem_init_write_ready_o),
-      .init_write_error_o(imem_init_write_error_o)
+      .init_write_ready_o(imem_init_write_ready_o)
   );
 
   soc_addr_router #(
@@ -244,9 +163,7 @@ module soc_top #(
       .periph_req_wstrb_o(router_periph_req_wstrb),
       .periph_resp_valid_i(router_periph_resp_valid),
       .periph_resp_rdata_i(router_periph_resp_rdata),
-      .periph_resp_error_i(router_periph_resp_error),
-      .sticky_store_error_o(data_store_error_o),
-      .mmio_busy_o
+      .mmio_busy_o()
   );
 
   soc_periph_decode #(
@@ -264,7 +181,6 @@ module soc_top #(
       .req_wstrb_i(router_periph_req_wstrb),
       .resp_valid_o(router_periph_resp_valid),
       .resp_rdata_o(router_periph_resp_rdata),
-      .resp_error_o(router_periph_resp_error),
       .ext_req_valid_o(periph_req_valid_o),
       .ext_req_ready_i(periph_req_ready_i),
       .ext_req_write_o(periph_req_write_o),
@@ -273,7 +189,6 @@ module soc_top #(
       .ext_req_wstrb_o(periph_req_wstrb_o),
       .ext_resp_valid_i(periph_resp_valid_i),
       .ext_resp_rdata_i(periph_resp_rdata_i),
-      .ext_resp_error_i(periph_resp_error_i),
       .sw_i,
       .key_i,
       .led_o,
@@ -298,8 +213,7 @@ module soc_top #(
       .init_write_addr_i(dmem_init_write_addr_i),
       .init_write_data_i(dmem_init_write_data_i),
       .init_write_wstrb_i(dmem_init_write_wstrb_i),
-      .init_write_ready_o(dmem_init_write_ready_o),
-      .init_write_error_o(dmem_init_write_error_o)
+      .init_write_ready_o(dmem_init_write_ready_o)
   );
 
 `ifndef SYNTHESIS

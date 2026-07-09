@@ -407,7 +407,6 @@ package core_types_pkg;
     logic                       valid;
     logic [LQ_ID_W-1:0]         lq_id;
     logic [XLEN-1:0]            data;
-    logic                       error;
   } load_mem_resp_t;
 
   // ==========================================================================

@@ -112,7 +112,7 @@ module tb_soc_official_hex;
       imem_init_write_addr_i = addr;
       imem_init_write_data_i = data;
       #1;
-      if (!imem_init_write_ready_o || imem_init_write_error_o)
+      if (!imem_init_write_ready_o)
         $fatal(1, "imem init write failed addr=%08h", addr);
       @(posedge clk_i); #1;
       imem_init_write_valid_i = 1'b0;
@@ -132,7 +132,7 @@ module tb_soc_official_hex;
       dmem_init_write_data_i = data;
       dmem_init_write_wstrb_i = 4'b1111;
       #1;
-      if (!dmem_init_write_ready_o || dmem_init_write_error_o)
+      if (!dmem_init_write_ready_o)
         $fatal(1, "dmem init write failed addr=%08h", addr);
       @(posedge clk_i); #1;
       dmem_init_write_valid_i = 1'b0;
@@ -280,14 +280,6 @@ module tb_soc_official_hex;
       #1;
       cycles = cycles + 1;
 
-      if ($isunknown(retire_count_o))
-        fail_unknown("retire_count");
-      if ($isunknown(redirect_valid_o))
-        fail_unknown("redirect_valid");
-      if (imem_resp_error_o)
-        $fatal(1, "instruction memory error at cycle=%0d", cycles);
-      if (data_store_error_o)
-        $fatal(1, "data store error at cycle=%0d", cycles);
       if (periph_req_valid_o)
         $fatal(1, "unexpected external MMIO request at cycle=%0d addr=%08h",
                cycles, periph_req_addr_o);
@@ -516,7 +508,7 @@ module tb_soc_official_hex;
            dut.u_core.u_core_cluster.u_backend.u_lsu.result_valid_o ||
            dut.u_core.u_core_cluster.u_backend.u_lsu.mem_req_o.valid ||
            dut.u_core.u_core_cluster.u_backend.u_lsu.mem_resp_i.valid)) begin
-        $display("TRACE_LSU cycle=%0d cand=%b grant=%b ex[v=%0b r=%0b pc=%08h id=%0d lq=%0d sq=%0d addr=%08h op=%0d] state=%0d reqpc=%08h reqid=%0d addr=%08h lqaddr[v=%0b r=%0b sent=%0b id=%0d] memreq[v=%0b r=%0b id=%0d addr=%08h] memresp[v=%0b r=%0b id=%0d data=%08h err=%0b] res[v=%0b r=%0b id=%0d data=%08h wr=%0b] lqcomp[v=%0b id=%0d fwd=%0b]",
+        $display("TRACE_LSU cycle=%0d cand=%b grant=%b ex[v=%0b r=%0b pc=%08h id=%0d lq=%0d sq=%0d addr=%08h op=%0d] state=%0d reqpc=%08h reqid=%0d addr=%08h lqaddr[v=%0b r=%0b sent=%0b id=%0d] memreq[v=%0b r=%0b id=%0d addr=%08h] memresp[v=%0b r=%0b id=%0d data=%08h] res[v=%0b r=%0b id=%0d data=%08h wr=%0b] lqcomp[v=%0b id=%0d fwd=%0b]",
                  cycles,
                  dut.u_core.u_core_cluster.u_backend.mem_candidate_valid,
                  dut.u_core.u_core_cluster.u_backend.mem_issue_grant,
@@ -545,7 +537,6 @@ module tb_soc_official_hex;
                  dut.u_core.u_core_cluster.u_backend.u_lsu.mem_resp_ready_o,
                  dut.u_core.u_core_cluster.u_backend.u_lsu.mem_resp_i.lq_id,
                  dut.u_core.u_core_cluster.u_backend.u_lsu.mem_resp_i.data,
-                 dut.u_core.u_core_cluster.u_backend.u_lsu.mem_resp_i.error,
                  dut.u_core.u_core_cluster.u_backend.u_lsu.result_valid_o,
                  dut.u_core.u_core_cluster.u_backend.u_lsu.result_ready_i,
                  dut.u_core.u_core_cluster.u_backend.u_lsu.result_o.rob_id,

@@ -2,10 +2,7 @@
 //
 // V1 keeps the CPU memory boundary typed and uses fixed address windows:
 // - RAM:  0x8010_0000..0x8013_FFFF
-// - MMIO: 0x8020_0000..0x8020_00FF
-// Loads to invalid addresses return an error response. Invalid stores are
-// accepted and recorded in sticky_store_error_o; precise store access faults are
-// left for a later CSR/commit extension.
+// - non-RAM accesses are forwarded to the MMIO fabric.
 import core_types_pkg::*;
 
 module soc_addr_router #(
@@ -41,9 +38,7 @@ module soc_addr_router #(
     output logic [3:0]                   periph_req_wstrb_o,
     input  logic                         periph_resp_valid_i,
     input  logic [XLEN-1:0]              periph_resp_rdata_i,
-    input  logic                         periph_resp_error_i,
 
-    output logic                         sticky_store_error_o,
     output logic                         mmio_busy_o
 );
 
@@ -66,11 +61,7 @@ module soc_addr_router #(
   logic held_resp_valid_q;
 
   logic core_load_is_ram;
-  logic core_load_is_mmio;
-  logic core_load_is_bad;
   logic core_store_is_ram;
-  logic core_store_is_mmio;
-  logic core_store_is_bad;
   logic can_accept_mmio;
   logic take_mmio_load;
   logic take_mmio_store;
@@ -98,26 +89,17 @@ module soc_addr_router #(
   assign core_load_is_ram = core_load_req_i.valid &&
                             in_window(core_load_req_i.address,
                                       RAM_BASE, RAM_SIZE);
-  assign core_load_is_mmio = core_load_req_i.valid &&
-                             in_window(core_load_req_i.address,
-                                       MMIO_BASE, MMIO_SIZE);
-  assign core_load_is_bad = core_load_req_i.valid &&
-                            !core_load_is_ram && !core_load_is_mmio;
-
   assign core_store_is_ram = core_store_req_i.valid &&
                              in_window(core_store_req_i.address,
                                        RAM_BASE, RAM_SIZE);
-  assign core_store_is_mmio = core_store_req_i.valid &&
-                              in_window(core_store_req_i.address,
-                                        MMIO_BASE, MMIO_SIZE);
-  assign core_store_is_bad = core_store_req_i.valid &&
-                             !core_store_is_ram && !core_store_is_mmio;
 
   assign can_accept_mmio = (mmio_state_q == MMIO_IDLE) &&
                            !mmio_req_valid_q && !held_resp_valid_q;
-  assign take_mmio_store = core_store_is_mmio && can_accept_mmio;
-  assign take_mmio_load = core_load_is_mmio && can_accept_mmio &&
-                          !core_store_is_mmio;
+  assign take_mmio_store = core_store_req_i.valid && !core_store_is_ram &&
+                           can_accept_mmio;
+  assign take_mmio_load = core_load_req_i.valid && !core_load_is_ram &&
+                          can_accept_mmio &&
+                          !(core_store_req_i.valid && !core_store_is_ram);
   assign held_resp_fire = held_resp_valid_q && core_load_resp_ready_i;
   assign mmio_req_fire = mmio_req_valid_q && periph_req_ready_i;
   assign ram_store_fire = ram_store_req_valid_q && ram_store_req_ready_i;
@@ -148,18 +130,14 @@ module soc_addr_router #(
     if (core_load_is_ram && !block_ram_load) begin
       ram_load_req_o.valid = 1'b1;
       core_load_req_ready_o = ram_load_req_ready_i && !held_resp_valid_q;
-    end else if (core_load_is_mmio) begin
+    end else if (core_load_req_i.valid && !core_load_is_ram) begin
       core_load_req_ready_o = take_mmio_load && !block_ram_load;
-    end else if (core_load_is_bad) begin
-      core_load_req_ready_o = !held_resp_valid_q && !block_ram_load;
     end
 
     if (core_store_is_ram) begin
       core_store_req_ready_o = ram_store_accept;
-    end else if (core_store_is_mmio) begin
+    end else if (core_store_req_i.valid && !core_store_is_ram) begin
       core_store_req_ready_o = take_mmio_store;
-    end else if (core_store_is_bad) begin
-      core_store_req_ready_o = 1'b1;
     end
 
     ram_load_resp_ready_o = ram_load_resp_i.valid && !held_resp_valid_q &&
@@ -179,7 +157,6 @@ module soc_addr_router #(
       ram_store_req_valid_q <= 1'b0;
       held_resp_q <= '0;
       held_resp_valid_q <= 1'b0;
-      sticky_store_error_o <= 1'b0;
     end else begin
       if (ram_store_fire)
         ram_store_req_valid_q <= 1'b0;
@@ -215,17 +192,6 @@ module soc_addr_router #(
         mmio_state_q <= mmio_req_write_q ? MMIO_STORE_WAIT : MMIO_LOAD_WAIT;
       end
 
-      if (core_load_is_bad && core_load_req_ready_o) begin
-        held_resp_q.valid <= 1'b1;
-        held_resp_q.lq_id <= core_load_req_i.lq_id;
-        held_resp_q.data <= '0;
-        held_resp_q.error <= 1'b1;
-        held_resp_valid_q <= 1'b1;
-      end
-
-      if (core_store_is_bad && core_store_req_ready_o)
-        sticky_store_error_o <= 1'b1;
-
       unique case (mmio_state_q)
         MMIO_IDLE: begin
         end
@@ -234,15 +200,12 @@ module soc_addr_router #(
             held_resp_q.valid <= 1'b1;
             held_resp_q.lq_id <= mmio_req_lq_id_q;
             held_resp_q.data <= periph_resp_rdata_i;
-            held_resp_q.error <= periph_resp_error_i;
             held_resp_valid_q <= 1'b1;
             mmio_state_q <= MMIO_IDLE;
           end
         end
         MMIO_STORE_WAIT: begin
           if (periph_resp_valid_i) begin
-            if (periph_resp_error_i)
-              sticky_store_error_o <= 1'b1;
             mmio_state_q <= MMIO_IDLE;
           end
         end

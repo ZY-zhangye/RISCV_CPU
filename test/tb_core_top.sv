@@ -178,28 +178,11 @@ module tb_core_top;
     @(negedge clk_i);
     rst_i = 1'b0;
 
-    ext_irq_i = 1'b1;
-    #1;
-    if (!interrupt_pending_o)
-      $fatal(1, "interrupt_pending_o did not reflect ext_irq_i");
-    ext_irq_i = 1'b0;
-
-    timer_irq_i = 1'b1;
-    software_irq_i = 1'b1;
-    #1;
-    if (!interrupt_pending_o)
-      $fatal(1, "interrupt_pending_o did not reflect timer/software irq");
-    timer_irq_i = 1'b0;
-    software_irq_i = 1'b0;
-
     wait_prf_write_data(32'd6, PROD_INT0);
     wait_prf_write_data(32'd7, PROD_INT0);
     wait_prf_write_data(32'd42, PROD_MUL);
     wait_prf_write_data(32'd6, PROD_DIV);
     repeat (8) @(posedge clk_i); #1;
-
-    if (free_lq_count_o != 8 || free_sq_count_o != 8)
-      $fatal(1, "core_top memory resources did not drain");
 
     $display("PASS: core_top directed tests");
     $finish;

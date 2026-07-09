@@ -27,8 +27,7 @@ module soc_data_ram #(
     input  logic [XLEN-1:0]              init_write_addr_i,
     input  logic [XLEN-1:0]              init_write_data_i,
     input  logic [3:0]                   init_write_wstrb_i,
-    output logic                         init_write_ready_o,
-    output logic                         init_write_error_o
+    output logic                         init_write_ready_o
 );
 
   localparam int unsigned WORD_BYTES = 4;
@@ -45,17 +44,12 @@ module soc_data_ram #(
   logic load_pipe_valid_q;
   logic [LQ_ID_W-1:0] load_pipe_lq_id_q;
   logic [1:0] load_pipe_lane_q;
-  logic load_pipe_error_q;
 
   logic [7:0] read_data_b0_q;
   logic [7:0] read_data_b1_q;
   logic [7:0] read_data_b2_q;
   logic [7:0] read_data_b3_q;
 
-  logic load_hit;
-  logic store_hit;
-  logic store_write_ok;
-  logic init_hit;
   logic load_fire;
   logic store_fire;
   logic init_fire;
@@ -83,14 +77,6 @@ module soc_data_ram #(
   logic [7:0] write_data_b1;
   logic [7:0] write_data_b2;
   logic [7:0] write_data_b3;
-
-  function automatic logic in_range(input logic [XLEN-1:0] addr);
-    logic [XLEN-1:0] offset;
-    begin
-      offset = addr - BASE_ADDR;
-      in_range = (addr >= BASE_ADDR) && (offset < MEM_BYTES);
-    end
-  endfunction
 
   function automatic logic [WORD_INDEX_W-1:0] word_index(
       input logic [XLEN-1:0] addr
@@ -132,41 +118,14 @@ module soc_data_ram #(
     end
   endfunction
 
-  function automatic logic byte_window_in_range(
-      input logic [XLEN-1:0] address,
-      input logic [3:0] mask
-  );
-    begin
-      byte_window_in_range = 1'b1;
-      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx = byte_idx + 1) begin
-        if (mask[byte_idx] && !in_range(address + byte_idx))
-          byte_window_in_range = 1'b0;
-      end
-    end
-  endfunction
-
-  assign load_hit = TRUST_ROUTED_ADDR ?
-                    load_req_i.valid :
-                    (load_req_i.valid &&
-                     byte_window_in_range(load_req_i.address, 4'b1111));
-  assign store_hit = store_req_i.valid &&
-                     byte_window_in_range(store_req_i.address,
-                                          store_req_i.byte_enable);
-  assign store_write_ok = TRUST_ROUTED_ADDR ? store_req_i.valid : store_hit;
-  assign init_hit = init_write_valid_i &&
-                    byte_window_in_range(init_write_addr_i,
-                                         init_write_wstrb_i);
-
   assign load_req_ready_o = !load_pipe_valid_q && !load_resp_q.valid;
   assign store_req_ready_o = !init_write_valid_i;
   assign init_write_ready_o = 1'b1;
-  assign init_write_error_o = init_write_valid_i && !init_hit;
   assign load_resp_o = load_resp_q;
 
   assign load_fire = load_req_i.valid && load_req_ready_o;
   assign store_fire = store_req_i.valid && store_req_ready_o;
-  assign init_fire = init_write_valid_i && init_hit;
-  // Keep BRAM read enable independent of the address range comparator.
+  assign init_fire = init_write_valid_i;
   assign ram_read_fire = load_fire;
 
   assign load_base_index = routed_word_index(load_req_i.address);
@@ -180,16 +139,10 @@ module soc_data_ram #(
   assign load_read_index_b2 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2);
   assign load_read_index_b3 = load_base_index;
 `else
-  assign load_read_index_b0 = load_hit ?
-                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0)) :
-                              '0;
-  assign load_read_index_b1 = load_hit ?
-                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1)) :
-                              '0;
-  assign load_read_index_b2 = load_hit ?
-                              (load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2)) :
-                              '0;
-  assign load_read_index_b3 = load_hit ? load_base_index : '0;
+  assign load_read_index_b0 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0);
+  assign load_read_index_b1 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1);
+  assign load_read_index_b2 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd2);
+  assign load_read_index_b3 = load_base_index;
 `endif
 
   always_comb begin
@@ -232,22 +185,22 @@ module soc_data_ram #(
         if (store_req_i.byte_enable[byte_idx]) begin
           unique case (target_lane)
             2'd0: begin
-              write_en_b0 = store_fire && store_write_ok;
+              write_en_b0 = store_fire;
               write_index_b0 = target_index;
               write_data_b0 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd1: begin
-              write_en_b1 = store_fire && store_write_ok;
+              write_en_b1 = store_fire;
               write_index_b1 = target_index;
               write_data_b1 = store_req_i.data[byte_idx * 8 +: 8];
             end
             2'd2: begin
-              write_en_b2 = store_fire && store_write_ok;
+              write_en_b2 = store_fire;
               write_index_b2 = target_index;
               write_data_b2 = store_req_i.data[byte_idx * 8 +: 8];
             end
             default: begin
-              write_en_b3 = store_fire && store_write_ok;
+              write_en_b3 = store_fire;
               write_index_b3 = target_index;
               write_data_b3 = store_req_i.data[byte_idx * 8 +: 8];
             end
@@ -294,7 +247,6 @@ module soc_data_ram #(
       load_pipe_valid_q <= 1'b0;
       load_pipe_lq_id_q <= '0;
       load_pipe_lane_q <= '0;
-      load_pipe_error_q <= 1'b0;
       read_data_b0_q <= '0;
       read_data_b1_q <= '0;
       read_data_b2_q <= '0;
@@ -307,18 +259,13 @@ module soc_data_ram #(
         load_pipe_valid_q <= 1'b1;
         load_pipe_lq_id_q <= load_req_i.lq_id;
         load_pipe_lane_q <= load_base_lane;
-        load_pipe_error_q <= !load_hit;
       end
 
       if (load_pipe_valid_q) begin
         load_pipe_valid_q <= 1'b0;
         load_resp_q.valid <= 1'b1;
         load_resp_q.lq_id <= load_pipe_lq_id_q;
-        load_resp_q.error <= load_pipe_error_q;
-        if (load_pipe_error_q) begin
-          load_resp_q.data <= '0;
-        end else begin
-          unique case (load_pipe_lane_q)
+        unique case (load_pipe_lane_q)
             2'd0: load_resp_q.data <= {read_data_b3_q, read_data_b2_q,
                                        read_data_b1_q, read_data_b0_q};
             2'd1: load_resp_q.data <= {read_data_b0_q, read_data_b3_q,
@@ -328,7 +275,6 @@ module soc_data_ram #(
             default: load_resp_q.data <= {read_data_b2_q, read_data_b1_q,
                                           read_data_b0_q, read_data_b3_q};
           endcase
-        end
       end
     end
   end

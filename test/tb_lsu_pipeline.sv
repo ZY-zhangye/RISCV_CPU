@@ -188,8 +188,7 @@ module tb_lsu_pipeline;
 
   task automatic accept_mem_and_respond(
       input logic [LQ_ID_W-1:0] lq_id,
-      input logic [XLEN-1:0] word,
-      input logic error
+      input logic [XLEN-1:0] word
   );
     begin
       @(negedge clk_i);
@@ -201,7 +200,6 @@ module tb_lsu_pipeline;
       mem_resp_i.valid = 1'b1;
       mem_resp_i.lq_id = lq_id;
       mem_resp_i.data = word;
-      mem_resp_i.error = error;
       #1;
       if (!mem_resp_ready_o)
         $fatal(1, "LSU did not accept matching memory response");
@@ -247,7 +245,7 @@ module tb_lsu_pipeline;
         lq_address_o != 32'h8000_0201)
       $fatal(1, "Load address update mismatch");
     wait_mem_request(3'd0, 32'h8000_0201);
-    accept_mem_and_respond(3'd0, 32'h0000_0080, 1'b0);
+    accept_mem_and_respond(3'd0, 32'h0000_0080);
     expect_result(5'd8, 6'd20, 32'hffff_ff80, 1'b1, 1'b0, 1'b0);
     if (!lq_complete_valid_o || lq_complete_id_o != 3'd0 ||
         lq_complete_forwarded_o)
@@ -311,7 +309,7 @@ module tb_lsu_pipeline;
     sq_entries_i[0].data_valid = 1'b1;
     sq_entries_i[0].byte_enable = 4'b1111;
     wait_mem_request(3'd2, 32'h8000_0400);
-    accept_mem_and_respond(3'd2, 32'h1234_5678, 1'b0);
+    accept_mem_and_respond(3'd2, 32'h1234_5678);
     expect_result(5'd12, 6'd22, 32'h1234_5678, 1'b1, 1'b0, 1'b0);
     drain_result();
 
@@ -324,7 +322,7 @@ module tb_lsu_pipeline;
         lq_address_o != 32'h8000_0601)
       $fatal(1, "Unaligned Load address update mismatch");
     wait_mem_request(3'd3, 32'h8000_0601);
-    accept_mem_and_respond(3'd3, 32'h0000_8000, 1'b0);
+    accept_mem_and_respond(3'd3, 32'h0000_8000);
     expect_result(5'd13, 6'd23, 32'hffff_8000, 1'b1, 1'b0, 1'b0);
     if (!lq_complete_valid_o || lq_complete_id_o != 3'd3 ||
         lq_complete_forwarded_o)

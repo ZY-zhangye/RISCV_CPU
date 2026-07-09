@@ -142,7 +142,6 @@ module tb_backend_lsu_cluster;
       load_mem_resp_i.valid = 1'b1;
       load_mem_resp_i.lq_id = lq_id;
       load_mem_resp_i.data = data;
-      load_mem_resp_i.error = 1'b0;
       #1;
       if (!load_mem_resp_ready_o)
         $fatal(1, "backend did not accept load response");
