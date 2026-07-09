@@ -108,6 +108,7 @@ module backend_lsu_cluster #(
   logic [$clog2(IQ_MEM_ENTRIES)-1:0] unused_mem_slot1;
   logic [1:0] mem_issue_grant;
   logic [1:0] mem_issue_allowed;
+  logic [1:0] mem_candidate_reselect_q;
 
   logic [2:0] issue_valid;
   issue_port_t issue_port0;
@@ -337,6 +338,13 @@ module backend_lsu_cluster #(
     if (mem_candidate_valid[1] &&
         load_waits_for_older_store(mem_candidate_uop1))
       mem_issue_allowed[1] = 1'b0;
+  end
+
+  always_ff @(posedge clk_i) begin : mem_reselect_timing_slice
+    if (rst_i || recovery_o.valid)
+      mem_candidate_reselect_q <= '0;
+    else
+      mem_candidate_reselect_q <= mem_candidate_valid & ~mem_issue_allowed;
   end
 
   always_comb begin
@@ -569,7 +577,7 @@ module backend_lsu_cluster #(
       .candidate_slot1_o(unused_mem_slot1),
       .candidate_slot2_o(),
       .issue_grant_i(mem_issue_grant),
-      .candidate_reselect_i(mem_candidate_valid & ~mem_issue_allowed),
+      .candidate_reselect_i(mem_candidate_reselect_q),
       .checkpoint_clear_i(checkpoint_clear_valid_o),
       .checkpoint_clear_id_i(checkpoint_clear_id_o),
       .recovery_i(recovery_o),
