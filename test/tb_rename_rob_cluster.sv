@@ -33,6 +33,7 @@ module tb_rename_rob_cluster;
   logic [1:0][SQ_ID_W-1:0] sq_release_id_i = '0;
 
   logic [1:0] rob_head_valid_o;
+  logic [ROB_ID_W-1:0] rob_head_id_o;
   rob_entry_t rob_head0_o;
   rob_entry_t rob_head1_o;
   logic [1:0] retire_count_i = '0;

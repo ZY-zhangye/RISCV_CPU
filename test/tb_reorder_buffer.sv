@@ -15,6 +15,7 @@ module tb_reorder_buffer;
   completion_t complete1_i = '0;
 
   logic [1:0] head_valid_o;
+  logic [ROB_ID_W-1:0] head_rob_id_o;
   rob_entry_t head_entry0_o;
   rob_entry_t head_entry1_o;
   logic [1:0] retire_count_i = 2'd0;
