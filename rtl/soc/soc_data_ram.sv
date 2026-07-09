@@ -110,6 +110,28 @@ module soc_data_ram #(
     end
   endfunction
 
+  function automatic logic [WORD_INDEX_W-1:0] routed_word_index(
+      input logic [XLEN-1:0] addr
+  );
+    begin
+      if (TRUST_ROUTED_ADDR)
+        routed_word_index = addr[WORD_INDEX_W+1:2];
+      else
+        routed_word_index = word_index(addr);
+    end
+  endfunction
+
+  function automatic logic [1:0] routed_byte_lane(
+      input logic [XLEN-1:0] addr
+  );
+    begin
+      if (TRUST_ROUTED_ADDR)
+        routed_byte_lane = addr[1:0];
+      else
+        routed_byte_lane = byte_lane(addr);
+    end
+  endfunction
+
   function automatic logic byte_window_in_range(
       input logic [XLEN-1:0] address,
       input logic [3:0] mask
@@ -123,8 +145,10 @@ module soc_data_ram #(
     end
   endfunction
 
-  assign load_hit = load_req_i.valid &&
-                    byte_window_in_range(load_req_i.address, 4'b1111);
+  assign load_hit = TRUST_ROUTED_ADDR ?
+                    load_req_i.valid :
+                    (load_req_i.valid &&
+                     byte_window_in_range(load_req_i.address, 4'b1111));
   assign store_hit = store_req_i.valid &&
                      byte_window_in_range(store_req_i.address,
                                           store_req_i.byte_enable);
@@ -145,11 +169,11 @@ module soc_data_ram #(
   // Keep BRAM read enable independent of the address range comparator.
   assign ram_read_fire = load_fire;
 
-  assign load_base_index = word_index(load_req_i.address);
-  assign store_base_index = word_index(store_req_i.address);
+  assign load_base_index = routed_word_index(load_req_i.address);
+  assign store_base_index = routed_word_index(store_req_i.address);
   assign init_base_index = word_index(init_write_addr_i);
-  assign load_base_lane = byte_lane(load_req_i.address);
-  assign store_base_lane = byte_lane(store_req_i.address);
+  assign load_base_lane = routed_byte_lane(load_req_i.address);
+  assign store_base_lane = routed_byte_lane(store_req_i.address);
 `ifdef SYNTHESIS
   assign load_read_index_b0 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd0);
   assign load_read_index_b1 = load_base_index + WORD_INDEX_W'(load_base_lane > 2'd1);

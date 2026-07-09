@@ -134,7 +134,9 @@ module soc_addr_router #(
                        held_resp_valid_q;
 
   always_comb begin
-    ram_load_req_o = '0;
+    // Keep RAM payload independent of window-valid control; valid gates use.
+    ram_load_req_o = core_load_req_i;
+    ram_load_req_o.valid = 1'b0;
     ram_store_req_o = ram_store_req_q;
     ram_store_req_o.valid = ram_store_req_valid_q;
     core_load_req_ready_o = 1'b0;
@@ -144,7 +146,7 @@ module soc_addr_router #(
     core_load_resp_o = held_resp_valid_q ? held_resp_q : ram_load_resp_i;
 
     if (core_load_is_ram && !block_ram_load) begin
-      ram_load_req_o = core_load_req_i;
+      ram_load_req_o.valid = 1'b1;
       core_load_req_ready_o = ram_load_req_ready_i && !held_resp_valid_q;
     end else if (core_load_is_mmio) begin
       core_load_req_ready_o = take_mmio_load && !block_ram_load;
