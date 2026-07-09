@@ -221,6 +221,25 @@ module issue_arbiter (
     end
   endfunction
 
+  function automatic logic has_second(input logic [3:0] mask);
+    begin
+      has_second =
+          (mask[0] && (mask[1] || mask[2] || mask[3])) ||
+          (mask[1] && (mask[2] || mask[3])) ||
+          (mask[2] && mask[3]);
+    end
+  endfunction
+
+  function automatic logic has_third(input logic [3:0] mask);
+    begin
+      has_third =
+          (mask[0] && mask[1] && mask[2]) ||
+          (mask[0] && mask[1] && mask[3]) ||
+          (mask[0] && mask[2] && mask[3]) ||
+          (mask[1] && mask[2] && mask[3]);
+    end
+  endfunction
+
   function automatic issue_uop_t selected_uop(input logic [1:0] index);
     begin
       case (index)
@@ -457,6 +476,9 @@ module issue_arbiter (
     logic [1:0] slot0_index;
     logic [1:0] slot1_index;
     logic [1:0] slot2_index;
+    logic slot0_present;
+    logic slot1_present;
+    logic slot2_present;
     logic [2:0] int_live_valid;
     logic [1:0] mem_live_valid;
     logic mdu_live_valid;
@@ -473,6 +495,22 @@ module issue_arbiter (
       issue_port_d[idx] = ISSUE_INT0;
       issue_uop_d[idx] = '0;
     end
+
+    // Payload packing is driven only by the registered P1 selection mask.
+    // Live P2 revalidation may clear a slot's valid bit, leaving a harmless
+    // bubble, but it must not steer the wide issue_uop output mux.
+    slot0_index = first_index(selected_valid_q);
+    slot1_index = second_index(selected_valid_q);
+    slot2_index = third_index(selected_valid_q);
+    slot0_present = |selected_valid_q;
+    slot1_present = has_second(selected_valid_q);
+    slot2_present = has_third(selected_valid_q);
+    issue_uop_d[0] = selected_uop(slot0_index);
+    issue_uop_d[1] = selected_uop(slot1_index);
+    issue_uop_d[2] = selected_uop(slot2_index);
+    issue_port_d[0] = selected_port(slot0_index);
+    issue_port_d[1] = selected_port(slot1_index);
+    issue_port_d[2] = selected_port(slot2_index);
 
     if (!rst_i && !recovery_i.valid && !issue_block_i) begin
       for (idx = 0; idx < PROPOSALS; idx = idx + 1) begin
@@ -520,28 +558,13 @@ module issue_arbiter (
           (fire[2] && selected_mdu_group_q[2]) ||
           (fire[3] && selected_mdu_group_q[3]);
 
-      // 统计最终发射条数与优先级索引排序
-      issue_valid_d[0] = |fire;
-      issue_valid_d[1] = (fire[0] && fire[1]) ||
-                         (fire[0] && fire[2]) ||
-                         (fire[0] && fire[3]) ||
-                         (fire[1] && fire[2]) ||
-                         (fire[1] && fire[3]) ||
-                         (fire[2] && fire[3]);
-      issue_valid_d[2] = (fire[0] && fire[1] && fire[2]) ||
-                         (fire[0] && fire[1] && fire[3]) ||
-                         (fire[0] && fire[2] && fire[3]) ||
-                         (fire[1] && fire[2] && fire[3]);
-
-      slot0_index = first_index(fire);
-      slot1_index = second_index(fire);
-      slot2_index = third_index(fire);
-      issue_uop_d[0] = selected_uop(slot0_index);
-      issue_uop_d[1] = selected_uop(slot1_index);
-      issue_uop_d[2] = selected_uop(slot2_index);
-      issue_port_d[0] = selected_port(slot0_index);
-      issue_port_d[1] = selected_port(slot1_index);
-      issue_port_d[2] = selected_port(slot2_index);
+      // The visible valid bits follow the registered packing order above.
+      // If an earlier proposal fails live validation while a later one fires,
+      // the issue vector may contain a bubble; operand_read consumes each
+      // slot independently.
+      issue_valid_d[0] = slot0_present && fire[slot0_index];
+      issue_valid_d[1] = slot1_present && fire[slot1_index];
+      issue_valid_d[2] = slot2_present && fire[slot2_index];
     end
   end
 
