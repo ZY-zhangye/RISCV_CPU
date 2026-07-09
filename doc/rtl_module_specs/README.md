@@ -49,4 +49,8 @@
 | Branch Checkpoint | 4 |
 | 目标频率 | 200 MHz |
 
+当前完整 Vivado route 基线：5.000 ns 主时钟下 setup WNS `+0.027 ns`、hold WHS
+`+0.061 ns`；Questa 官方支持回归 `51/51 PASS`；JYD2025 COE smoke 输出
+`LED=0x0002_0001`，SEG 原始 32 位值 `0x3780_0000`。
+
 空目录不会被 Git 记录；本目录中的规格文件从现在开始构成重构版本的设计基线。

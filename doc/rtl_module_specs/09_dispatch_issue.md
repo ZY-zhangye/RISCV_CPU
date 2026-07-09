@@ -47,8 +47,18 @@ Integer IQ 12 项分 3 组，每组 4 项：
 2. 候选寄存。
 3. 全局 issue_arbiter 从三个候选中最多选两个。
 
-Memory IQ 8 项可分 2 组；MDU IQ 4 项单组。年龄使用 ROB 环形年龄函数，不使用完整年龄
-矩阵。候选只携带 RR 所需字段。
+Memory IQ 8 项可分 2 组；MDU IQ 4 项单组。年龄使用以当前 ROB head 为参考点的环形
+年龄函数，不使用完整年龄矩阵。候选只携带 RR 所需字段。
+
+ROB 年龄比较契约：
+
+- `candidate_distance = candidate_rob_id - rob_head_id`。
+- `reference_distance = reference_rob_id - rob_head_id`。
+- `candidate` 比 `reference` 更老，当且仅当二者不相等且 `candidate_distance < reference_distance`。
+
+不要只用 `reference - candidate` 的符号位判断 older。ROB ID wrap 后，这种局部差值会在
+MEM IQ 中把年轻 Load 排到更老 Store 前面；如果 Store 地址还没有写入 SQ，Load 可能错误
+越过 Store，表现为后续访存值异常或 retire 观察口像是停在某条 Load 附近。
 
 ### 4.1 当前 RTL 实现状态
 
@@ -193,3 +203,4 @@ mask 位。恢复事件优先于 push、wakeup 和 issue。
 - 发射项在周期末从 IQ 清除一次。
 - 每 Bank 源读计数不超 3。
 - 被 kill 的项不得出现在下一周期 RR。
+- ROB 年龄比较必须随 `rob_head_id` wrap 后仍保持 oldest 顺序。

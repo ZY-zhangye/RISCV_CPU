@@ -11,6 +11,7 @@ module tb_lsu_pipeline;
   execute_uop_t issue_uop_i = '0;
 
   store_queue_entry_t sq_entries_i [0:SQ_ENTRIES-1];
+  logic [ROB_ID_W-1:0] rob_head_id_i = '0;
 
   logic lq_address_valid_o;
   logic lq_address_ready_i = 1'b1;

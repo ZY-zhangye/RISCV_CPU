@@ -179,6 +179,7 @@ module backend_lsu_cluster #(
   logic [1:0][PRD_W-1:0] ready_wakeup_prd;
   logic [1:0] rob_complete_valid;
   completion_t rob_complete [0:1];
+  logic [ROB_ID_W-1:0] rob_head_id;
 
   logic [2:0] db_occupancy;
   logic db_empty;
@@ -297,15 +298,19 @@ module backend_lsu_cluster #(
       input logic [ROB_ID_W-1:0] candidate,
       input logic [ROB_ID_W-1:0] reference
   );
-    logic [ROB_ID_W-1:0] distance;
+    logic [ROB_ID_W-1:0] candidate_distance;
+    logic [ROB_ID_W-1:0] reference_distance;
     begin
-      distance = reference - candidate;
-      rob_id_is_older = (distance != '0) && !distance[ROB_ID_W-1];
+      candidate_distance = candidate - rob_head_id;
+      reference_distance = reference - rob_head_id;
+      rob_id_is_older = (candidate != reference) &&
+                        (candidate_distance < reference_distance);
     end
   endfunction
 
   function automatic logic load_waits_for_older_store(input issue_uop_t uop);
     integer sq_idx;
+    integer lane;
     begin
       load_waits_for_older_store = 1'b0;
       if (uop.is_load) begin
@@ -313,6 +318,11 @@ module backend_lsu_cluster #(
           if (sq_entries[sq_idx].valid &&
               rob_id_is_older(sq_entries[sq_idx].rob_id, uop.rob_id) &&
               !sq_entries[sq_idx].address_valid)
+            load_waits_for_older_store = 1'b1;
+        end
+        for (lane = 0; lane < 2; lane = lane + 1) begin
+          if (sq_alloc_valid_q[lane] &&
+              rob_id_is_older(sq_alloc_rob_id_q[lane], uop.rob_id))
             load_waits_for_older_store = 1'b1;
         end
       end
@@ -460,6 +470,7 @@ module backend_lsu_cluster #(
       .lq_retire_valid_o(lq_retire_valid),
       .lq_retire_id_o(lq_retire_id),
       .retire_count_o,
+      .rob_head_id_o(rob_head_id),
       .rob_occupancy_o,
       .rob_empty_o,
       .rob_full_o,
@@ -518,6 +529,7 @@ module backend_lsu_cluster #(
       .wb_valid_i(wakeup_valid),
       .wb_prd_i(wakeup_prd),
       .prf_ready_bits_i(prf_ready_bits_o),
+      .rob_head_id_i(rob_head_id),
       .candidate_valid_o(int_candidate_valid),
       .candidate_uop0_o(int_candidate_uop0),
       .candidate_uop1_o(int_candidate_uop1),
@@ -548,6 +560,7 @@ module backend_lsu_cluster #(
       .wb_valid_i(wakeup_valid),
       .wb_prd_i(wakeup_prd),
       .prf_ready_bits_i(prf_ready_bits_o),
+      .rob_head_id_i(rob_head_id),
       .candidate_valid_o(mem_candidate_valid),
       .candidate_uop0_o(mem_candidate_uop0),
       .candidate_uop1_o(mem_candidate_uop1),
@@ -671,6 +684,7 @@ module backend_lsu_cluster #(
       .issue_ready_o(lsu_ex_ready),
       .issue_uop_i(lsu_ex_uop),
       .sq_entries_i(sq_entries),
+      .rob_head_id_i(rob_head_id),
       .lq_address_valid_o(lq_address_valid),
       .lq_address_ready_i(lq_address_ready),
       .lq_address_id_o(lq_address_id),

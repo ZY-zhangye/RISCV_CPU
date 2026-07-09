@@ -117,6 +117,16 @@ Load 只有满足以下条件才离开 Memory IQ：
 第一版按访问字节范围判断冲突。若部分字节由 Store 覆盖而其余来自 RAM，V1 直接等待
 Store 提交，不实现数据合并。
 
+更老 Store 的判断必须覆盖两类来源：
+
+- Store Queue 中已经分配、尚未提交释放的有效 entry。
+- 与当前周期同拍分配、尚未写入 SQ entry array 的 Store allocation lane。
+
+年龄比较必须以当前 ROB head 为参考点，而不是只比较两个 ROB ID 的局部差值。ROB ID
+发生 wrap 时，局部差值会把 younger Load 误判为 older，导致 Load 发射时看不到真正更老
+的 Store。若 Store address/data 与 Load 发射同周期交错，这会造成波形上某个 Load PC
+后续长期无预期写回或 DRAM 值异常。
+
 ## 7. Store 提交
 
 commit_unit 指示 head Store 后，SQ 检查 address_valid、data_valid、无异常。满足时写入
@@ -138,6 +148,7 @@ Store Commit Buffer 的项必为已确认 ROB head，不会被分支恢复杀死
 
 - 未提交 Store 不产生 dmem write。
 - Load 不越过地址未知的更老 Store。
+- Load 不越过同周期刚分配但尚未写入 SQ entry array 的更老 Store。
 - forwarding 总是选择最近的更老匹配 Store。
 - 一个 lq_id/sq_id 在释放前不重复分配。
 - 被 kill 或异常的请求不进入 Memory。

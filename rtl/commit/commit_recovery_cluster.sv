@@ -58,6 +58,7 @@ module commit_recovery_cluster #(
     output logic [1:0][LQ_ID_W-1:0]      lq_retire_id_o,
 
     output logic [1:0]                   retire_count_o,
+    output logic [ROB_ID_W-1:0]          rob_head_id_o,
     output logic [5:0]                   rob_occupancy_o,
     output logic                         rob_empty_o,
     output logic                         rob_full_o,
@@ -299,6 +300,7 @@ module commit_recovery_cluster #(
       .sq_release_valid_i,
       .sq_release_id_i,
       .rob_head_valid_o(rob_head_valid),
+      .rob_head_id_o,
       .rob_head0_o(rob_head0),
       .rob_head1_o(rob_head1),
       .retire_count_i(retire_count_o),

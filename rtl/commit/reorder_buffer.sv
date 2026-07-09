@@ -32,6 +32,7 @@ module reorder_buffer (
 
     // 提交级 (Commit) 接口
     output logic [1:0]               head_valid_o,      // ROB 头指针两路 valid 指示
+    output logic [ROB_ID_W-1:0]      head_rob_id_o,     // 当前 ROB head ID
     output rob_entry_t               head_entry0_o,     // ROB 头指针 lane0 完整条目 (已锁存输出)
     output rob_entry_t               head_entry1_o,     // ROB 头指针 lane1 完整条目 (已锁存输出)
     input  logic [1:0]               retire_count_i,    // Commit 阶段退休指令数 (0/1/2)
@@ -341,6 +342,7 @@ module reorder_buffer (
 
   assign head_valid_o[0] = head_entry0_q.valid;
   assign head_valid_o[1] = head_entry1_q.valid;
+  assign head_rob_id_o = make_rob_id(head_row_q, head_bank_q);
   assign head_entry0_o = head_entry0_q;
   assign head_entry1_o = head_entry1_q;
 

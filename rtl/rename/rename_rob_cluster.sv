@@ -38,6 +38,7 @@ module rename_rob_cluster (
     input  logic [1:0][SQ_ID_W-1:0]      sq_release_id_i,
 
     output logic [1:0]                   rob_head_valid_o,
+    output logic [ROB_ID_W-1:0]          rob_head_id_o,
     output rob_entry_t                   rob_head0_o,
     output rob_entry_t                   rob_head1_o,
     input  logic [1:0]                   retire_count_i,
@@ -287,6 +288,7 @@ module rename_rob_cluster (
       .complete0_i,
       .complete1_i,
       .head_valid_o(rob_head_valid_o),
+      .head_rob_id_o(rob_head_id_o),
       .head_entry0_o(rob_head0_o),
       .head_entry1_o(rob_head1_o),
       .retire_count_i,

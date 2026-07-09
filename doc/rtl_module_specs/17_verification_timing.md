@@ -49,6 +49,44 @@
 后的时序为准，要求 setup WNS 与 hold WHS 均不小于 0，并且不存在 unconstrained path。
 仅有 RTL 仿真、综合估算或同器件其他工程达到 200 MHz，均不能作为本核达标证据。
 
+### 5.0 当前通过基线（2026-07-09）
+
+当前主线完整 Vivado route 后时序已经达标：
+
+| 项目 | 结果 |
+|---|---:|
+| Setup WNS | `+0.027 ns` |
+| Hold WHS | `+0.061 ns` |
+
+功能基线：
+
+- 官方支持回归：`51/51 PASS`。
+  - RV32UI：所有 `rv32ui-p-*`，排除 `rv32ui-p-fence_i`。
+  - RV32UM：8/8。
+  - RV32MI：`rv32mi-p-csr`、`rv32mi-p-mcsr`。
+- JYD2025 COE smoke：`tb_soc_withmext_coe` 运行 20000 cycle PASS。
+  - `LED = 0x0002_0001`。
+  - `seg_o` 是扫描后的 10 位一组轮换显示值，会出现两种扫描相位输出。
+  - 以 MMIO 可直接访问的译码前 32 位 SEG 数据为准，正确值为 `0x3780_0000`。
+
+本轮教训和后续 Vivado timing fix 约束：
+
+- 不要让 raw recovery/checkpoint 请求直接参与 ROB 宽状态阵列更新选择。`exception_flush_i`、
+  `restore_valid_i`、`branch_clear_valid_i` 只能先进入小的本地 pending 寄存器，ROB
+  array mutation 只能由 registered local state 控制。
+- 对 `valid_q == 0` 的 ROB/IQ/LSQ payload，不要为了清零美观引入同步 reset 或 recovery
+  清 payload 的宽 fanout；架构可见性由 valid/complete 控制。
+- Memory IQ 与 LSU 的 ROB 年龄判断必须以当前 ROB head 为参考点。ROB ID wrap 后，简单
+  `reference - candidate` 的 older 判断会把年轻 Load 排到更老 Store 前面，导致 Store
+  地址尚未产生时 Load 先执行，进而表现为 PC 停住或访存结果异常。
+- Issue Arbiter 的 candidate/proposal/ready 反馈路径已经多次作为集成关键路径暴露。
+  后续若完整 route 又失败，优先根据最新 timing report 定点切 snapshot 或 fanout；
+  不要先改实现策略、不要扩大组合 oldest 矩阵。
+- CSR 写回监视要读 commit-side CSR old-value 结果。CSR retire 同拍直接读 PRF 会看到
+  PRF commit buffer 生效前的旧值，这是观测错误，不是 RTL 功能错误。
+- 只看 WB monitor 时，Store、Branch、Jump 等无 GPR 写回指令不会出现。调试“PC 停住”
+  必须同时看 retire head、DRAM/SQ 端口和控制流指令上下文。
+
 | 模块路径 | 最低目标 |
 |---|---:|
 | RAT + lane dependency | 250 MHz |

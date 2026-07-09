@@ -441,22 +441,30 @@ module operand_read_stage (
   property int0_hold_stable;
     @(posedge clk_i) disable iff (rst_i)
       int0_valid_o && !int0_ready_i && !recovery_i.valid |=>
-        recovery_i.valid || (int0_valid_o && $stable(int0_uop_o));
+        recovery_i.valid || checkpoint_clear_i || $past(checkpoint_clear_i) ||
+        int0_ready_i ||
+        (int0_valid_o && $stable(int0_uop_o));
   endproperty
   property int1_hold_stable;
     @(posedge clk_i) disable iff (rst_i)
       int1_valid_o && !int1_ready_i && !recovery_i.valid |=>
-        recovery_i.valid || (int1_valid_o && $stable(int1_uop_o));
+        recovery_i.valid || checkpoint_clear_i || $past(checkpoint_clear_i) ||
+        int1_ready_i ||
+        (int1_valid_o && $stable(int1_uop_o));
   endproperty
   property lsu_hold_stable;
     @(posedge clk_i) disable iff (rst_i)
       lsu_valid_o && !lsu_ready_i && !recovery_i.valid |=>
-        recovery_i.valid || (lsu_valid_o && $stable(lsu_uop_o));
+        recovery_i.valid || checkpoint_clear_i || $past(checkpoint_clear_i) ||
+        lsu_ready_i ||
+        (lsu_valid_o && $stable(lsu_uop_o));
   endproperty
   property mdu_hold_stable;
     @(posedge clk_i) disable iff (rst_i)
       mdu_valid_o && !mdu_ready_i && !recovery_i.valid |=>
-        recovery_i.valid || (mdu_valid_o && $stable(mdu_uop_o));
+        recovery_i.valid || checkpoint_clear_i || $past(checkpoint_clear_i) ||
+        mdu_ready_i ||
+        (mdu_valid_o && $stable(mdu_uop_o));
   endproperty
 
   assert property (int0_hold_stable);

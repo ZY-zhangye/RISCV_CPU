@@ -22,6 +22,7 @@ module lsu_pipeline (
     input  execute_uop_t               issue_uop_i,
 
     input  store_queue_entry_t         sq_entries_i [0:SQ_ENTRIES-1],
+    input  logic [ROB_ID_W-1:0]        rob_head_id_i,
 
     output logic                       lq_address_valid_o,
     input  logic                       lq_address_ready_i,
@@ -186,10 +187,13 @@ module lsu_pipeline (
       input logic [ROB_ID_W-1:0] candidate,
       input logic [ROB_ID_W-1:0] reference
   );
-    logic [ROB_ID_W-1:0] distance;
+    logic [ROB_ID_W-1:0] candidate_distance;
+    logic [ROB_ID_W-1:0] reference_distance;
     begin
-      distance = rob_distance(candidate, reference);
-      rob_is_older = (distance != '0) && !distance[ROB_ID_W-1];
+      candidate_distance = candidate - rob_head_id_i;
+      reference_distance = reference - rob_head_id_i;
+      rob_is_older = (candidate != reference) &&
+                     (candidate_distance < reference_distance);
     end
   endfunction
 

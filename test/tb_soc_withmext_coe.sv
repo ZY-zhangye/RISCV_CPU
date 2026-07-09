@@ -80,6 +80,10 @@ module tb_soc_withmext_coe;
   // Waveform monitor window for board outputs.
   (* keep = "true" *) logic [31:0] led_monitor;
   (* keep = "true" *) logic [39:0] seg_monitor;
+  (* keep = "true" *) logic [1:0] wb_monitor_valid;
+  (* keep = "true" *) logic [1:0][XLEN-1:0] wb_monitor_pc;
+  (* keep = "true" *) logic [1:0][4:0] wb_monitor_rd;
+  (* keep = "true" *) logic [1:0][XLEN-1:0] wb_monitor_data;
   logic [31:0] led_prev_q;
   logic [39:0] seg_prev_q;
   int unsigned cycle_count;
@@ -92,6 +96,79 @@ module tb_soc_withmext_coe;
       .DMEM_INIT_FILE(DMEM_INIT),
       .POWER_ON_RESET_CYCLES(8)
   ) dut (.*);
+
+  function automatic logic [XLEN-1:0] read_prf_data(
+      input logic [PRD_W-1:0] prd
+  );
+    logic [PRD_W-2:0] bank_index;
+    begin
+      bank_index = prd[PRD_W-1:1];
+      if (prd == '0) begin
+        read_prf_data = '0;
+      end else if (prd[0]) begin
+        read_prf_data =
+            dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+               .u_commit_prf.u_prf.bank1_copy0[bank_index];
+      end else begin
+        read_prf_data =
+            dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+               .u_commit_prf.u_prf.bank0_copy0[bank_index];
+      end
+    end
+  endfunction
+
+  function automatic logic [XLEN-1:0] retire_wb_data(
+      input rob_entry_t entry
+  );
+    begin
+      if (entry.entry.is_csr) begin
+        retire_wb_data =
+            dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+               .u_commit_prf.u_commit_csr.csr_rdata;
+      end else begin
+        retire_wb_data = read_prf_data(entry.entry.new_prd);
+      end
+    end
+  endfunction
+
+  always_comb begin
+    wb_monitor_valid = '0;
+    wb_monitor_pc = '0;
+    wb_monitor_rd = '0;
+    wb_monitor_data = '0;
+
+    if (retire_count_o != 2'd0) begin
+      wb_monitor_pc[0] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head0.entry.pc;
+      wb_monitor_rd[0] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head0.entry.arch_rd;
+      wb_monitor_data[0] = retire_wb_data(
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery.rob_head0);
+      wb_monitor_valid[0] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head0.entry.write_rd &&
+          (dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head0.entry.arch_rd != 5'd0);
+    end
+
+    if (retire_count_o == 2'd2) begin
+      wb_monitor_pc[1] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head1.entry.pc;
+      wb_monitor_rd[1] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head1.entry.arch_rd;
+      wb_monitor_data[1] = retire_wb_data(
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery.rob_head1);
+      wb_monitor_valid[1] =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head1.entry.write_rd &&
+          (dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+             .rob_head1.entry.arch_rd != 5'd0);
+    end
+  end
 
   always #5 clk_i = ~clk_i;
   always #10 clk_cnt_i = ~clk_cnt_i;
@@ -124,6 +201,99 @@ module tb_soc_withmext_coe;
       if (seg_monitor !== seg_prev_q) begin
         $display("MONITOR_SEG cycle=%0d seg=%010h", cycle_count, seg_monitor);
         seg_prev_q <= seg_monitor;
+      end
+      for (int lane = 0; lane < 2; lane = lane + 1) begin
+        if (wb_monitor_valid[lane]) begin
+          $display("MONITOR_WB cycle=%0d lane=%0d pc=%08h rd=x%0d data=%08h",
+                   cycle_count, lane, wb_monitor_pc[lane],
+                   wb_monitor_rd[lane], wb_monitor_data[lane]);
+        end
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_i && $test$plusargs("CSR_TRACE")) begin
+      automatic rob_entry_t trace_head0 =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery.rob_head0;
+      automatic rob_entry_t trace_head1 =
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery.rob_head1;
+
+      if (dut.u_core.u_core_cluster.u_backend.int0_ex_valid &&
+          dut.u_core.u_core_cluster.u_backend.int0_ex_ready &&
+          (dut.u_core.u_core_cluster.u_backend.int0_ex_uop.fu_type == FU_CSR)) begin
+        $display("TRACE_CSR_EX cycle=%0d pc=%08h rob=%0d csr=%03h op=%0d src1=%08h zimm=%0d rd_prd=%0d",
+                 cycle_count,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.pc,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.rob_id,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.csr_addr,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.csr_op,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.src1,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.csr_zimm,
+                 dut.u_core.u_core_cluster.u_backend.int0_ex_uop.prd);
+      end
+
+      if (dut.u_core.u_core_cluster.u_backend.int0_result_valid &&
+          dut.u_core.u_core_cluster.u_backend.int0_result.valid &&
+          (dut.u_core.u_core_cluster.u_backend.int0_result.write_prf == 1'b0)) begin
+        $display("TRACE_INT0_COMPLETE cycle=%0d rob=%0d data=%08h branch_mask=%b",
+                 cycle_count,
+                 dut.u_core.u_core_cluster.u_backend.int0_result.rob_id,
+                 dut.u_core.u_core_cluster.u_backend.int0_result.data,
+                 dut.u_core.u_core_cluster.u_backend.int0_result.branch_mask);
+      end
+
+      if ((retire_count_o != 2'd0) &&
+          (((trace_head0.entry.pc >= 32'h8000_020c) &&
+            (trace_head0.entry.pc <= 32'h8000_0490)) ||
+           ((trace_head0.entry.pc >= 32'h8000_2170) &&
+            (trace_head0.entry.pc <= 32'h8000_22a0)) ||
+           ((trace_head0.entry.pc >= 32'h8000_0140) &&
+            (trace_head0.entry.pc <= 32'h8000_0160)))) begin
+        $display("TRACE_RET cycle=%0d retire=%0d h0[v=%0b c=%0b pc=%08h csr=%0b addr=%03h op=%0d operand=%08h rd=x%0d prd=%0d] h1[v=%0b c=%0b pc=%08h]",
+                 cycle_count, retire_count_o,
+                 trace_head0.valid, trace_head0.complete,
+                 trace_head0.entry.pc, trace_head0.entry.is_csr,
+                 trace_head0.entry.csr_addr, trace_head0.entry.csr_op,
+                 trace_head0.entry.csr_operand,
+                 trace_head0.entry.arch_rd, trace_head0.entry.new_prd,
+                 trace_head1.valid, trace_head1.complete,
+                 trace_head1.entry.pc);
+      end
+
+      if (dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+              .u_commit_prf.u_commit_csr.csr_command ||
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+              .u_commit_prf.u_commit_csr.special_exception ||
+          dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+              .u_commit_prf.u_commit_csr.mret_command) begin
+        $display("TRACE_CSR_COMMIT cycle=%0d pc=%08h csr_cmd=%0b addr=%03h op=%0d operand=%08h rdata=%08h illegal=%0b retire_raw=%0d recovery=%0b redirect=%08h mtvec=%08h mscratch=%08h mepc=%08h mcause=%08h",
+                 cycle_count, trace_head0.entry.pc,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.csr_command,
+                 trace_head0.entry.csr_addr, trace_head0.entry.csr_op,
+                 trace_head0.entry.csr_operand,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.csr_rdata,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.csr_illegal,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .retire_count_raw,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.recovery_o.valid,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.recovery_o.redirect_pc,
+                 mtvec_o,
+                 dut.u_core.u_core_cluster.u_backend.u_commit_recovery
+                    .u_commit_prf.u_commit_csr.u_csr_file.mscratch_q,
+                 mepc_o, mcause_o);
+      end
+
+      if (recovery_o.valid || redirect_valid_o) begin
+        $display("TRACE_REC cycle=%0d recovery=%0b cause=%0d redirect_req=%08h redirect_valid=%0b redirect_pc=%08h mtvec=%08h mepc=%08h mcause=%08h",
+                 cycle_count, recovery_o.valid, recovery_o.cause,
+                 recovery_o.redirect_pc, redirect_valid_o, redirect_pc_o,
+                 mtvec_o, mepc_o, mcause_o);
       end
     end
   end

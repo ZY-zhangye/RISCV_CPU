@@ -16,6 +16,7 @@ module tb_issue_queue;
   logic [1:0] wb_valid_i = 2'b00;
   logic [1:0][PRD_W-1:0] wb_prd_i = '0;
   logic [PHYS_REGS-1:0] prf_ready_bits_i = '0;
+  logic [ROB_ID_W-1:0] rob_head_id_i = '0;
 
   logic [GROUPS-1:0] candidate_valid_o;
   issue_uop_t candidate_uop0_o;

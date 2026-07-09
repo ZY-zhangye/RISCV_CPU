@@ -119,6 +119,7 @@ module backend_int_cluster #(
   logic [1:0][PRD_W-1:0] ready_wakeup_prd;
   logic [1:0] rob_complete_valid;
   completion_t rob_complete [0:1];
+  logic [ROB_ID_W-1:0] rob_head_id;
 
   logic [2:0] db_occupancy;
   logic db_empty;
@@ -189,6 +190,7 @@ module backend_int_cluster #(
       .lq_retire_valid_o(),
       .lq_retire_id_o(),
       .retire_count_o,
+      .rob_head_id_o(rob_head_id),
       .rob_occupancy_o,
       .rob_empty_o,
       .rob_full_o,
@@ -247,6 +249,7 @@ module backend_int_cluster #(
       .wb_valid_i(wakeup_valid),
       .wb_prd_i(wakeup_prd),
       .prf_ready_bits_i(prf_ready_bits_o),
+      .rob_head_id_i(rob_head_id),
       .candidate_valid_o(int_candidate_valid),
       .candidate_uop0_o(int_candidate_uop0),
       .candidate_uop1_o(int_candidate_uop1),

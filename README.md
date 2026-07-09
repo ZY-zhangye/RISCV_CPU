@@ -16,8 +16,7 @@ RISCV_CPU/
 ├─ LICENSE
 ├─ README.md
 ├─ doc/
-│  ├─ HANDOFF_2026-07-06.md
-│  ├─ HANDOFF_2026-07-07.md
+│  ├─ JYD2025_MIGRATION_GUIDE.md
 │  ├─ FPGA_OOO_ARCHITECTURE_PLAN.md
 │  ├─ fpga_implementation_review.md
 │  └─ rtl_module_specs/
@@ -55,6 +54,13 @@ RISCV_CPU/
 
 近期关键时序修复集中在 ROB recovery 路径：ROB 宽状态阵列不再由 raw recovery/checkpoint 请求直接选择更新路径，`exception_flush_i`、`restore_valid_i`、`branch_clear_valid_i` 只捕获到本地 pending 寄存器，数组可见性继续由 `valid_q` 控制。
 
+后续修 Vivado 时序时保持以下约束：
+
+- recovery/checkpoint 原始广播不要直接扇入 ROB/IQ/LSQ 的宽 payload 阵列更新选择；先进入本地 pending 或 snapshot 寄存器。
+- ROB 年龄比较必须以当前 ROB head 为参考点，尤其是 Memory IQ 选择和 Load 等待更老 Store 的判断；不能只用两个 ROB ID 的简单环形差值判断 older。
+- `valid_q == 0` 的 payload 必须视为架构不可见，时序修复不要为了“清干净”而恢复 payload 大规模同步清零。
+- 写回监视 CSR 指令时要使用 commit-side CSR read data；直接在 retire 同拍读 PRF 会看到旧值，容易误判。
+
 ## 验证状态
 
 QuestaSim 2024.1 当前基线：
@@ -66,6 +72,11 @@ QuestaSim 2024.1 当前基线：
   - RV32MI CSR：`rv32mi-p-csr`、`rv32mi-p-mcsr`
 - `vlog -sv -work questa_custom_instr_work -f test/soc_custom_instr.f`
 - 自定义 SoC 指令回归：`39/39 PASS`
+- JYD2025 COE boot smoke：
+  - `vlog -sv -work questa_coe_work -f test/soc_withmext_coe.f`
+  - `vsim -c -voptargs="+acc" -lib questa_coe_work tb_soc_withmext_coe -do "run -all; quit -f"`
+  - 当前结果：`PASS`，`LED = 0x0002_0001`
+  - 数码管扫描输出 `seg` 会在两组 5 位之间轮换；以 MMIO 可直接读写的译码前 32 位 SEG 数据为准，正确值为 `0x3780_0000`。
 
 `rv32ui-p-fence_i` 仍作为架构豁免项：该官方用例运行时修改 instruction memory，而当前最终 SoC 规则不允许运行时改 IMem。
 
@@ -96,7 +107,7 @@ vsim -c -quiet -work questa_custom_instr_work tb_soc_custom_instr -do "run -all;
 
 ## 文档
 
-模块规格与时序记录主要在 `doc/rtl_module_specs/` 下；跨轮次交接记录见 `doc/HANDOFF_2026-07-06.md` 和 `doc/HANDOFF_2026-07-07.md`。FPGA 实现原则和报告使用边界见 `doc/fpga_implementation_review.md`。
+模块规格与时序记录主要在 `doc/rtl_module_specs/` 下；JYD2025 板级移植见 `doc/JYD2025_MIGRATION_GUIDE.md`。FPGA 实现原则和报告使用边界见 `doc/fpga_implementation_review.md`。
 
 ## 许可证
 

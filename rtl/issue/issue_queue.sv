@@ -34,6 +34,7 @@ module issue_queue #(
     input  logic [1:0]              wb_valid_i,        // 两路写回总线有效位
     input  logic [1:0][PRD_W-1:0]   wb_prd_i,          // 两路写回物理寄存器号 (唤醒 Tag)
     input  logic [PHYS_REGS-1:0]    prf_ready_bits_i,  // PRF ready 位图，用于补偿错过的单周期 wakeup
+    input  logic [ROB_ID_W-1:0]      rob_head_id_i,     // 当前 ROB head，用于回绕安全的年龄比较
 
     // 全局发射候选 (Candidates) 输出端口
     output logic [GROUPS-1:0]       candidate_valid_o, // 发射候选有效指示
@@ -110,15 +111,18 @@ module issue_queue #(
                   ((valid == 2'b01) ? 2'd1 : 2'd0);
   endfunction
 
-  // 年龄判定函数：使用 ROB ID 的环回差值，判断指令 A 是否比 B 更老 (更老则拥有更高发射优先级)
+  // 年龄判定函数：以当前 ROB head 为参考，判断指令 A 是否比 B 更老。
+  // 直接比较 a/b 的环回差值在 ROB ID 跨过 0 时会把下一轮年轻指令判成更老。
   function automatic logic is_older(
       input logic [ROB_ID_W-1:0] a,
       input logic [ROB_ID_W-1:0] b
   );
-    logic [ROB_ID_W-1:0] diff;
+    logic [ROB_ID_W-1:0] a_distance;
+    logic [ROB_ID_W-1:0] b_distance;
     begin
-      diff = b - a;
-      is_older = (diff != '0) && !diff[ROB_ID_W-1];
+      a_distance = a - rob_head_id_i;
+      b_distance = b - rob_head_id_i;
+      is_older = (a != b) && (a_distance < b_distance);
     end
   endfunction
 
