@@ -23,6 +23,7 @@ module tb_soc_data_ram;
   logic init_write_error_o;
 
   soc_data_ram #(
+      .BASE_ADDR(32'h8010_0000),
       .MEM_BYTES(256)
   ) dut (.*);
 
@@ -122,10 +123,10 @@ module tb_soc_data_ram;
     if (!load_req_ready_o || !store_req_ready_o || load_resp_o.valid)
       $fatal(1, "reset state mismatch");
 
-    init_write(32'h8000_0000, 32'h1122_3344, 4'b1111);
-    init_write(32'h8000_0004, 32'haabb_ccdd, 4'b1111);
+    init_write(32'h8010_0000, 32'h1122_3344, 4'b1111);
+    init_write(32'h8010_0004, 32'haabb_ccdd, 4'b1111);
 
-    load_word(3'd1, 32'h8000_0000);
+    load_word(3'd1, 32'h8010_0000);
     expect_resp(3'd1, 32'h1122_3344, 1'b0);
 
     // Response must hold under core/router backpressure, and new loads must
@@ -143,8 +144,8 @@ module tb_soc_data_ram;
       $fatal(1, "load request did not reopen after response drain");
 
     // Byte store updates only selected lanes.
-    store_word(3'd2, 32'h8000_0000, 32'h0000_aa00, 4'b0010);
-    load_word(3'd2, 32'h8000_0000);
+    store_word(3'd2, 32'h8010_0000, 32'h0000_aa00, 4'b0010);
+    load_word(3'd2, 32'h8010_0000);
     expect_resp(3'd2, 32'h1122_aa44, 1'b0);
     drain_resp();
 
@@ -152,10 +153,10 @@ module tb_soc_data_ram;
     @(negedge clk_i);
     load_req_i.valid = 1'b1;
     load_req_i.lq_id = 3'd3;
-    load_req_i.address = 32'h8000_0004;
+    load_req_i.address = 32'h8010_0004;
     store_req_i.valid = 1'b1;
     store_req_i.sq_id = 3'd3;
-    store_req_i.address = 32'h8000_0008;
+    store_req_i.address = 32'h8010_0008;
     store_req_i.data = 32'h5566_7788;
     store_req_i.byte_enable = 4'b1111;
     #1;
@@ -166,17 +167,17 @@ module tb_soc_data_ram;
     store_req_i = '0;
     expect_resp(3'd3, 32'haabb_ccdd, 1'b0);
     drain_resp();
-    load_word(3'd4, 32'h8000_0008);
+    load_word(3'd4, 32'h8010_0008);
     expect_resp(3'd4, 32'h5566_7788, 1'b0);
     drain_resp();
 
-    load_word(3'd5, 32'h8000_0100);
+    load_word(3'd5, 32'h8010_0100);
     expect_resp(3'd5, 32'h0000_0000, 1'b1);
     drain_resp();
 
     @(negedge clk_i);
     init_write_valid_i = 1'b1;
-    init_write_addr_i = 32'h8000_0100;
+    init_write_addr_i = 32'h8010_0100;
     init_write_data_i = 32'hdead_beef;
     init_write_wstrb_i = 4'b1111;
     #1;

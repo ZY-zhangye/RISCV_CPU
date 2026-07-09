@@ -12,6 +12,7 @@ module tb_soc_custom_instr;
   localparam logic [31:0] NOP = 32'h0000_0013;
 
   logic clk_i = 1'b0;
+  logic clk_cnt_i = 1'b0;
   logic rst_i = 1'b1;
 
   logic ext_irq_i = 1'b0;
@@ -27,7 +28,10 @@ module tb_soc_custom_instr;
   logic periph_resp_valid_i = 1'b0;
   logic [XLEN-1:0] periph_resp_rdata_i = '0;
   logic periph_resp_error_i = 1'b0;
-  logic [7:0] led_o;
+  logic [63:0] sw_i = '0;
+  logic [7:0] key_i = '0;
+  logic [31:0] led_o;
+  logic [39:0] seg_o;
 
   logic imem_init_write_valid_i = 1'b0;
   logic [XLEN-1:0] imem_init_write_addr_i = '0;
@@ -96,13 +100,16 @@ module tb_soc_custom_instr;
 
   soc_top #(
       .RESET_MTVEC(IMAGE_BASE),
+      .IROM_BASE(IMAGE_BASE),
+      .IROM_BYTES(RAM_BYTES),
       .RAM_BASE(IMAGE_BASE),
       .RAM_BYTES(RAM_BYTES),
-      .MMIO_BYTES(4096),
+      .MMIO_BYTES(256),
       .POWER_ON_RESET_CYCLES(2)
   ) dut (.*);
 
   always #5 clk_i = ~clk_i;
+  always #5 clk_cnt_i = ~clk_cnt_i;
 
   function automatic logic [31:0] enc_r(
       input logic [6:0] funct7,
@@ -764,7 +771,7 @@ module tb_soc_custom_instr;
       repeat (2) tick();
       if (expect_redirect && !seen_redirect)
         fail("missing_redirect");
-      if (led_o != 8'h00)
+      if (led_o != 32'h0000_0000)
         fail("unexpected_led_state");
       passed_cases++;
       $display("CUSTOM_TEST PASS name=%s cycles=%0d", case_name, cycles);

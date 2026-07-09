@@ -25,8 +25,13 @@ SoC wrapper 内引入复杂总线协议。
 - 实例化 instruction ROM/RAM wrapper。
 - 实例化 data RAM wrapper。
 - 实例化简单地址路由器 `soc_addr_router`。
-- 预留 MMIO 外设端口和中断汇总。
+- 接入 JYD2025 板级 SW/KEY/SEG/LED/CNT 本地 MMIO 外设。
+- 预留外部 MMIO 透传端口和中断汇总。
 - 后续按地址窗口接入 UART、GPIO、Timer、CLINT-like software interrupt 等外设。
+
+JYD2025 Vivado 工程侧使用 `rtl/soc/my_cpu.sv` 作为板级包装层。`my_cpu` 保持参考工程
+端口签名：`clk`、`clk_cnt`、低有效 `rst_n`、`led[31:0]`、`key[7:0]`、
+`sw[63:0]`、`seg[39:0]`。
 
 ### 1.3 外设模块
 
@@ -54,17 +59,17 @@ V1 采用固定地址窗口和简单高位译码。地址未命中返回 bus err
 
 | 地址范围 | 大小 | 目标 | 说明 |
 |---|---:|---|---|
-| `0x0000_0000` - `0x0000_FFFF` | 64 KiB | Boot ROM / IROM alias | 可选启动 ROM |
-| `0x1000_0000` - `0x1000_0003` | 4 B | LED | 当前实现 |
-| `0x1000_0004` - `0x1000_0FFF` | 4092 B | External peripheral bus | 后续 UART0 等 |
-| `0x1000_1000` - `0x1000_1FFF` | 4 KiB | GPIO0 | 后续预留 |
-| `0x1000_2000` - `0x1000_2FFF` | 4 KiB | Timer/mtime/mtimecmp | 后续预留 |
-| `0x1000_3000` - `0x1000_3FFF` | 4 KiB | Software IRQ / scratch | 后续预留 |
-| `0x8000_0000` - `0x8003_FFFF` | 256 KiB | Data RAM / instruction RAM | 主存窗口 |
+| `0x8000_0000` - `0x800F_FFFF` | 1 MiB | IROM reserved | 指令空间保留窗口 |
+| `0x8000_0000` - `0x8000_3FFF` | 16 KiB | IROM active | Vivado IP/XPM，只读 |
+| `0x8000_4000` - `0x800F_FFFF` | 1008 KiB | IROM extension | 留空待扩展 |
+| `0x8010_0000` - `0x801F_FFFF` | 1 MiB | DRAM reserved | 数据空间保留窗口 |
+| `0x8010_0000` - `0x8013_FFFF` | 256 KiB | DRAM active | Vivado IP/BRAM，读写 |
+| `0x8014_0000` - `0x801F_FFFF` | 768 KiB | DRAM extension | 留空待扩展 |
+| `0x8020_0000` - `0x8020_00FF` | 256 B | MMIO | JYD2025 板级外设 |
 
-当前 fetch reset PC 仍使用 `RESET_PC`。若 reset PC 位于 `0x8000_0000`，IROM wrapper
-从主存窗口取 128-bit instruction block；若后续需要 boot ROM，则通过参数选择
-`RESET_PC=0x0000_0000`。
+当前 fetch reset PC 仍使用 `RESET_PC=0x8000_0000`。`soc_imem` 只响应 IROM active
+窗口内的 128-bit instruction block 读取。官方仿真回归为了兼容既有 riscv-tests 链接
+地址，会在 testbench 中覆盖 IROM/DRAM base；Vivado 综合使用默认地址图。
 
 ## 3. Core 侧接口
 
@@ -160,11 +165,16 @@ RAM load/store 可并行。MMIO V1 采用单在途串行通道：
 | input | `periph_resp_valid_i` | 1 | read 或 write ack |
 | input | `periph_resp_rdata_i` | 32 | read data |
 | input | `periph_resp_error_i` | 1 | 外设错误 |
-| output | `led_o` | `LED_WIDTH` | 板级 LED 输出，默认 8 bit |
+| input | `sw_i` | 64 | 板级开关输入 |
+| input | `key_i` | 8 | 板级按键输入 |
+| output | `led_o` | 32 | 板级 LED 输出 |
+| output | `seg_o` | 40 | 板级 7 段数码管输出 |
 
-当前已增加 `soc_periph_decode`，先解码 `0x1000_0000` LED 寄存器；未命中的 MMIO
-访问继续通过该总线透出。后续若外设数量增加，可继续在 SoC 内部把该总线拆成
-`uart0/gpio0/timer/software_irq` 等子端口。
+当前 `soc_periph_decode` 解码 `0x8020_0000` - `0x8020_00FF` 本地外设：
+SW 只读、KEY 只读、SEG 读写、LED 只写、CNT 读写控制。未命中本地 MMIO window 的访问
+继续通过外部轻量 peripheral bus 透出；命中本地 window 但偏移未定义的访问返回错误。
+CNT 默认按 50,000 个 `clk_cnt_i` 周期累加一次，停止命令同步到计数时钟域后保持最终
+读数。
 
 ## 6. 中断预留
 
@@ -198,10 +208,9 @@ SoC 级中断汇总后接入 `core_top`：
    `tb_soc_top` smoke 已通过，覆盖 IMem 初始化、core 取指、INT/MUL/DIV 写回和顶层
    interrupt/error 预留线。全系统 load/store 指令 smoke 后续再加；当前 RAM/router
    load/store 行为由各自 directed test 覆盖。
-6. 新建 `soc_periph_decode`，在 `MMIO_BASE + 0x0` 提供 32-bit LED 寄存器，低
-   `LED_WIDTH` 位输出到 `led_o`，其他 MMIO 地址继续透出到顶层扩展总线。当前
-   `soc_top` OOC WNS 为 `-0.196 ns`，最差路径仍在既有 `u_issue_arbiter`
-   proposal 寄存路径，非 LED/MMIO decode。
+6. 更新 `soc_periph_decode` 为 JYD2025 外设表：`SW_LOW/SW_HIGH/KEY/SEG/LED/CNT`
+   均要求 4 字节对齐；SW/KEY 只读，LED 只写，SEG/CNT 读写。`clk_cnt_i` 用于数码管
+   扫描和计数器域。
 7. 为 `soc_top` 增加 smoke test：从 memory 启动，执行普通 ALU/MUL/DIV/load/store，
    观察写回和 store side effect。
 8. 后续逐个接入 UART、GPIO、Timer，每接一个外设先做 Questa directed test，再做
@@ -219,6 +228,7 @@ SoC 级中断汇总后接入 `core_top`：
 
 - RAM load/store 地址命中测试。
 - MMIO read/write 地址命中测试。
+- SW/KEY/SEG/LED/CNT 外设访问权限和对齐错误测试。
 - 非法地址 load 返回 `error=1`。
 - Store 只在 commit 后进入 router。
 - 外设 backpressure 下 payload 保持稳定。

@@ -43,4 +43,5 @@ rtl/soc/soc_imem.sv
 rtl/soc/soc_data_ram.sv
 rtl/soc/soc_periph_decode.sv
 rtl/soc/soc_top.sv
+rtl/soc/my_cpu.sv
 test/tb_soc_custom_instr.sv

@@ -7,7 +7,7 @@ import core_types_pkg::*;
 
 module soc_imem #(
     parameter logic [XLEN-1:0] BASE_ADDR = 32'h8000_0000,
-    parameter int unsigned     MEM_BYTES = 262144,
+    parameter int unsigned     MEM_BYTES = 16384,
     parameter string           INIT_FILE = ""
 ) (
     input  logic                         clk_i,

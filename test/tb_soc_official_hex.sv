@@ -13,6 +13,7 @@ module tb_soc_official_hex;
   localparam int unsigned MEMORY_WORDS = RAM_BYTES / 4;
 
   logic clk_i = 1'b0;
+  logic clk_cnt_i = 1'b0;
   logic rst_i = 1'b1;
 
   logic ext_irq_i = 1'b0;
@@ -28,7 +29,10 @@ module tb_soc_official_hex;
   logic periph_resp_valid_i = 1'b0;
   logic [XLEN-1:0] periph_resp_rdata_i = '0;
   logic periph_resp_error_i = 1'b0;
-  logic [7:0] led_o;
+  logic [63:0] sw_i = '0;
+  logic [7:0] key_i = '0;
+  logic [31:0] led_o;
+  logic [39:0] seg_o;
 
   logic imem_init_write_valid_i = 1'b0;
   logic [XLEN-1:0] imem_init_write_addr_i = '0;
@@ -88,12 +92,15 @@ module tb_soc_official_hex;
 
   soc_top #(
       .RESET_MTVEC(IMAGE_BASE),
+      .IROM_BASE(IMAGE_BASE),
+      .IROM_BYTES(RAM_BYTES),
       .RAM_BASE(IMAGE_BASE),
       .RAM_BYTES(RAM_BYTES),
       .POWER_ON_RESET_CYCLES(4)
   ) dut (.*);
 
   always #5 clk_i = ~clk_i;
+  always #5 clk_cnt_i = ~clk_cnt_i;
 
   task automatic write_imem_block(
       input logic [XLEN-1:0] addr,

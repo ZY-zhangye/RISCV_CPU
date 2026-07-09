@@ -1,18 +1,18 @@
 // Simple SoC address router.
 //
 // V1 keeps the CPU memory boundary typed and uses fixed address windows:
-// - RAM:  0x8000_0000..0x8003_FFFF
-// - MMIO: 0x1000_0000..0x1000_3FFF
+// - RAM:  0x8010_0000..0x8013_FFFF
+// - MMIO: 0x8020_0000..0x8020_00FF
 // Loads to invalid addresses return an error response. Invalid stores are
 // accepted and recorded in sticky_store_error_o; precise store access faults are
 // left for a later CSR/commit extension.
 import core_types_pkg::*;
 
 module soc_addr_router #(
-    parameter logic [XLEN-1:0] RAM_BASE  = 32'h8000_0000,
+    parameter logic [XLEN-1:0] RAM_BASE  = 32'h8010_0000,
     parameter logic [XLEN-1:0] RAM_SIZE  = 32'h0004_0000,
-    parameter logic [XLEN-1:0] MMIO_BASE = 32'h1000_0000,
-    parameter logic [XLEN-1:0] MMIO_SIZE = 32'h0000_4000
+    parameter logic [XLEN-1:0] MMIO_BASE = 32'h8020_0000,
+    parameter logic [XLEN-1:0] MMIO_SIZE = 32'h0000_0100
 ) (
     input  logic                         clk_i,
     input  logic                         rst_i,

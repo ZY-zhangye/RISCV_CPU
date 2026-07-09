@@ -1,23 +1,26 @@
 // Minimal SoC integration top.
 //
-// V1 wires core_top to instruction memory, data RAM and the simple address
-// router. Peripheral MMIO first hits a small internal decode block for simple
-// board I/O, then falls through to the external expansion bus.
+// The default address map matches the JYD2025 Vivado-facing platform:
+// - IROM: 0x8000_0000..0x8000_3fff active, 16 KiB, read-only to the core
+// - DRAM: 0x8010_0000..0x8013_ffff active, 256 KiB, read/write
+// - MMIO: 0x8020_0000..0x8020_00ff local board peripherals
 import core_types_pkg::*;
 
 module soc_top #(
     parameter logic [XLEN-1:0] HART_ID = '0,
     parameter logic [XLEN-1:0] RESET_MTVEC = RESET_PC,
-    parameter logic [XLEN-1:0] RAM_BASE = 32'h8000_0000,
+    parameter logic [XLEN-1:0] IROM_BASE = 32'h8000_0000,
+    parameter int unsigned     IROM_BYTES = 16384,
+    parameter logic [XLEN-1:0] RAM_BASE = 32'h8010_0000,
     parameter int unsigned     RAM_BYTES = 262144,
-    parameter logic [XLEN-1:0] MMIO_BASE = 32'h1000_0000,
-    parameter int unsigned     MMIO_BYTES = 16384,
-    parameter int unsigned     LED_WIDTH = 8,
+    parameter logic [XLEN-1:0] MMIO_BASE = 32'h8020_0000,
+    parameter int unsigned     MMIO_BYTES = 256,
     parameter int unsigned     POWER_ON_RESET_CYCLES = 64,
     parameter string           IMEM_INIT_FILE = "",
     parameter string           DMEM_INIT_FILE = ""
 ) (
     input  logic                         clk_i,
+    input  logic                         clk_cnt_i,
     input  logic                         rst_i,
 
     input  logic                         ext_irq_i,
@@ -34,7 +37,10 @@ module soc_top #(
     input  logic [XLEN-1:0]              periph_resp_rdata_i,
     input  logic                         periph_resp_error_i,
 
-    output logic [LED_WIDTH-1:0]         led_o,
+    input  logic [63:0]                  sw_i,
+    input  logic [7:0]                   key_i,
+    output logic [31:0]                  led_o,
+    output logic [39:0]                  seg_o,
 
     input  logic                         imem_init_write_valid_i,
     input  logic [XLEN-1:0]              imem_init_write_addr_i,
@@ -192,8 +198,8 @@ module soc_top #(
   );
 
   soc_imem #(
-      .BASE_ADDR(RAM_BASE),
-      .MEM_BYTES(RAM_BYTES),
+      .BASE_ADDR(IROM_BASE),
+      .MEM_BYTES(IROM_BYTES),
       .INIT_FILE(IMEM_INIT_FILE)
   ) u_imem (
       .clk_i,
@@ -245,10 +251,10 @@ module soc_top #(
 
   soc_periph_decode #(
       .MMIO_BASE(MMIO_BASE),
-      .LED_OFFSET(32'h0000_0000),
-      .LED_WIDTH(LED_WIDTH)
+      .MMIO_SIZE(MMIO_BYTES[XLEN-1:0])
   ) u_periph_decode (
       .clk_i,
+      .clk_cnt_i,
       .rst_i(soc_rst),
       .req_valid_i(router_periph_req_valid),
       .req_ready_o(router_periph_req_ready),
@@ -268,7 +274,10 @@ module soc_top #(
       .ext_resp_valid_i(periph_resp_valid_i),
       .ext_resp_rdata_i(periph_resp_rdata_i),
       .ext_resp_error_i(periph_resp_error_i),
-      .led_o
+      .sw_i,
+      .key_i,
+      .led_o,
+      .seg_o
   );
 
   soc_data_ram #(
