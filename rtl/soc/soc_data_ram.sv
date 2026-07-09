@@ -208,14 +208,22 @@ module soc_data_ram #(
     end
   end
 
-`ifndef SYNTHESIS
   initial begin
-    if (INIT_FILE != "")
-      $error("soc_data_ram INIT_FILE is not supported by the byte-lane BRAM implementation; use init_write ports");
+    if (INIT_FILE != "") begin
+      logic [31:0] init_mem [0:WORD_COUNT-1];
+      for (int idx = 0; idx < WORD_COUNT; idx = idx + 1)
+        init_mem[idx] = '0;
+      $readmemh(INIT_FILE, init_mem);
+      for (int idx = 0; idx < WORD_COUNT; idx = idx + 1) begin
+        mem_b0_q[idx] = init_mem[idx][7:0];
+        mem_b1_q[idx] = init_mem[idx][15:8];
+        mem_b2_q[idx] = init_mem[idx][23:16];
+        mem_b3_q[idx] = init_mem[idx][31:24];
+      end
+    end
   end
-`endif
 
-  always_ff @(posedge clk_i) begin
+  always @(posedge clk_i) begin
     if (write_en_b0)
       mem_b0_q[write_index_b0] <= write_data_b0;
     if (write_en_b1)
